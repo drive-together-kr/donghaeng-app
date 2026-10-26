@@ -55,7 +55,7 @@ curl http://localhost:8080/.well-known/jwks.json    # {"keys":[]}  (T10 에서 �
 | 패키지 | 책임 | 상태 |
 |---|---|---|
 | `identity` | 로그인, 디바이스 코드, 토큰 발급·검증, 차량 등록 | T10 |
-| `group` | 그룹·초대·멤버십·방장 | T11 |
+| `group` | 그룹·초대·멤버십·방장 | T14 |
 | `presence` | 텔레메트리 수신 → Redis 상태, 스냅샷 주기 발행 | — |
 | `event` | 차량 이벤트 정규화·중복 억제·음성 문구·팬아웃 | — |
 | `routesync` | 선두 경로 변경 → 멤버별 따라가기 제안, ACK 집계 | — |
@@ -93,3 +93,6 @@ curl http://localhost:8080/.well-known/jwks.json    # {"keys":[]}  (T10 에서 �
 
 - 응답·주석·문서는 한국어, 식별자는 영어. 실명·학교·연락처 등 개인정보 금지(블라인드 심사).
 - 로그에 좌표·닉네임·토큰 원문 금지. 비밀 값 커밋 금지.
+
+## JDK 21 전제 (툴체인)
+`kotlin { jvmToolchain(21) }` 은 **로컬에 설치된 JDK 21** 을 찾는다(자동 다운로드 비활성). JAVA_HOME 이 JDK 21 이거나 표준 위치(IntelliJ `~/.jdks`, Temurin 설치 경로 등)에 있으면 추가 설정 없이 감지되고, 비표준 경로라면 `~/.gradle/gradle.properties` 의 `org.gradle.java.installations.paths` 에 등록한다(커밋 금지). JDK 21 이 전혀 없으면 `infra/` 에서 `docker compose build server` 로 컨테이너 안에서 빌드한다.

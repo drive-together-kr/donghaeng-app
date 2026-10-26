@@ -1,5 +1,6 @@
 package app.donghaeng.common.api
 
+import jakarta.validation.ConstraintViolationException
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -8,6 +9,7 @@ import org.springframework.web.ErrorResponse
 import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
+import org.springframework.web.method.annotation.HandlerMethodValidationException
 import org.springframework.web.servlet.NoHandlerFoundException
 import org.springframework.web.servlet.resource.NoResourceFoundException
 import java.util.concurrent.ThreadLocalRandom
@@ -58,9 +60,25 @@ class GlobalExceptionHandler {
     @ExceptionHandler(MethodArgumentNotValidException::class)
     fun handleValidation(e: MethodArgumentNotValidException): ResponseEntity<ApiError> {
         val detail = e.bindingResult.fieldErrors.joinToString(", ") { "${it.field}: ${it.defaultMessage}" }
-        val message = if (detail.isEmpty()) "요청 값이 올바르지 않아요." else "요청 값이 올바르지 않아요. ($detail)"
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiError.of("VALIDATION_FAILED", message))
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiError.of("VALIDATION_FAILED", validationMessage(detail)))
     }
+
+    /** `@Validated` 컨트롤러/서비스의 `@RequestParam`·`@PathVariable` 제약 위반 (jakarta ConstraintViolation) */
+    @ExceptionHandler(ConstraintViolationException::class)
+    fun handleConstraintViolation(e: ConstraintViolationException): ResponseEntity<ApiError> {
+        val detail = e.constraintViolations.joinToString(", ") { "${it.propertyPath}: ${it.message}" }
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiError.of("VALIDATION_FAILED", validationMessage(detail)))
+    }
+
+    /** Spring 6.1+ 메서드 파라미터 검증 실패 (컨트롤러 파라미터에 직접 붙인 제약) */
+    @ExceptionHandler(HandlerMethodValidationException::class)
+    fun handleMethodValidation(e: HandlerMethodValidationException): ResponseEntity<ApiError> {
+        val detail = e.allErrors.joinToString(", ") { it.defaultMessage ?: it.toString() }
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiError.of("VALIDATION_FAILED", validationMessage(detail)))
+    }
+
+    private fun validationMessage(detail: String): String =
+        if (detail.isEmpty()) "요청 값이 올바르지 않아요." else "요청 값이 올바르지 않아요. ($detail)"
 
     @ExceptionHandler(NoResourceFoundException::class, NoHandlerFoundException::class)
     fun handleNotFound(e: Exception): ResponseEntity<ApiError> =

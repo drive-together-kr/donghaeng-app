@@ -51,9 +51,9 @@ class LandingController {
         |<body>
         |<main>
         |<h1>동행 — $title</h1>
-        |<p>동행 앱을 설치하면 이 QR 로 바로 연결돼요</p>
+        |<p>동행 앱을 설치하면 이 QR로 바로 연결돼요.</p>
         |${detail?.let { "<p>$it</p>" } ?: ""}
-        |<p class="hint">앱을 설치한 뒤 같은 QR 을 다시 찍어 주세요.</p>
+        |<p class="hint">앱을 설치한 뒤 같은 QR을 다시 찍어 주세요.</p>
         |</main>
         |</body>
         |</html>

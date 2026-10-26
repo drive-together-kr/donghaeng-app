@@ -23,34 +23,38 @@ services:
       # 호스트 포트 15432 — 개발 PC의 로컬 PostgreSQL 18 서비스가 5432 를 점유하고 있다.
       # IDE에서 서버를 직접 띄울 때 JDBC URL: jdbc:postgresql://localhost:15432/donghaeng
       # (컨테이너 내부에서는 postgres:5432)
-      - "${DH_PG_HOST_PORT:-15432}:5432"
+      # 127.0.0.1 바인딩: 개발용 DB 는 PC 밖으로 열지 않는다 (에뮬레이터의 10.0.2.2 는 호스트 loopback 이라 그대로 접근된다).
+      - "127.0.0.1:${DH_PG_HOST_PORT:-15432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       # $$ 는 compose 보간을 피해 컨테이너 셸에서 $POSTGRES_USER 로 풀린다.
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      # -h 127.0.0.1: 첫 기동 시 초기화 전용 임시 서버는 Unix 소켓만 열므로 TCP 로 확인해야 거짓 healthy 가 안 난다.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   # ---------------------------------------------------------------- Redis 7
   redis:
     image: redis:7
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"   # 개발용, PC 밖으로 열지 않음
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   # ---------------------------------------------------------------- EMQX 5.8 (MQTT 브로커)
   emqx:
     image: emqx/emqx:5.8
     ports:
       - "1883:1883"     # MQTT (tcp)
-      - "8083:8083"     # MQTT over WebSocket
-      - "18083:18083"   # 대시보드 (admin / EMQX_DASHBOARD_PASSWORD, 첫 로그인 시 변경 강제)
+      - "127.0.0.1:8083:8083"     # MQTT over WebSocket (로컬 전용)
+      - "127.0.0.1:18083:18083"   # 대시보드 — 로컬 전용 (admin / EMQX_DASHBOARD_PASSWORD, 첫 로그인 시 변경 강제)
     environment:
       # 노드 이름을 고정해 컨테이너를 다시 만들어도 emqx-data 볼륨의 Mnesia 데이터(대시보드 계정 등)가 이어진다.
       EMQX_NODE__NAME: emqx@127.0.0.1
@@ -62,7 +66,12 @@ services:
       EMQX_AUTHENTICATION__1__FROM: password
       EMQX_AUTHENTICATION__1__USE_JWKS: "true"
       EMQX_AUTHENTICATION__1__ENDPOINT: http://server:8080/.well-known/jwks.json
-      EMQX_AUTHENTICATION__1__REFRESH_INTERVAL: 300
+      # JWKS 재조회 주기(초). 서버가 뜬 뒤 최대 이 시간 동안은 MQTT 접속이 거부된다 (키 회전 반영 지연도 이 값).
+      EMQX_AUTHENTICATION__1__REFRESH_INTERVAL: ${EMQX_JWKS_REFRESH_INTERVAL:-30}
+      EMQX_AUTHENTICATION__1__POOL_SIZE: 2
+      # 토큰 sub == MQTT username(vid) 바인딩. 없으면 유효 토큰 하나로 다른 vid 의 username 으로 접속해 username 기반 ACL 을 물려받을 수 있다 (docs/06 §3·§5).
+      # $$ 는 compose 보간 회피. EMQX 5.8 은 VERIFY_CLAIMS__SUB 처럼 쪼갠 키를 받지 않으므로 HOCON 값을 통째로 준다.
+      EMQX_AUTHENTICATION__1__VERIFY_CLAIMS: '{sub = "$${username}"}'
     volumes:
       - emqx-data:/opt/emqx/data
     healthcheck:
@@ -71,6 +80,7 @@ services:
       timeout: 10s
       start_period: 30s
       retries: 10
+    restart: unless-stopped
 
   # ---------------------------------------------------------------- 동행 서버 (Spring Boot)
   # 이미지는 ../server (server/Dockerfile) 에서 빌드한다: docker compose build server
@@ -91,6 +101,8 @@ services:
       # QR·딥링크용 공개 주소 (docs/03 헤더). 에뮬레이터 10.0.2.2 / 실기기 <PC-IP> / 클라우드 <VM-IP>.sslip.io
       DH_PUBLIC_BASE_URL: ${DH_PUBLIC_BASE_URL:-http://10.0.2.2:8080}
       DH_MQTT_PUBLIC_URI: ${DH_MQTT_PUBLIC_URI:-tcp://10.0.2.2:1883}
+      # RS256 서명 키 (T10 에서 사용). 값은 .env 에만 둔다.
+      DH_JWT_PRIVATE_KEY_PEM: ${DH_JWT_PRIVATE_KEY_PEM:-}
     depends_on:
       postgres:
         condition: service_healthy

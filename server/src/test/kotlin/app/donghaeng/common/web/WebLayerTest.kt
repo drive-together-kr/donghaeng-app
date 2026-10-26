@@ -52,14 +52,14 @@ class WebLayerTest {
         mvc.get("/j/{token}", "inv_<script>x").andExpect {
             status { isOk() }
             content { contentTypeCompatibleWith("text/html") }
-            content { string(containsString("동행 앱을 설치하면 이 QR 로 바로 연결돼요")) }
+            content { string(containsString("동행 앱을 설치하면 이 QR로 바로 연결돼요.")) }
             content { string(containsString("&lt;script&gt;")) }
             content { string(not(containsString("<script>"))) }
         }
         mvc.get("/pair") { param("c", "KQ74MZ") }.andExpect {
             status { isOk() }
             content { string(containsString("KQ74MZ")) }
-            content { string(containsString("동행 앱을 설치하면 이 QR 로 바로 연결돼요")) }
+            content { string(containsString("동행 앱을 설치하면 이 QR로 바로 연결돼요.")) }
         }
     }
 }

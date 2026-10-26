@@ -34,6 +34,6 @@ _(구현 후 작성)_ 1) `infra/`에서 `docker compose up -d` 2) Pleos Connect 
 | `phone-app/` | 폰 동반 앱 (Flutter) — 로그인, QR 스캔, 메시지 |
 | `server/` | Kotlin + Spring Boot 3.3 모듈러 모놀리스 |
 | `protocol/` | car-app·server 공용 메시지 스키마 (kotlinx.serialization) |
-| `infra/` | docker compose (postgres·redis·emqx·server), Caddy |
+| `infra/` | docker compose (postgres·redis·emqx·server), Caddy(T32 예정) |
 | `docs/` | 기획·설계 문서 |
 | `apk/` | 제출용 release APK |

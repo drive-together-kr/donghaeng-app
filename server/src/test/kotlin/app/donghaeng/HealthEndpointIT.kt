@@ -47,9 +47,9 @@ class HealthEndpointIT {
 
     @Test
     fun `actuator health is UP without authentication`() {
-        val res = rest.getForEntity("/actuator/health", String::class.java)
+        val res = rest.getForEntity("/actuator/health", Map::class.java)
         assertEquals(HttpStatus.OK, res.statusCode)
-        assertTrue(res.body.orEmpty().contains("UP"), res.body)
+        assertEquals("UP", res.body?.get("status"), res.body.toString())
     }
 
     @Test

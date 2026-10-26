@@ -10,10 +10,13 @@ import org.springframework.boot.context.properties.ConfigurationProperties
  * - `dh.mqtt.public-uri` (`DH_MQTT_PUBLIC_URI`): 차량 앱에 내려 주는 브로커 공개 주소.
  */
 @ConfigurationProperties("dh")
-data class DhProperties(
-    val publicBaseUrl: String,
+class DhProperties(
+    publicBaseUrl: String,
     val mqtt: Mqtt,
 ) {
+    /** 끝의 `/` 는 제거해 `{base}/pair?c=…` 조합 시 `//` 가 생기지 않게 한다 (docs/03: 끝에 `/` 없음). */
+    val publicBaseUrl: String = publicBaseUrl.trimEnd('/')
+
     data class Mqtt(
         val uri: String,
         val publicUri: String,

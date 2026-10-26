@@ -51,7 +51,7 @@ data class GroupTopics(
 data class RouteFollowProposal(
     val proposalId: String,
     val destination: Place,
-    val waypoints: List<Place>,
+    val waypoints: List<Place> = emptyList(),
     val speech: String,
 )
 

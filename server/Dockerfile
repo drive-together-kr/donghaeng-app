@@ -12,5 +12,8 @@ RUN ./gradlew --no-daemon --console=plain bootJar -x test
 FROM eclipse-temurin:21-jre-jammy
 WORKDIR /app
 COPY --from=build /src/build/libs/server.jar app.jar
+# 루트가 아닌 사용자로 실행
+RUN useradd --system --uid 10001 --no-create-home app
+USER app
 EXPOSE 8080
 ENTRYPOINT ["java","-jar","/app/app.jar"]

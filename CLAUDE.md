@@ -16,7 +16,7 @@ car-app/     Android(AAOS/Pleos) Kotlin, Compose, Hilt   ── flavors: pleos /
 server/      Kotlin + Spring Boot 3.3 모듈러 모놀리스        ── packages = 미래 마이크로서비스
 phone-app/   Flutter 동반 앱(QR 스캔·로그인·메시지)
 protocol/    Kotlin 공용 메시지 스키마 (car-app, server가 의존)
-infra/       docker-compose(postgres, redis, emqx, server), Caddy
+infra/       docker-compose(postgres, redis, emqx, server), Caddy(T32 예정)
 docs/        설계 문서
 apk/         제출용 release APK
 ```
