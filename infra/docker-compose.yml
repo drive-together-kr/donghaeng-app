@@ -1,0 +1,105 @@
+# 동행(DongHaeng) 로컬 실행 스택 — docs/06_서버_설계.md §6
+#
+# 사용법 (infra/ 디렉터리에서):
+#   docker compose up -d                       # 전체 (postgres·redis·emqx·server)
+#   docker compose up -d postgres redis emqx   # 서버는 IDE에서 직접 띄울 때
+#   docker compose down                        # 중지 (데이터 볼륨 유지)
+#   docker compose down -v                     # 중지 + 볼륨 삭제(초기화)
+#
+# 환경 변수는 같은 디렉터리의 .env 에서 읽는다 (.env.example 참고, .env 는 커밋 금지).
+# 값이 없으면 ${VAR:-기본값} 의 기본값이 쓰인다.
+
+name: donghaeng
+
+services:
+  # ---------------------------------------------------------------- PostgreSQL 16
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-donghaeng}
+      POSTGRES_USER: ${POSTGRES_USER:-dh}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dh}
+    ports:
+      # 호스트 포트 15432 — 개발 PC의 로컬 PostgreSQL 18 서비스가 5432 를 점유하고 있다.
+      # IDE에서 서버를 직접 띄울 때 JDBC URL: jdbc:postgresql://localhost:15432/donghaeng
+      # (컨테이너 내부에서는 postgres:5432)
+      - "${DH_PG_HOST_PORT:-15432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # $$ 는 compose 보간을 피해 컨테이너 셸에서 $POSTGRES_USER 로 풀린다.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------- Redis 7
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------- EMQX 5.8 (MQTT 브로커)
+  emqx:
+    image: emqx/emqx:5.8
+    ports:
+      - "1883:1883"     # MQTT (tcp)
+      - "8083:8083"     # MQTT over WebSocket
+      - "18083:18083"   # 대시보드 (admin / EMQX_DASHBOARD_PASSWORD, 첫 로그인 시 변경 강제)
+    environment:
+      # 노드 이름을 고정해 컨테이너를 다시 만들어도 emqx-data 볼륨의 Mnesia 데이터(대시보드 계정 등)가 이어진다.
+      EMQX_NODE__NAME: emqx@127.0.0.1
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:-public}
+      # JWT 인증 — 서버가 공개하는 JWKS 로 차량/사용자 토큰을 검증한다 (docs/06 §5, §6).
+      # 클라이언트는 username=vid, password=JWT 로 접속한다 (FROM=password).
+      # server 가 아직 떠 있지 않으면 JWKS 를 못 가져왔다는 경고가 찍히지만 EMQX 자체는 정상 기동한다.
+      EMQX_AUTHENTICATION__1__MECHANISM: jwt
+      EMQX_AUTHENTICATION__1__FROM: password
+      EMQX_AUTHENTICATION__1__USE_JWKS: "true"
+      EMQX_AUTHENTICATION__1__ENDPOINT: http://server:8080/.well-known/jwks.json
+      EMQX_AUTHENTICATION__1__REFRESH_INTERVAL: 300
+    volumes:
+      - emqx-data:/opt/emqx/data
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 10s
+      timeout: 10s
+      start_period: 30s
+      retries: 10
+
+  # ---------------------------------------------------------------- 동행 서버 (Spring Boot)
+  # 이미지는 ../server (server/Dockerfile) 에서 빌드한다: docker compose build server
+  server:
+    build:
+      context: ../server
+    image: donghaeng/server:dev
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      DH_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-donghaeng}
+      DH_DB_USER: ${POSTGRES_USER:-dh}
+      DH_DB_PASSWORD: ${POSTGRES_PASSWORD:-dh}
+      DH_REDIS_HOST: redis
+      DH_REDIS_PORT: 6379
+      DH_MQTT_URI: tcp://emqx:1883
+      # QR·딥링크용 공개 주소 (docs/03 헤더). 에뮬레이터 10.0.2.2 / 실기기 <PC-IP> / 클라우드 <VM-IP>.sslip.io
+      DH_PUBLIC_BASE_URL: ${DH_PUBLIC_BASE_URL:-http://10.0.2.2:8080}
+      DH_MQTT_PUBLIC_URI: ${DH_MQTT_PUBLIC_URI:-tcp://10.0.2.2:1883}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      emqx:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  emqx-data:
