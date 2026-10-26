@@ -1,0 +1,5 @@
+# local 프로필 (SPRING_PROFILES_ACTIVE=local — infra/docker-compose 의 server 서비스가 사용).
+# 기본값은 application.yml 과 환경 변수로 충분하므로 비워 둔다. 로컬 전용 덮어쓰기가 필요하면 여기에 추가.
+logging:
+  level:
+    app.donghaeng: DEBUG

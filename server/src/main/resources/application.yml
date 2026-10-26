@@ -1,0 +1,38 @@
+# 동행 서버 기본 설정. 환경 변수로 덮어쓴다 (README 의 환경 변수 표 참고).
+spring:
+  application:
+    name: donghaeng-server
+  datasource:
+    # 로컬: infra/docker-compose 의 postgres 가 호스트 15432 에 뜬다 (로컬 PostgreSQL 이 5432 점유).
+    url: ${DH_DB_URL:jdbc:postgresql://localhost:15432/donghaeng}
+    username: ${DH_DB_USER:dh}
+    password: ${DH_DB_PASSWORD:dh}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  data:
+    redis:
+      host: ${DH_REDIS_HOST:localhost}
+      port: ${DH_REDIS_PORT:6379}
+  jackson:
+    default-property-inclusion: non_null
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+# docs/03 머리말: 공개 주소는 고정 도메인 없이 설정값으로만 만든다.
+dh:
+  public-base-url: ${DH_PUBLIC_BASE_URL:http://10.0.2.2:8080}
+  mqtt:
+    uri: ${DH_MQTT_URI:tcp://localhost:1883}
+    public-uri: ${DH_MQTT_PUBLIC_URI:tcp://10.0.2.2:1883}
