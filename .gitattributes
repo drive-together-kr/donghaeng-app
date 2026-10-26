@@ -1,0 +1,14 @@
+# 줄바꿈: 저장소는 LF, Windows 배치 파일만 CRLF
+*               text=auto eol=lf
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+gradlew         text eol=lf
+# 바이너리
+*.jar binary
+*.apk binary
+*.aab binary
+*.png binary
+*.jpg binary
+*.jks binary
+*.keystore binary
+*.gpx binary

@@ -26,3 +26,14 @@ _(구현 후 작성)_ 1) `infra/`에서 `docker compose up -d` 2) Pleos Connect 
 | [09 테스트·데모 계획](docs/09_테스트_데모계획.md) | 에뮬레이터 2대 시연 시나리오 |
 | [10 리스크·확인 사항](docs/10_리스크_확인사항.md) | SDK 제약, 설명회 질문 |
 | [11 제출 체크리스트](docs/11_제출체크리스트.md) | 1·2차 제출물 |
+
+## 저장소 구조
+| 경로 | 내용 |
+|---|---|
+| `car-app/` | Pleos 차량 앱 (Kotlin, Compose, Hilt) — flavor `pleos` / `fake` |
+| `phone-app/` | 폰 동반 앱 (Flutter) — 로그인, QR 스캔, 메시지 |
+| `server/` | Kotlin + Spring Boot 3.3 모듈러 모놀리스 |
+| `protocol/` | car-app·server 공용 메시지 스키마 (kotlinx.serialization) |
+| `infra/` | docker compose (postgres·redis·emqx·server), Caddy |
+| `docs/` | 기획·설계 문서 |
+| `apk/` | 제출용 release APK |
