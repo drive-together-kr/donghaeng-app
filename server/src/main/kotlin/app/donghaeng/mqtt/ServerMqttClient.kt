@@ -48,7 +48,8 @@ interface MqttPublisher {
  *
  * - 자기 토큰: `JwtIssuer.serverToken(srv_…)` — username = clientId = `sub`(EMQX `verify_claims {sub = "${username}"}`), password = JWT.
  *   재연결 때마다 새 토큰을 넣는다(12h 만료 대비).
- * - 공유 구독 `$share/server/dh/v1/vehicle/+/#` (QoS 1) → [TopicRouter].
+ * - 공유 구독 `$share/server/dh/v1/vehicle/+/#` (QoS 1) → [TopicRouter]. 세션은 **clean start + 만료 0** — 서버 인스턴스가 죽으면 세션도 바로 사라져야
+ *   공유 구독이 죽은 세션으로 메시지를 분배하지 않는다(2026-10-27 실측: 재배포 뒤 5분간 이벤트·텔레메트리 절반 유실). 재연결 시 구독은 connected 리스너가 다시 건다.
  * - 기동 시 EMQX 가 아직 JWKS 를 못 받았으면 인증이 거부된다 → 자동 재연결(지수 백오프 1~30s)로 복구한다. 기동 자체는 막지 않는다.
  * - `dh.mqtt.enabled=false` 면 아무것도 하지 않는다(브로커 없는 로컬 실행·웹 테스트).
  */
@@ -99,8 +100,8 @@ class ServerMqttClient(
                 // 재연결 때마다 새 토큰 — 만료(12h)·키 회전 대비. 인증 거부(JWKS 미수신 등)도 같은 경로로 재시도된다
                 (ctx.reconnector as Mqtt5ClientReconnector).connectWith()
                     .simpleAuth().username(clientId).password(jwt.serverToken(clientId).toByteArray()).applySimpleAuth()
-                    .cleanStart(false)
-                    .sessionExpiryInterval(SESSION_EXPIRY_S)
+                    .cleanStart(true)
+                    .sessionExpiryInterval(0)
                     .applyConnect()
                 log.warn("mqtt disconnected source={} cause={} — reconnecting", ctx.source, ctx.cause.message)
             }
@@ -115,8 +116,8 @@ class ServerMqttClient(
         }
         built.connectWith()
             .simpleAuth().username(clientId).password(jwt.serverToken(clientId).toByteArray()).applySimpleAuth()
-            .cleanStart(false)
-            .sessionExpiryInterval(SESSION_EXPIRY_S)
+            .cleanStart(true)
+            .sessionExpiryInterval(0)
             .send()
             .whenComplete { ack, error ->
                 if (error != null) {
@@ -211,6 +212,5 @@ class ServerMqttClient(
     companion object {
         private val log = LoggerFactory.getLogger(ServerMqttClient::class.java)
         private const val SUBSCRIBE_RETRY_MAX_S = 30L
-        private const val SESSION_EXPIRY_S = 300L
     }
 }

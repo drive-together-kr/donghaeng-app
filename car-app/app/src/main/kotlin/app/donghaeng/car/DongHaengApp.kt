@@ -4,6 +4,7 @@ import android.app.Application
 import app.donghaeng.car.adapter.sdk.SdkProbe
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.capability.CapabilityReporter
+import app.donghaeng.car.domain.event.VehicleEventEngine
 import app.donghaeng.car.domain.location.LocationFeed
 import app.donghaeng.car.domain.navi.NaviEventMonitor
 import app.donghaeng.car.domain.session.MqttSessionManager
@@ -49,6 +50,9 @@ class DongHaengApp : Application() {
     @Inject
     lateinit var driveSessionController: DriveSessionController
 
+    @Inject
+    lateinit var vehicleEventEngine: VehicleEventEngine
+
     override fun onCreate() {
         super.onCreate()
         // android.util.Log 는 DhLog 에서만 직접 호출한다(규칙 8 마스킹 단일 창구)
@@ -62,5 +66,6 @@ class DongHaengApp : Application() {
         vehicleSignals.start()
         telemetryCollector.start()        // T23: 활성 그룹 동안 1Hz 발행
         driveSessionController.start()    // T23: 그룹 활성 ↔ 포그라운드 서비스
+        vehicleEventEngine.start()        // T26: 활성 그룹 동안 차량 이벤트 판정·발행
     }
 }

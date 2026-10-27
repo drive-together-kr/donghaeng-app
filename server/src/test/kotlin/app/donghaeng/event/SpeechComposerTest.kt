@@ -18,6 +18,21 @@ class SpeechComposerTest {
     }
 
     @Test
+    fun `차량 이벤트 문구 — 조사와 EV 구분`() {
+        val c = SpeechComposer()
+        assertEquals("아빠 차 연료가 12% 남았어요.", c.lowEnergy("아빠 차", app.donghaeng.protocol.EnergyKind.FUEL, 12))
+        assertEquals("엄마 차 배터리가 9% 남았어요.", c.lowEnergy("엄마 차", app.donghaeng.protocol.EnergyKind.EV, 9))
+        assertEquals("앞쪽 아빠 차가 급제동했어요. 주의하세요.", c.hardBrake("아빠 차"))
+        assertEquals("앞쪽 삼촌이 급제동했어요. 주의하세요.", c.hardBrake("삼촌"))
+        assertEquals("아빠 차가 덕평휴게소에 도착했어요.", c.waypointArrived("아빠 차", "덕평휴게소"))
+        assertEquals("삼촌이 먼저 도착했어요.", c.destinationArrived("삼촌"))
+        assertEquals("아빠 차가 잠시 멈췄어요.", c.stopped("아빠 차"))
+        assertEquals("아빠 차가 다시 출발했어요.", c.resumed("아빠 차"))
+        assertEquals("아빠 차 에어백이 터졌어요. 확인해 주세요.", c.airbagDeployed("아빠 차"))
+        assertEquals("삼촌이 비상등을 켰어요.", c.hazardOn("삼촌"))
+    }
+
+    @Test
     fun `동승자 메시지와 종료 문구`() {
         assertEquals("아빠 차에서 온 메시지. 앞에 휴게소 들르자", speech.passengerMessage("아빠 차", "앞에 휴게소 들르자"))
         assertEquals("방장이 그룹을 종료했어요.", speech.groupEnded(SpeechComposer.REASON_LEADER_ENDED))

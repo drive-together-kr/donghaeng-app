@@ -82,7 +82,9 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 | `feature.pairing` | `PairingViewModel`(상태 기계) + `PairingScreen`(ZXing QR·`KQ7-4MZ` 코드·남은 시간·오류/재시도), `PairingFormat`, `QrCodes` | T12 |
 | `feature.settings` | `SettingsScreen`(연결 상태·**연결 해제**·진단 진입), `DiagnosticsScreen`(capability 표 · SDK 점검 · 빌드 정보 · 차량 ID 마스킹) | T11/T12 |
 | `feature.groupdrive` | `GroupDriveViewModel`(STATE 스냅샷·이벤트·내 위치·연결 → `GroupDriveUiState`) · `GroupDriveScreen`(가로/세로 반응형, 멤버 리스트·이벤트 스트립·초대 QR/나가기·종료) · `GroupMapCanvas` + `GroupMapProjection`(Canvas 경량 지도) | T25 |
-| `feature.events` / `presets` | 자리표시자 | T26 / T53 |
+| `domain.event` | `EventDetector`(저잔량·급제동·정차/재출발·에어백·도착 판정, 순수 로직) + `VehicleEventEngine`(활성 그룹 동안 1Hz 판정 → `…/event` QoS 1, 진단 상태) | T26 |
+| `feature.events` | `EventsViewModel`(실시간 그룹 이벤트 + 서버 최근 20 합침) · `EventsScreen`(이벤트 피드) | T26 |
+| `feature.presets` | 자리표시자 | T53 |
 
 규칙: Pleos SDK 타입은 `adapter.*` 밖으로 내보내지 않는다. 밖에서는 `domain.model` 타입만 쓴다.
 
@@ -208,6 +210,11 @@ mqtt subscribed topic=dh/v1/group/grp_…**/state  /  …/event
 - 홈 → **그룹 보기**(활성 그룹이 있을 때) → 그룹 주행 화면. 가로: 좌 멤버 리스트(별명·선두/나 태그·속도·선두까지 거리·ETA·에너지·상태·n초 전) / 우 경량 지도(선두차 중심, 북쪽 위, 거리 링, 멤버 점 + 진행 방향, 내 차 테두리, 목적지 깃발 또는 가장자리 화살표). 아래 최근 소식 3줄 + **초대 QR 보기**(방장)/**그룹 종료·나가기**(확인 대화상자). 주행 중이면 버튼 비활성.
 - 상단 연결 칩(연결됨/다시 연결 중/연결 안 됨)과 "그룹 상태 n초 전"(서버 2초 스냅샷). 스냅샷이 아직 없으면 "서버에서 그룹 상태를 기다리는 중".
 - Pleos AVD 실측(2026-10-27): 멤버 2대 — DemoCar(선두·나, 정차, 배터리 61%), DemoCarB(오프라인). 캡처 `docs/images/t25/`. 스크립트 `t25_drive_check.py`.
+
+### T26 — 차량 이벤트 · 이벤트 피드 (`adb logcat -s DongHaeng | grep "vehicle event"`)
+- 활성 그룹이 있으면 `event engine: 그룹 활성 → 판정 시작` → 판정 시 `vehicle event LOW_ENERGY LowEnergy(kind=EV, pct=12) published=true` 등. 서버가 그룹 이벤트로 돌려주면 `group event` 로 수신돼 그룹 주행 화면 '최근 소식' 과 **소식 더 보기**(이벤트 피드)에 보인다.
+- 진단 화면 **차량 이벤트 (T26)** 카드: 판정 중/샘플 수, 종류별 판정 수, 발행/실패, 마지막 이벤트, 판정기 상태(에너지 경고 %, 정차 n초).
+- Virtual Console 로 만들기(스크립트 `t26_event_check.py`): `PUT /vehicle/ev-battery?field=soc&value=12` → LOW_ENERGY(EV 12%); `gear=Drive`, `speed_kph=60` 4초 → `speed_kph=0&brake_pct=80` → HARD_BRAKE(60 km/h → 0, 16.7 m/s²); 0 km/h 60초 → STOPPED; `speed_kph=30` → RESUMED.
 
 ### Virtual Console (차량 상태 조작, docs/09 §1)
 

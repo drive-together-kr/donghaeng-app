@@ -1,11 +1,12 @@
 package app.donghaeng.event
 
+import app.donghaeng.protocol.EnergyKind
 import org.springframework.stereotype.Component
 
 /**
  * 그룹 이벤트의 한국어 음성 문구 (docs/06 §4 템플릿). 차량 앱은 이 문구를 Android TTS 로 그대로 읽는다.
  *
- * T14 는 그룹 수명주기 이벤트(합류·나가기·종료)와 동승자 메시지만 다룬다. 차량 이벤트(저잔량·급제동 등)는 T26 에서 채운다.
+ * T14: 그룹 수명주기 이벤트(합류·나가기·종료)와 동승자 메시지. T26: 차량 이벤트(저잔량·급제동·도착·정차/재출발·에어백·비상등).
  * 닉네임 조사는 [Josa] 로 고른다. 닉네임·메시지 본문은 호출자가 이미 정리(trim·길이 제한)한 값이다.
  */
 @Component
@@ -31,6 +32,33 @@ class SpeechComposer {
         REASON_LEADER_ENDED -> "방장이 그룹을 종료했어요."
         else -> "그룹이 종료됐어요."
     }
+
+    // ---------------------------------------------------------------- 차량 이벤트 (T26)
+
+    /** `{nickname} 연료가 {pct}% 남았어요.` / EV: `{nickname} 배터리가 {pct}% 남았어요.` */
+    fun lowEnergy(nickname: String, kind: EnergyKind, pct: Int): String =
+        if (kind == EnergyKind.EV) "$nickname 배터리가 $pct% 남았어요." else "$nickname 연료가 $pct% 남았어요."
+
+    /** `앞쪽 {nickname}이 급제동했어요. 주의하세요.` — 선두보다 뒤 차량에 읽힐 문구(누가 읽을지는 차량 쪽 음성 안내가 정한다) */
+    fun hardBrake(nickname: String): String = "앞쪽 ${nickname}${Josa.iGa(nickname)} 급제동했어요. 주의하세요."
+
+    /** `{nickname}이 {name}에 도착했어요.` */
+    fun waypointArrived(nickname: String, name: String): String = "${nickname}${Josa.iGa(nickname)} ${name}에 도착했어요."
+
+    /** `{nickname}이 먼저 도착했어요.` */
+    fun destinationArrived(nickname: String): String = "${nickname}${Josa.iGa(nickname)} 먼저 도착했어요."
+
+    /** `{nickname}이 잠시 멈췄어요.` */
+    fun stopped(nickname: String): String = "${nickname}${Josa.iGa(nickname)} 잠시 멈췄어요."
+
+    /** `{nickname}이 다시 출발했어요.` */
+    fun resumed(nickname: String): String = "${nickname}${Josa.iGa(nickname)} 다시 출발했어요."
+
+    /** `{nickname} 에어백이 터졌어요. 확인해 주세요.` */
+    fun airbagDeployed(nickname: String): String = "$nickname 에어백이 터졌어요. 확인해 주세요."
+
+    /** `{nickname}이 비상등을 켰어요.` */
+    fun hazardOn(nickname: String): String = "${nickname}${Josa.iGa(nickname)} 비상등을 켰어요."
 
     companion object {
         /** `GROUP_ENDED.reason` 값 (protocol `GroupEnded.reason` 과 같은 문자열) */

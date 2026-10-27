@@ -5,6 +5,7 @@ import app.donghaeng.car.adapter.vehicle.VehicleAdapter
 import app.donghaeng.car.core.common.TokenStore
 import app.donghaeng.car.core.common.TokenStoreState
 import app.donghaeng.car.core.network.mqtt.MqttGateway
+import app.donghaeng.car.domain.event.VehicleEventEngine
 import app.donghaeng.car.domain.location.LocationFeed
 import app.donghaeng.car.domain.location.MyFixSource
 import app.donghaeng.car.domain.navi.NaviEventMonitor
@@ -13,6 +14,7 @@ import app.donghaeng.car.domain.telemetry.TelemetryCollector
 import app.donghaeng.car.domain.vehicle.VehicleSignals
 import app.donghaeng.car.service.DriveSessionController
 import app.donghaeng.protocol.MessageTypes
+import kotlinx.serialization.json.JsonObject
 import app.donghaeng.protocol.Telemetry
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.Module
@@ -53,6 +55,26 @@ object SignalsModule {
     @Provides
     @Singleton
     fun provideMyFixSource(feed: LocationFeed): MyFixSource = feed
+
+    /** T26: 활성 그룹 동안 1Hz 판정 → `dh/v1/vehicle/{vid}/event` QoS 1 */
+    @Provides
+    @Singleton
+    fun provideVehicleEventEngine(
+        sessionManager: MqttSessionManager,
+        tokenStore: TokenStore,
+        mqtt: MqttGateway,
+        locationFeed: LocationFeed,
+        vehicleSignals: VehicleSignals,
+        naviMonitor: NaviEventMonitor,
+    ): VehicleEventEngine = VehicleEventEngine(
+        session = sessionManager.session,
+        vehicleId = { (tokenStore.state.value as? TokenStoreState.Present)?.credentials?.vehicleId },
+        latestFix = { locationFeed.fixes.replayCache.firstOrNull() },
+        fallbackSpeedKph = { locationFeed.speedKph.value },
+        vehicle = vehicleSignals.state,
+        naviEvents = naviMonitor.events,
+        publish = { topic, type, payload -> mqtt.publish(topic, type, payload, JsonObject.serializer(), qos = 1) },
+    )
 
     @Provides
     @Singleton

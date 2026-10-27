@@ -6,7 +6,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import app.donghaeng.car.feature.creategroup.CreateGroupRoute
-import app.donghaeng.car.feature.events.EventsScreen
+import app.donghaeng.car.feature.events.EventsRoute
 import app.donghaeng.car.feature.groupdrive.GroupDriveRoute
 import app.donghaeng.car.feature.home.HomeRoute
 import app.donghaeng.car.feature.pairing.PairingRoute
@@ -57,9 +57,10 @@ fun DhNavHost(navController: NavHostController = rememberNavController()) {
             GroupDriveRoute(
                 onBack = { navController.popBackStack(DhRoutes.HOME, inclusive = false) },
                 onOpenInvite = { navController.navigate(DhRoutes.CREATE_GROUP) },
+                onOpenEvents = { navController.navigate(DhRoutes.EVENTS) },
             )
         }
-        composable(DhRoutes.EVENTS) { EventsScreen() }
+        composable(DhRoutes.EVENTS) { EventsRoute(onBack = { navController.popBackStack() }) }
         composable(DhRoutes.PRESETS) { PresetsScreen() }
         composable(DhRoutes.SETTINGS) {
             SettingsRoute(

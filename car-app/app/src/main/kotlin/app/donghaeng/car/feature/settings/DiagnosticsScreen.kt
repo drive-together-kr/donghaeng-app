@@ -97,6 +97,7 @@ fun DiagnosticsScreen(
             LocationCard(state, onLocationAction)
             VehicleSignalCard(state, onRestartVehicleSignals)
             TelemetryCard(state)
+            EventEngineCard(state)
             BuildCard(state)
         }
     }
@@ -287,6 +288,24 @@ private fun NaviCard(state: DiagnosticsUiState, onNaviAction: (NaviDebugAction) 
                 OutlinedButton(onClick = { onNaviAction(NaviDebugAction.SHOW_NAVIGATION) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_navi_action_show)) }
             }
             LabelRow(stringResource(R.string.diag_navi_last_action), state.naviActionResult ?: "-")
+        }
+    }
+}
+
+/** T26 — 차량 이벤트 판정기·발행 상태. Virtual Console 로 SoC 12, 속도 60→0+브레이크, 60초 정차 등을 넣으면 여기 수가 늘어야 한다 */
+@Composable
+private fun EventEngineCard(state: DiagnosticsUiState) {
+    Card {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(stringResource(R.string.diag_section_events), style = MaterialTheme.typography.titleMedium)
+            HorizontalDivider()
+            val e = state.events
+            LabelRow(stringResource(R.string.diag_tm_state), if (!e.running) "중지" else if (e.active) "판정 중 (샘플 ${e.samples})" else "대기 (활성 그룹 없음)")
+            LabelRow(stringResource(R.string.diag_ev_counts), if (e.detectedCounts.isEmpty()) "-" else e.detectedCounts.entries.joinToString("   ") { c -> "${c.key} ${c.value}" })
+            LabelRow(stringResource(R.string.diag_ev_published), "${e.publishedCount} / 실패 ${e.failedCount}")
+            val age = e.lastEventTs?.let { ts -> "${(System.currentTimeMillis() - ts) / 1000}s 전  " } ?: ""
+            LabelRow(stringResource(R.string.diag_ev_last), e.lastEvent?.let { s -> age + s } ?: "-")
+            LabelRow(stringResource(R.string.diag_ev_detector), "에너지 경고 ${e.energyAlertPct?.let { p -> "$p%" } ?: "-"}   정차 ${e.stoppedForS?.let { s -> "${s}s" } ?: "-"}")
         }
     }
 }

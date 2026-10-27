@@ -70,10 +70,11 @@ import kotlin.math.roundToInt
 fun GroupDriveRoute(
     onBack: () -> Unit,
     onOpenInvite: () -> Unit,
+    onOpenEvents: () -> Unit = {},
     viewModel: GroupDriveViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    GroupDriveScreen(state = state, onBack = onBack, onOpenInvite = onOpenInvite, onEndOrLeave = { viewModel.endOrLeave() }, onClearError = viewModel::clearError)
+    GroupDriveScreen(state = state, onBack = onBack, onOpenInvite = onOpenInvite, onEndOrLeave = { viewModel.endOrLeave() }, onClearError = viewModel::clearError, onOpenEvents = onOpenEvents)
 }
 
 /**
@@ -87,6 +88,7 @@ fun GroupDriveScreen(
     onOpenInvite: () -> Unit,
     onEndOrLeave: () -> Unit,
     onClearError: () -> Unit,
+    onOpenEvents: () -> Unit = {},
 ) {
     var confirmLeave by remember { mutableStateOf(false) }
     Scaffold { innerPadding ->
@@ -108,7 +110,7 @@ fun GroupDriveScreen(
                     }
                 }
                 if (state.session != null) {
-                    EventsStrip(state)
+                    EventsStrip(state, onOpenEvents)
                     ActionBar(state, onOpenInvite, onLeaveClick = { confirmLeave = true })
                 }
             }
@@ -261,11 +263,14 @@ private fun MapPane(state: GroupDriveUiState, modifier: Modifier) {
 }
 
 @Composable
-private fun EventsStrip(state: GroupDriveUiState) {
-    if (state.events.isEmpty()) return
+private fun EventsStrip(state: GroupDriveUiState, onOpenEvents: () -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(stringResource(R.string.group_recent_events), style = MaterialTheme.typography.titleMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.group_recent_events), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = onOpenEvents) { Text(stringResource(R.string.drive_btn_events)) }
+            }
+            if (state.events.isEmpty()) Text(stringResource(R.string.events_empty_short), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             state.events.take(3).forEach { e ->
                 val color = when (e.severity) {
                     Severity.ALERT -> MaterialTheme.colorScheme.error
