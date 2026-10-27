@@ -24,6 +24,8 @@ import app.donghaeng.car.adapter.voice.VoiceAdapter
 import app.donghaeng.car.adapter.voice.VoiceAdapterStatus
 import app.donghaeng.car.domain.event.EventEngineState
 import app.donghaeng.car.domain.voice.VoiceAnnouncer
+import app.donghaeng.car.domain.routesync.RouteSyncEngine
+import app.donghaeng.car.domain.routesync.RouteSyncState
 import app.donghaeng.car.domain.voice.VoiceAnnouncerState
 import app.donghaeng.car.domain.event.VehicleEventEngine
 import app.donghaeng.car.domain.location.LocationFeed
@@ -83,7 +85,12 @@ data class DiagnosticsUiState(
     /** T27 음성 안내 */
     val voice: VoiceAnnouncerState = VoiceAnnouncerState(),
     val tts: VoiceAdapterStatus = VoiceAdapterStatus(),
+    /** T28 경로 동기화 */
+    val routeSync: RouteSyncState = RouteSyncState(),
 )
+
+/** 진단 화면의 경로 동기화 확인용 동작(T28) */
+enum class RouteSyncDebugAction { PUBLISH_TEST, ACCEPT, DECLINE, TOGGLE_AUTO }
 
 /** 진단 화면의 음성 확인용 동작(T27) */
 enum class VoiceDebugAction { SPEAK_TEST, TOGGLE }
@@ -96,7 +103,7 @@ enum class LocationDebugAction { REQUEST_PERMISSION, RESTART }
 
 private data class SessionSide(val session: GroupSession?, val lastCommand: LastCommand?, val groupState: GroupState?, val groupStateAt: Long?)
 
-private data class SideState(val mqtt: MqttStatus, val navi: NaviMonitorState, val naviAction: String?, val location: LocationFeedState, val vehicle: VehicleSignalState, val telemetry: TelemetryState, val serviceRunning: Boolean, val events: EventEngineState = EventEngineState(), val voice: VoiceAnnouncerState = VoiceAnnouncerState(), val tts: VoiceAdapterStatus = VoiceAdapterStatus())
+private data class SideState(val mqtt: MqttStatus, val navi: NaviMonitorState, val naviAction: String?, val location: LocationFeedState, val vehicle: VehicleSignalState, val telemetry: TelemetryState, val serviceRunning: Boolean, val events: EventEngineState = EventEngineState(), val voice: VoiceAnnouncerState = VoiceAnnouncerState(), val tts: VoiceAdapterStatus = VoiceAdapterStatus(), val routeSync: RouteSyncState = RouteSyncState())
 
 /** 진단 화면 — capability 표(T11) + SDK 점검 + 빌드 정보. 확인용 화면이라 사용자 입력이 없다. */
 @HiltViewModel
@@ -115,6 +122,7 @@ class DiagnosticsViewModel @Inject constructor(
     eventEngine: VehicleEventEngine,
     private val voiceAnnouncer: VoiceAnnouncer,
     voiceAdapter: VoiceAdapter,
+    private val routeSync: RouteSyncEngine,
 ) : ViewModel() {
 
     private val naviActionResult = MutableStateFlow<String?>(null)
@@ -123,7 +131,7 @@ class DiagnosticsViewModel @Inject constructor(
         viewModelScope.launch { tokenStore.load() }
     }
 
-    val uiState: StateFlow<DiagnosticsUiState> = combine(reporter.report, sdkProbe.report, tokenStore.state, combine(combine(mqtt.status, naviMonitor.state, naviActionResult, voiceAnnouncer.state, voiceAdapter.status) { m, n, a, vo, tt -> SideState(m, n, a, LocationFeedState(), VehicleSignalState(), TelemetryState(), false, EventEngineState(), vo, tt) }, combine(locationFeed.state, vehicleSignals.state, telemetryCollector.state, driveSessionController.serviceRunning, eventEngine.state) { l, v, t, r, ev -> SideState(MqttStatus(), NaviMonitorState(), null, l, v, t, r, ev) }) { head, side -> side.copy(mqtt = head.mqtt, navi = head.navi, naviAction = head.naviAction, voice = head.voice, tts = head.tts) }, combine(sessionManager.session, sessionManager.lastCommand, sessionManager.groupState, sessionManager.groupStateAt) { s, c, g, t -> SessionSide(s, c, g, t) }) { report, probe, tokens, side, sess ->
+    val uiState: StateFlow<DiagnosticsUiState> = combine(reporter.report, sdkProbe.report, tokenStore.state, combine(combine(mqtt.status, naviMonitor.state, naviActionResult, voiceAnnouncer.state, voiceAdapter.status) { m, n, a, vo, tt -> SideState(m, n, a, LocationFeedState(), VehicleSignalState(), TelemetryState(), false, EventEngineState(), vo, tt) }, combine(locationFeed.state, vehicleSignals.state, telemetryCollector.state, driveSessionController.serviceRunning, eventEngine.state) { l, v, t, r, ev -> SideState(MqttStatus(), NaviMonitorState(), null, l, v, t, r, ev) }, routeSync.state) { head, side, rs -> side.copy(mqtt = head.mqtt, navi = head.navi, naviAction = head.naviAction, voice = head.voice, tts = head.tts, routeSync = rs) }, combine(sessionManager.session, sessionManager.lastCommand, sessionManager.groupState, sessionManager.groupStateAt) { s, c, g, t -> SessionSide(s, c, g, t) }) { report, probe, tokens, side, sess ->
         DiagnosticsUiState(
             report = report,
             probe = probe,
@@ -142,6 +150,7 @@ class DiagnosticsViewModel @Inject constructor(
             events = side.events,
             voice = side.voice,
             tts = side.tts,
+            routeSync = side.routeSync,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DiagnosticsUiState(report = reporter.report.value, probe = sdkProbe.report.value))
 
@@ -180,6 +189,15 @@ class DiagnosticsViewModel @Inject constructor(
     }
 
     fun restartVehicleSignals() = vehicleSignals.restart()
+
+    fun onRouteSyncAction(action: RouteSyncDebugAction) {
+        when (action) {
+            RouteSyncDebugAction.PUBLISH_TEST -> routeSync.publishTestRouteChange(RouteSyncEngine.DEMO_WAYPOINT)
+            RouteSyncDebugAction.ACCEPT -> viewModelScope.launch { routeSync.accept() }
+            RouteSyncDebugAction.DECLINE -> routeSync.decline()
+            RouteSyncDebugAction.TOGGLE_AUTO -> routeSync.setAutoFollow(!routeSync.state.value.autoFollow)
+        }
+    }
 
     fun onVoiceAction(action: VoiceDebugAction) {
         when (action) {

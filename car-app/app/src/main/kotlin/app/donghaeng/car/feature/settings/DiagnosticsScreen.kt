@@ -60,6 +60,7 @@ fun DiagnosticsRoute(
         },
         onRestartVehicleSignals = viewModel::restartVehicleSignals,
         onVoiceAction = viewModel::onVoiceAction,
+        onRouteSyncAction = viewModel::onRouteSyncAction,
     )
 }
 
@@ -75,6 +76,7 @@ fun DiagnosticsScreen(
     onLocationAction: (LocationDebugAction) -> Unit = {},
     onRestartVehicleSignals: () -> Unit = {},
     onVoiceAction: (VoiceDebugAction) -> Unit = {},
+    onRouteSyncAction: (RouteSyncDebugAction) -> Unit = {},
 ) {
     Scaffold { innerPadding ->
         Column(
@@ -101,6 +103,7 @@ fun DiagnosticsScreen(
             TelemetryCard(state)
             EventEngineCard(state)
             VoiceCard(state, onVoiceAction)
+            RouteSyncCard(state, onRouteSyncAction)
             BuildCard(state)
         }
     }
@@ -291,6 +294,30 @@ private fun NaviCard(state: DiagnosticsUiState, onNaviAction: (NaviDebugAction) 
                 OutlinedButton(onClick = { onNaviAction(NaviDebugAction.SHOW_NAVIGATION) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_navi_action_show)) }
             }
             LabelRow(stringResource(R.string.diag_navi_last_action), state.naviActionResult ?: "-")
+        }
+    }
+}
+
+/** T28 — 경로 동기화: 선두차는 ROUTE_CHANGED 발행 수, 멤버는 대기 제안·수락/거절 수. '경로 변경 테스트 발행'(선두차)·제안 수락/거절·자동 따라가기 */
+@Composable
+private fun RouteSyncCard(state: DiagnosticsUiState, onAction: (RouteSyncDebugAction) -> Unit) {
+    Card {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(stringResource(R.string.diag_section_routesync), style = MaterialTheme.typography.titleMedium)
+            HorizontalDivider()
+            val r = state.routeSync
+            val role = when (state.groupSession?.isLeader) { true -> "선두차"; false -> "멤버"; null -> "그룹 없음" }
+            LabelRow(stringResource(R.string.diag_rs_role), role + "   자동 따라가기 " + (if (r.autoFollow) "켜짐" else "꺼짐") + (if (r.running) "" else "  (중지)"))
+            val sentAge = r.lastRouteChangedAtMs?.let { ts -> "${(System.currentTimeMillis() - ts) / 1000}s 전  " } ?: ""
+            LabelRow(stringResource(R.string.diag_rs_sent), "${r.routeChangedSent}건" + (r.lastRouteChangedSummary?.let { s -> "   $sentAge$s" } ?: ""))
+            LabelRow(stringResource(R.string.diag_rs_pending), r.pending?.let { p -> "${(p.waypoints.map { w -> w.name } + p.destination.name).joinToString(" → ")}  (${((p.expiresAtMs - System.currentTimeMillis()) / 1000).coerceAtLeast(0)}s 뒤 자동 거절)" } ?: "-")
+            LabelRow(stringResource(R.string.diag_rs_acks), "수락 ${r.accepted} / 거절 ${r.declined} / 자동 거절 ${r.autoDeclined}" + (r.lastResult?.let { s -> "   $s" } ?: ""))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = { onAction(RouteSyncDebugAction.PUBLISH_TEST) }, enabled = state.groupSession?.isLeader == true, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_rs_action_publish)) }
+                OutlinedButton(onClick = { onAction(RouteSyncDebugAction.ACCEPT) }, enabled = r.pending != null, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.drive_proposal_accept)) }
+                OutlinedButton(onClick = { onAction(RouteSyncDebugAction.DECLINE) }, enabled = r.pending != null, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.drive_proposal_decline)) }
+                OutlinedButton(onClick = { onAction(RouteSyncDebugAction.TOGGLE_AUTO) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_rs_action_auto)) }
+            }
         }
     }
 }

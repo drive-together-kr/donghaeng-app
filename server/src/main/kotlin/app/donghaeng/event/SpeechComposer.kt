@@ -57,6 +57,11 @@ class SpeechComposer {
     /** `{nickname} 에어백이 터졌어요. 확인해 주세요.` */
     fun airbagDeployed(nickname: String): String = "$nickname 에어백이 터졌어요. 확인해 주세요."
 
+    /** `선두차가 {name}을 경유지로 추가했어요. 따라갈까요?` / 경유지 없이 목적지만 바뀌면 `선두차가 목적지를 {dest}로 바꿨어요. 따라갈까요?` (T28) */
+    fun routeFollowProposal(waypointName: String?, destinationName: String): String =
+        if (!waypointName.isNullOrBlank()) "선두차가 ${waypointName}${Josa.eulReul(waypointName)} 경유지로 추가했어요. 따라갈까요?"
+        else "선두차가 목적지를 ${destinationName}${Josa.euroRo(destinationName)} 바꿨어요. 따라갈까요?"
+
     /** `{nickname}이 비상등을 켰어요.` */
     fun hazardOn(nickname: String): String = "${nickname}${Josa.iGa(nickname)} 비상등을 켰어요."
 

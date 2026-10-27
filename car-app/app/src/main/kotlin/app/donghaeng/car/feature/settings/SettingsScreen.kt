@@ -38,7 +38,7 @@ fun SettingsRoute(
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    SettingsScreen(state = state, onBack = onBack, onDisconnect = viewModel::disconnect, onOpenDiagnostics = onOpenDiagnostics, onVoiceEnabled = viewModel::setVoiceEnabled)
+    SettingsScreen(state = state, onBack = onBack, onDisconnect = viewModel::disconnect, onOpenDiagnostics = onOpenDiagnostics, onVoiceEnabled = viewModel::setVoiceEnabled, onAutoFollow = viewModel::setAutoFollow)
 }
 
 /** 설정 화면 — 연결 상태·연결 해제(T12), 진단 진입(T11). 닉네임은 폰 쪽(`PATCH /me/vehicles`)에서 바꾼다. */
@@ -49,6 +49,7 @@ fun SettingsScreen(
     onDisconnect: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onVoiceEnabled: (Boolean) -> Unit = {},
+    onAutoFollow: (Boolean) -> Unit = {},
 ) {
     Scaffold { innerPadding ->
         Column(
@@ -117,6 +118,13 @@ fun SettingsScreen(
                             Text(stringResource(R.string.settings_voice_placeholder), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         androidx.compose.material3.Switch(checked = state.voiceEnabled, onCheckedChange = onVoiceEnabled)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(stringResource(R.string.settings_autofollow_switch), style = MaterialTheme.typography.titleMedium)
+                            Text(stringResource(R.string.settings_autofollow_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        androidx.compose.material3.Switch(checked = state.autoFollow, onCheckedChange = onAutoFollow)
                     }
                 }
             }

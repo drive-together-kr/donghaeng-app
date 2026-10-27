@@ -74,7 +74,7 @@ fun GroupDriveRoute(
     viewModel: GroupDriveViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    GroupDriveScreen(state = state, onBack = onBack, onOpenInvite = onOpenInvite, onEndOrLeave = { viewModel.endOrLeave() }, onClearError = viewModel::clearError, onOpenEvents = onOpenEvents)
+    GroupDriveScreen(state = state, onBack = onBack, onOpenInvite = onOpenInvite, onEndOrLeave = { viewModel.endOrLeave() }, onClearError = viewModel::clearError, onOpenEvents = onOpenEvents, onAcceptProposal = viewModel::acceptProposal, onDeclineProposal = viewModel::declineProposal)
 }
 
 /**
@@ -89,6 +89,8 @@ fun GroupDriveScreen(
     onEndOrLeave: () -> Unit,
     onClearError: () -> Unit,
     onOpenEvents: () -> Unit = {},
+    onAcceptProposal: () -> Unit = {},
+    onDeclineProposal: () -> Unit = {},
 ) {
     var confirmLeave by remember { mutableStateOf(false) }
     Scaffold { innerPadding ->
@@ -110,6 +112,7 @@ fun GroupDriveScreen(
                     }
                 }
                 if (state.session != null) {
+                    state.proposal?.let { ProposalCard(state, it, onAcceptProposal, onDeclineProposal) }
                     EventsStrip(state, onOpenEvents)
                     ActionBar(state, onOpenInvite, onLeaveClick = { confirmLeave = true })
                 }
@@ -258,6 +261,25 @@ private fun MapPane(state: GroupDriveUiState, modifier: Modifier) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp),
             )
+        }
+    }
+}
+
+/** T28 — 선두 경로 제안: 따라가기/아니요. 주행 중에는 버튼을 막고 30초 뒤 자동 거절(남은 초 표시) */
+@Composable
+private fun ProposalCard(state: GroupDriveUiState, p: app.donghaeng.car.domain.routesync.RouteProposal, onAccept: () -> Unit, onDecline: () -> Unit) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(stringResource(R.string.drive_proposal_title), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            Text(p.speech, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            val route = (p.waypoints.map { it.name } + p.destination.name).joinToString(" → ")
+            Text(route, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = onAccept, enabled = !state.isDriving, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.drive_proposal_accept)) }
+                OutlinedButton(onClick = onDecline, enabled = !state.isDriving, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.drive_proposal_decline)) }
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.drive_proposal_countdown, state.proposalRemainingS ?: 0), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            }
         }
     }
 }

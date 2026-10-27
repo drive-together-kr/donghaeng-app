@@ -13,6 +13,7 @@ import app.donghaeng.protocol.GroupEvent
 import app.donghaeng.protocol.GroupJoined
 import app.donghaeng.protocol.GroupState
 import app.donghaeng.protocol.MessageTypes
+import app.donghaeng.protocol.RouteFollowProposal
 import app.donghaeng.protocol.Topics
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -33,6 +34,9 @@ import javax.inject.Singleton
 
 /** 진단 화면용 — 마지막으로 받은 cmd 요약(민감 정보 없음) */
 data class LastCommand(val type: String, val groupIdMasked: String?, val atMs: Long)
+
+/** 수신 시각이 붙은 경로 따라가기 제안 (T28) */
+data class ReceivedProposal(val cmd: RouteFollowProposal, val receivedAtMs: Long)
 
 /** 봉투 ts(서버 발행 시각)·수신 시각이 붙은 그룹 이벤트 */
 data class ReceivedGroupEvent(val event: GroupEvent, val envelopeTsMs: Long, val receivedAtMs: Long)
@@ -67,6 +71,10 @@ class MqttSessionManager @Inject constructor(
 
     /** 현재 접속에 쓰는 내 vehicleId (페어링 전 null) */
     val myVehicleId: String? get() = vehicleId
+
+    /** cmd `ROUTE_FOLLOW_PROPOSAL` (T28 RouteSyncEngine 이 구독) */
+    private val _proposals = MutableSharedFlow<ReceivedProposal>(extraBufferCapacity = 16, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    val proposals: SharedFlow<ReceivedProposal> = _proposals.asSharedFlow()
 
     private val _groupState = MutableStateFlow<GroupState?>(null)
     val groupState: StateFlow<GroupState?> = _groupState.asStateFlow()
@@ -188,9 +196,18 @@ class MqttSessionManager @Inject constructor(
                 DhLog.w("TOKEN_REVOKED → clearing credentials")
                 tokenStore.clear()
             }
-            CmdType.ROUTE_FOLLOW_PROPOSAL, CmdType.REST_STOP_PROPOSAL -> {
+            CmdType.ROUTE_FOLLOW_PROPOSAL -> {
                 note(type, null)
-                DhLog.i("cmd ${type.name} received (handled from T28/T50)")
+                val cmd = runCatching { DhJson.decodeData<RouteFollowProposal>(message.envelope).data }.getOrElse {
+                    DhLog.w("ROUTE_FOLLOW_PROPOSAL decode failed cause=${it.javaClass.simpleName}")
+                    return
+                }
+                DhLog.i("cmd ROUTE_FOLLOW_PROPOSAL proposal=${TextMasking.maskVehicleId(cmd.proposalId)} waypoints=${cmd.waypoints.size}")
+                _proposals.emit(ReceivedProposal(cmd, message.receivedAtMs))
+            }
+            CmdType.REST_STOP_PROPOSAL -> {
+                note(type, null)
+                DhLog.i("cmd REST_STOP_PROPOSAL received (handled from T50)")
             }
         }
     }

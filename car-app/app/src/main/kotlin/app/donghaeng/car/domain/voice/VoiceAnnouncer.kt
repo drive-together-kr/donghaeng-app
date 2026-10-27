@@ -101,6 +101,24 @@ class VoiceAnnouncer(
         _state.update { it.copy(running = false) }
     }
 
+    /** 그룹 이벤트가 아닌 문장(경로 제안 cmd 등)을 같은 큐·우선순위로 읽는다. 꺼져 있으면 생략 */
+    fun announce(text: String, priority: Priority, type: String) {
+        if (!_state.value.enabled) {
+            _state.update { it.copy(skippedDisabled = it.skippedDisabled + 1) }
+            return
+        }
+        scope.launch {
+            if (priority == Priority.CRITICAL) { mutex.withLock { queue.clear() }; say(text, priority, type); return@launch }
+            val fake = ReceivedGroupEvent(app.donghaeng.protocol.GroupEvent(eventId = "local-${clock()}", type = type, sourceVehicleId = null, severity = Severity.INFO, speech = text, payload = kotlinx.serialization.json.JsonObject(emptyMap())), envelopeTsMs = clock(), receivedAtMs = clock())
+            mutex.withLock {
+                queue += Item(fake, priority, text, clock())
+                queue.sortWith(compareByDescending<Item> { it.priority.ordinal }.thenBy { it.enqueuedAt })
+                _state.update { it.copy(queued = queue.size) }
+            }
+            signal.trySend(Unit)
+        }
+    }
+
     /** 진단 화면 "테스트 발화" */
     fun speakTest(text: String = TEST_SENTENCE) {
         scope.launch { say(text, Priority.LOW, "TEST") }

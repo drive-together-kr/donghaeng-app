@@ -96,7 +96,12 @@ class GroupDriveViewModelTest {
     @After
     fun tearDown() = Dispatchers.resetMain()
 
-    private fun viewModel() = GroupDriveViewModel(manager, GroupRepository(api, sessions, manager), tokens, gateway, fixes, AlwaysParkedDrivingStateMonitor())
+    private fun routeSync() = app.donghaeng.car.domain.routesync.RouteSyncEngine(
+        session = sessions.session, proposals = manager.proposals, naviEvents = kotlinx.coroutines.flow.emptyFlow(), navi = app.donghaeng.car.adapter.navi.FakeNaviAdapter(),
+        publishRouteChanged = { true }, publishAck = { true }, speak = { _, _ -> }, dispatcher = dispatcher,
+    )
+
+    private fun viewModel() = GroupDriveViewModel(manager, GroupRepository(api, sessions, manager), tokens, gateway, fixes, AlwaysParkedDrivingStateMonitor(), routeSync())
         .also { it.configureForTest(tickMs = 1_000, clock = { now }) }
 
     private fun member(vid: String, nick: String, status: MemberStatus, online: Boolean = true, lat: Double? = 36.35, lon: Double? = 127.38, speed: Float? = 80f, dist: Int? = 500) = MemberState(

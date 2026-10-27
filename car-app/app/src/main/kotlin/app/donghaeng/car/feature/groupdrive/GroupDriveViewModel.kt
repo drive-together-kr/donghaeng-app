@@ -12,6 +12,8 @@ import app.donghaeng.car.core.network.mqtt.MqttState
 import app.donghaeng.car.domain.group.GroupRepository
 import app.donghaeng.car.domain.location.MyFixSource
 import app.donghaeng.car.domain.model.Fix
+import app.donghaeng.car.domain.routesync.RouteProposal
+import app.donghaeng.car.domain.routesync.RouteSyncEngine
 import app.donghaeng.car.domain.session.GroupSession
 import app.donghaeng.car.domain.session.MqttSessionManager
 import app.donghaeng.protocol.GroupEvent
@@ -78,8 +80,12 @@ data class GroupDriveUiState(
     val busy: Boolean = false,
     val error: String? = null,
     val nowMs: Long = 0L,
+    /** T28 대기 중인 선두 경로 제안 */
+    val proposal: RouteProposal? = null,
+    val autoFollow: Boolean = false,
 ) {
     val hasSnapshot: Boolean get() = members.isNotEmpty()
+    val proposalRemainingS: Long? get() = proposal?.let { ((it.expiresAtMs - nowMs) / 1_000).coerceAtLeast(0) }
 }
 
 /**
@@ -94,6 +100,7 @@ class GroupDriveViewModel @Inject constructor(
     mqtt: MqttGateway,
     fixes: MyFixSource,
     driving: DrivingStateMonitor,
+    private val routeSync: RouteSyncEngine,
 ) : ViewModel() {
 
     private var tickMs: Long = 1_000L
@@ -119,15 +126,15 @@ class GroupDriveViewModel @Inject constructor(
 
     private data class Core(val session: GroupSession?, val state: GroupState?, val stateAt: Long?, val myVehicleId: String?)
     private data class Side(val mqtt: MqttState, val fix: Fix?, val driving: Boolean, val events: List<EventUi>, val now: Long)
+    private data class Extra(val busy: Boolean, val error: String?, val proposal: RouteProposal?, val autoFollow: Boolean)
 
     val uiState: StateFlow<GroupDriveUiState> = combine(
         combine(sessionManager.session, sessionManager.groupState, sessionManager.groupStateAt, tokenStore.state) { s, g, t, tok ->
             Core(s, g, t, (tok as? TokenStoreState.Present)?.credentials?.vehicleId)
         },
         combine(mqtt.status, fixes.fixes.map<Fix, Fix?> { it }.onStart { emit(null) }, driving.isDriving(), events, ticker) { m, f, d, e, n -> Side(m.state, f, d, e, n) },
-        busy,
-        error,
-    ) { core, side, isBusy, err ->
+        combine(busy, error, routeSync.state) { b, err, rs -> Extra(b, err, rs.pending, rs.autoFollow) },
+    ) { core, side, extra ->
         val members = core.state?.members?.map { it.toUi(core.state.leaderVehicleId, core.myVehicleId) }.orEmpty()
         GroupDriveUiState(
             session = core.session,
@@ -145,9 +152,11 @@ class GroupDriveViewModel @Inject constructor(
             myLat = side.fix?.lat,
             myLon = side.fix?.lon,
             myHeading = side.fix?.heading,
-            busy = isBusy,
-            error = err,
+            busy = extra.busy,
+            error = extra.error,
             nowMs = side.now,
+            proposal = extra.proposal,
+            autoFollow = extra.autoFollow,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), GroupDriveUiState())
 
@@ -172,6 +181,10 @@ class GroupDriveViewModel @Inject constructor(
     fun clearError() {
         error.value = null
     }
+
+    fun acceptProposal() { viewModelScope.launch { routeSync.accept() } }
+
+    fun declineProposal() = routeSync.decline()
 
     /** 테스트용: 틱 주기·시각 교체 */
     fun configureForTest(tickMs: Long, clock: () -> Long) {

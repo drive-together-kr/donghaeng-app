@@ -13,6 +13,12 @@ import app.donghaeng.car.domain.session.MqttSessionManager
 import app.donghaeng.car.domain.telemetry.TelemetryCollector
 import app.donghaeng.car.domain.vehicle.VehicleSignals
 import app.donghaeng.car.domain.voice.VoiceAnnouncer
+import app.donghaeng.car.domain.routesync.RouteSyncEngine
+import app.donghaeng.car.adapter.navi.NaviAdapter
+import app.donghaeng.protocol.Ack
+import app.donghaeng.protocol.RouteChanged
+import app.donghaeng.protocol.Topics
+import app.donghaeng.protocol.VehicleEventType
 import app.donghaeng.car.adapter.voice.VoiceAdapter
 import app.donghaeng.car.service.DriveSessionController
 import app.donghaeng.protocol.MessageTypes
@@ -57,6 +63,29 @@ object SignalsModule {
     @Provides
     @Singleton
     fun provideMyFixSource(feed: LocationFeed): MyFixSource = feed
+
+    /** T28: 선두 ROUTE_CHANGED 발행 / 멤버 ROUTE_FOLLOW_PROPOSAL 수락·거절 → ACK */
+    @Provides
+    @Singleton
+    fun provideRouteSyncEngine(
+        sessionManager: MqttSessionManager,
+        tokenStore: TokenStore,
+        mqtt: MqttGateway,
+        navi: NaviAdapter,
+        naviMonitor: NaviEventMonitor,
+        voice: VoiceAnnouncer,
+    ): RouteSyncEngine {
+        fun vid() = (tokenStore.state.value as? TokenStoreState.Present)?.credentials?.vehicleId
+        return RouteSyncEngine(
+            session = sessionManager.session,
+            proposals = sessionManager.proposals,
+            naviEvents = naviMonitor.events,
+            navi = navi,
+            publishRouteChanged = { change -> vid()?.let { mqtt.publish(Topics.vehicleEvent(it), VehicleEventType.ROUTE_CHANGED.name, change, RouteChanged.serializer(), qos = 1) } ?: false },
+            publishAck = { ack -> vid()?.let { mqtt.publish(Topics.vehicleAck(it), MessageTypes.ACK, ack, Ack.serializer(), qos = 1) } ?: false },
+            speak = { text, priority -> voice.announce(text, priority, "ROUTE_FOLLOW_PROPOSAL") },
+        )
+    }
 
     /** T27: 그룹 이벤트 → 음성 큐(우선순위·신선도 5s·내 이벤트 생략) */
     @Provides

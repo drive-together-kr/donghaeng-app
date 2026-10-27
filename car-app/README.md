@@ -82,6 +82,7 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 | `feature.pairing` | `PairingViewModel`(상태 기계) + `PairingScreen`(ZXing QR·`KQ7-4MZ` 코드·남은 시간·오류/재시도), `PairingFormat`, `QrCodes` | T12 |
 | `feature.settings` | `SettingsScreen`(연결 상태·**연결 해제**·진단 진입), `DiagnosticsScreen`(capability 표 · SDK 점검 · 빌드 정보 · 차량 ID 마스킹) | T11/T12 |
 | `feature.groupdrive` | `GroupDriveViewModel`(STATE 스냅샷·이벤트·내 위치·연결 → `GroupDriveUiState`) · `GroupDriveScreen`(가로/세로 반응형, 멤버 리스트·이벤트 스트립·초대 QR/나가기·종료) · `GroupMapCanvas` + `GroupMapProjection`(Canvas 경량 지도) | T25 |
+| `domain.routesync` | `RouteSyncEngine`(선두: 내비 목적지/경유지 변경 → ROUTE_CHANGED 발행 · 멤버: ROUTE_FOLLOW_PROPOSAL → 음성·제안 카드 → 수락 시 내비 재요청 + ACK, 30초 자동 거절, 자동 따라가기) | T28 |
 | `domain.voice` | `VoiceAnnouncer`(그룹 이벤트 → 음성 큐: 신선도 5s·내 차 생략·우선순위·중복 10s·큐 대기 30s) | T27 |
 | `adapter.voice` | `VoiceAdapter` + `AndroidTtsVoiceAdapter`(오디오 포커스·선행 묵음 200 ms·완료 콜백·엔진 없으면 로그 폴백, `status`) | T04/T27 |
 | `domain.event` | `EventDetector`(저잔량·급제동·정차/재출발·에어백·도착 판정, 순수 로직) + `VehicleEventEngine`(활성 그룹 동안 1Hz 판정 → `…/event` QoS 1, 진단 상태) | T26 |
@@ -222,6 +223,11 @@ mqtt subscribed topic=dh/v1/group/grp_…**/state  /  …/event
 - 앱 시작 시 `TTS 준비 완료 (… ko-KR)` 또는 `TTS 초기화 실패 status=-1 → 로그 폴백 (엔진 없음?)`. Pleos AVD 에는 TTS 엔진이 없어 폴백 모드다(정책 로그로 검증). 그룹 이벤트가 오면 `voice: speak PASSENGER_MESSAGE priority=NORMAL len=32` / `voice: skip own LOW_ENERGY` / `voice: skip stale …` / `voice: skip duplicate …`.
 - 설정 → **음성 안내** 스위치(끄면 큐를 비우고 재생 중지). 진단 → **음성 안내 (T27)** 카드: TTS 엔진 상태, 큐·읽음/생략 수(오래됨·내 차·중복·꺼짐·문구 없음), TTS 호출 수, 마지막 문장(종류·길이만), **테스트 발화**/**음성 끄기** 버튼.
 - 시연 트리거: 동승자 메시지 `POST /v1/groups/{gid}/messages`(그룹 소유 계정 토큰) → 그룹 전원에게 읽힘(출처 무관). 다른 차의 급제동·저잔량은 해당 차가 아닌 차들에서만 읽힌다. 스크립트 `t27_voice_check.py`.
+
+### T28 — 선두 경로 동기화 (`adb logcat -s DongHaeng | grep routesync`)
+- 선두차: 내비 목적지·경유지가 바뀌면 `routesync: ROUTE_CHANGED published=true …`. AVD 는 내비 콜백이 없으므로 진단 → **경로 동기화 (T28)** 카드의 **경로 변경 테스트 발행**(그룹 목적지 + 덕평휴게소)으로 만든다.
+- 멤버: `cmd ROUTE_FOLLOW_PROPOSAL proposal=prp_…` → `routesync: proposal … waypoints=1` → 음성(`voice: speak ROUTE_FOLLOW_PROPOSAL`) + 그룹 주행 화면 제안 카드 → **따라가기**(`routesync: accepted … navi=true ack=true`, `FakeNavi requestRouteWithWaypoints …`) 또는 30초 뒤 `routesync: declined auto=true`. 설정 → **선두 경로 자동 따라가기** 스위치.
+- 서버 로그: `route proposal created proposalId=… targets=N sent=N`, `route ack proposalId=… accepted=…`. 스크립트 `t28_routesync_check.py`(EMQX trace cmd/ack/event).
 
 ### Virtual Console (차량 상태 조작, docs/09 §1)
 
