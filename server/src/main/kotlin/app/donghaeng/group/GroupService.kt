@@ -32,6 +32,7 @@ import app.donghaeng.protocol.rest.GroupJoinRequest
 import app.donghaeng.protocol.rest.GroupJoinResponse
 import app.donghaeng.protocol.rest.GroupLeaveRequest
 import app.donghaeng.protocol.rest.InviteDto
+import app.donghaeng.protocol.rest.InvitePreviewResponse
 import app.donghaeng.protocol.rest.LeaderRequest
 import app.donghaeng.protocol.rest.MemberDto
 import app.donghaeng.protocol.rest.MyGroupDto
@@ -79,7 +80,7 @@ class GroupService(
         if (name.isEmpty() || name.length > MAX_NAME_LENGTH) throw GroupErrors.validation("name: 1~${MAX_NAME_LENGTH}자여야 해요")
         if (req.maxMembers !in MIN_MEMBERS..MAX_MEMBERS) throw GroupErrors.validation("maxMembers: ${MIN_MEMBERS}~${MAX_MEMBERS} 사이여야 해요")
         val destination = validDestination(req.destination)
-        val vehicle = requireActiveVehicle(caller.vehicleId)
+        val vehicle = requireActiveVehicle(caller)
         val now = clock.instant()
 
         members.lockVehicle(vehicle.vehicleId)
@@ -109,25 +110,47 @@ class GroupService(
         return issueInvite(group, now)
     }
 
+    /** `GET /j/{token}` (JSON) — 합류 전 미리보기. 없음·형식 오류·만료·사용 횟수 초과·그룹 종료는 모두 410 */
+    @Transactional(readOnly = true)
+    fun previewInvite(rawToken: String): InvitePreviewResponse {
+        val token = InviteTokens.normalize(rawToken) ?: throw GroupErrors.inviteExpired()
+        val invite = invites.findByHash(InviteTokens.hash(token)) ?: throw GroupErrors.inviteExpired()
+        val now = clock.instant()
+        val group = groups.findById(invite.groupId) ?: throw GroupErrors.inviteExpired()
+        if (!group.active || invite.expired(now) || invite.exhausted) throw GroupErrors.inviteExpired()
+        val current = members.listActive(group.groupId)
+        val leader = identity.vehicle(group.leaderVehicleId)
+        return InvitePreviewResponse(
+            name = group.name,
+            leaderVehicleId = group.leaderVehicleId,
+            leaderNickname = leader?.nickname ?: group.leaderVehicleId,
+            destination = checkNotNull(group.destination) { "그룹에 목적지가 없어요" },
+            memberCount = current.size,
+            maxMembers = group.maxMembers,
+            expiresAt = invite.expiresAt.toEpochMilli(),
+        )
+    }
+
     // ---------------------------------------------------------------- §2.2 합류 (사용자 JWT)
 
     @Transactional
     fun join(caller: Caller.User, req: GroupJoinRequest): GroupJoinResponse {
+        // 1) 합류할 내 차 (vehicleId 생략 시 대표 차량) — docs/03 §2.2 검사 순서: 차량(404) → 토큰(410)
+        val vehicle = resolveJoinVehicle(caller.userId, req.vehicleId)
         val token = InviteTokens.normalize(req.inviteToken) ?: throw GroupErrors.inviteExpired()
         val tokenHash = InviteTokens.hash(token)
-        val now = clock.instant()
-
-        // 1) 합류할 내 차 (vehicleId 생략 시 대표 차량) — 잠금 전에 결정한다
-        val vehicle = resolveJoinVehicle(caller.userId, req.vehicleId)
         members.lockVehicle(vehicle.vehicleId)
 
         // 2) 초대를 잠금 없이 읽어 그룹을 알아낸 뒤, 그룹 행(이전 그룹 포함, ID 순) → 초대 행 순서로 잠근다
         val peek = invites.findByHash(tokenHash) ?: throw GroupErrors.inviteExpired()
-        val previous = members.findActiveMembershipOf(vehicle.vehicleId)
-        if (previous != null && previous.groupId == peek.groupId) throw GroupErrors.alreadyMember()
-        val locked = lockGroups(listOfNotNull(peek.groupId, previous?.groupId))
+        val previousPeek = members.findActiveMembershipOf(vehicle.vehicleId)
+        if (previousPeek != null && previousPeek.groupId == peek.groupId) throw GroupErrors.alreadyMember()
+        val locked = lockGroups(listOfNotNull(peek.groupId, previousPeek?.groupId))
         val group = locked[peek.groupId] ?: throw GroupErrors.inviteExpired()
         val invite = invites.findByHashForUpdate(tokenHash) ?: throw GroupErrors.inviteExpired()
+        // 잠금 뒤 다시 읽는다: 그 사이 이전 그룹에서 역할이 바뀌었을 수 있다(예: 방장 승계). 차량 잠금을 쥐고 있어 그룹 자체는 바뀌지 않는다
+        val previous = previousPeek?.let { members.findActive(it.groupId, vehicle.vehicleId) }
+        val now = clock.instant()
         if (!group.active || invite.expired(now)) throw GroupErrors.inviteExpired()
 
         // 3) 정원(409 가 사용 횟수 초과 410 보다 먼저 — 사용자에게 더 유용한 이유) → 이전 그룹에서 자동 이탈 → 합류
@@ -173,6 +196,7 @@ class GroupService(
 
     @Transactional(readOnly = true)
     fun detail(caller: Caller, groupId: String): GroupDetailResponse {
+        if (caller is Caller.Vehicle) requireActiveVehicle(caller)
         val group = groups.findById(groupId) ?: throw GroupErrors.groupNotFound()
         val current = members.listActive(groupId)
         requireViewer(caller, current)
@@ -218,7 +242,7 @@ class GroupService(
     fun leave(caller: Caller, groupId: String, req: GroupLeaveRequest?) {
         val now = clock.instant()
         val leaving: List<VehicleInfo> = when (caller) {
-            is Caller.Vehicle -> listOf(requireActiveVehicle(caller.vehicleId))
+            is Caller.Vehicle -> listOf(requireActiveVehicle(caller))
             is Caller.User -> {
                 val mine = identity.activeVehiclesOf(caller.userId)
                 val requested = req?.vehicleId?.trim()?.takeIf { it.isNotEmpty() }
@@ -273,7 +297,7 @@ class GroupService(
     @Transactional
     fun postMessage(caller: Caller.User, groupId: String, req: PassengerMessageRequest): GroupEvent {
         val text = normalizeMessage(req.text)
-        val group = groups.findById(groupId) ?: throw GroupErrors.groupNotFound()
+        val group = groups.findByIdForUpdate(groupId) ?: throw GroupErrors.groupNotFound()
         val current = members.listActive(groupId)
         val mine = identity.activeVehiclesOf(caller.userId).filter { v -> current.any { it.vehicleId == v.vehicleId } }
         if (mine.isEmpty()) throw GroupErrors.groupNotFound() // 멤버가 아니면 그룹 존재도 숨긴다
@@ -291,6 +315,33 @@ class GroupService(
         // 본문·닉네임은 로그에 남기지 않는다 (CLAUDE.md 규칙 8)
         log.info("passenger message groupId={} fromVehicleId={} length={}", groupId, sender.vehicleId, text.length)
         return event
+    }
+
+    // ---------------------------------------------------------------- identity 연동
+
+    /**
+     * 페어링 해제·소유권 이전된 차량을 활성 그룹에서 뺀다 ([VehicleLifecycleListener]). 방장이면 승계, 마지막이면 종료.
+     * identity 의 트랜잭션 안에서 불리므로 별도 트랜잭션을 열지 않는다(REQUIRED 전파). 그룹이 없으면 null
+     */
+    @Transactional
+    fun evictVehicle(vehicleId: String, reason: String): String? {
+        members.lockVehicle(vehicleId)
+        val membership = members.findActiveMembershipOf(vehicleId) ?: return null
+        val group = groups.findByIdForUpdate(membership.groupId) ?: return null
+        if (!group.active) return null
+        val member = members.findActive(group.groupId, vehicleId) ?: return null
+        val info = identity.vehicle(vehicleId)
+        val vehicle = VehicleInfo(
+            vehicleId = vehicleId,
+            ownerId = info?.ownerId ?: membership.joinedBy.orEmpty(),
+            nickname = info?.nickname ?: vehicleId,
+            brand = info?.brand,
+            model = info?.model,
+            isPrimary = false,
+            active = false,
+        )
+        removeMember(group, member, vehicle, clock.instant(), reason)
+        return group.groupId
     }
 
     // ---------------------------------------------------------------- 내부
@@ -314,10 +365,14 @@ class GroupService(
         return text
     }
 
-    /** 차량 토큰의 차량이 아직 연결(페어링)된 상태인지 — 해제됐으면 403 */
-    private fun requireActiveVehicle(vehicleId: String): VehicleInfo {
-        val vehicle = identity.vehicle(vehicleId) ?: throw GroupErrors.vehicleRevoked()
+    /**
+     * 차량 토큰의 차량이 아직 연결(페어링)된 상태이고, 토큰의 `owner` 클레임이 현재 소유자와 같은지 — 아니면 403.
+     * (다른 계정이 같은 차를 다시 페어링하면 이전 소유자 때 발급된 24h 토큰은 서명은 유효해도 여기서 막힌다)
+     */
+    private fun requireActiveVehicle(caller: Caller.Vehicle): VehicleInfo {
+        val vehicle = identity.vehicle(caller.vehicleId) ?: throw GroupErrors.vehicleRevoked()
         if (!vehicle.active) throw GroupErrors.vehicleRevoked()
+        if (caller.ownerId != null && caller.ownerId != vehicle.ownerId) throw GroupErrors.vehicleRevoked()
         return vehicle
     }
 
@@ -343,7 +398,7 @@ class GroupService(
     private fun requireLeader(caller: Caller, group: GroupRecord) {
         when (caller) {
             is Caller.Vehicle -> {
-                requireActiveVehicle(caller.vehicleId)
+                requireActiveVehicle(caller)
                 if (caller.vehicleId != group.leaderVehicleId) throw GroupErrors.leaderOnly()
             }
             is Caller.User -> {
@@ -502,6 +557,8 @@ class GroupService(
         /** `MEMBER_LEFT.payload.reason` */
         const val LEFT_REASON_LEFT = "LEFT"
         const val LEFT_REASON_SWITCHED = "SWITCHED_GROUP"
+        const val LEFT_REASON_UNPAIRED = "UNPAIRED"
+        const val LEFT_REASON_TRANSFERRED = "OWNER_CHANGED"
 
         private val CONTROL_CHARS = Regex("[\\p{Cntrl}\\p{Cf}]")
         private val WHITESPACE = Regex("\\s+")

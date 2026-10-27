@@ -59,7 +59,7 @@ import kotlin.coroutines.resumeWithException
  * - 오류 봉투 `{ "error": { "code", "message", "traceId" } }` → [DongHaengException.Api] (code, 서버 문구)
  * - 봉투가 없는 오류 → `Api("HTTP_<status>", …)`
  * - [IOException](연결 실패·타임아웃) → `Api("NETWORK", "서버에 연결할 수 없어요")`
- * - 그룹 경로의 404 `NOT_FOUND`(라우트 자체가 없음 — 서버 그룹 기능은 T14) → `Api("NOT_FOUND", "그룹 기능은 아직 서버에 없어요 (T14)")`
+ * - 404 `NOT_FOUND` 도 그대로 전달한다 — 서버는 멤버가 아닌 그룹·나간 그룹을 404 로 숨긴다(docs/03 §2.3). 호스트는 `code` 로 분기한다
  *
  * [observeGroup] 은 `GET /v1/groups/{id}` 를 [pollIntervalMs](기본 15초)마다 폴링한다(수집 취소 시 종료). 푸시 전환은 이후 작업.
  * 토큰·닉네임·코드는 로그에 남기지 않는다(CLAUDE.md 규칙 8).
@@ -231,10 +231,6 @@ internal class HttpDongHaengApi(
         val code = envelope?.error?.code?.takeIf { it.isNotBlank() } ?: "HTTP_${response.code}"
         val message = envelope?.error?.message?.takeIf { it.isNotBlank() } ?: "서버 오류가 났어요 (HTTP ${response.code})"
         Log.w(TAG, "http error status=${response.code} code=$code path=$path trace=${envelope?.error?.traceId}")
-        // 그룹 라우트가 아직 서버에 없음(T14) — 서버의 일반 404 는 code=NOT_FOUND 로 온다
-        if (response.code == 404 && code == ErrorCodes.NOT_FOUND && path.startsWith(ApiPaths.GROUPS)) {
-            return DongHaengException.Api(ErrorCodes.NOT_FOUND, "그룹 기능은 아직 서버에 없어요 (T14)")
-        }
         return DongHaengException.Api(code, message)
     }
 

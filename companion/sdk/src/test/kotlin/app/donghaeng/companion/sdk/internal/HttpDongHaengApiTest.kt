@@ -309,15 +309,15 @@ class HttpDongHaengApiTest {
     }
 
     @Test
-    fun `그룹 라우트가 아직 없으면(404 NOT_FOUND) T14 안내 문구`() = runTest {
+    fun `그룹 경로의 404 NOT_FOUND 는 서버 문구 그대로 전달된다 (멤버가 아닌 그룹은 서버가 404 로 숨긴다)`() = runTest {
         server.enqueue(json(200, tokenJson(jwt())))
-        server.enqueue(error(404, "NOT_FOUND", "요청한 리소스를 찾을 수 없어요."))
+        server.enqueue(error(404, "NOT_FOUND", "그룹을 찾을 수 없어요."))
 
         val error = runCatching { api().joinGroup("inv_abc", null) }.exceptionOrNull()
 
         assertTrue("$error", error is DongHaengException.Api)
         assertEquals("NOT_FOUND", (error as DongHaengException.Api).code)
-        assertEquals("그룹 기능은 아직 서버에 없어요 (T14)", error.message)
+        assertEquals("그룹을 찾을 수 없어요.", error.message)
     }
 
     @Test

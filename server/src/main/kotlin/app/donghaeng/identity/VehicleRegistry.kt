@@ -4,6 +4,7 @@ import app.donghaeng.common.id.Ids
 import app.donghaeng.identity.repo.VehicleRecord
 import app.donghaeng.identity.repo.VehicleRepository
 import org.slf4j.LoggerFactory
+import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Component
 
 /**
@@ -19,6 +20,7 @@ import org.springframework.stereotype.Component
 class VehicleRegistry(
     private val vehicles: VehicleRepository,
     private val refreshTokens: RefreshTokenService,
+    private val events: ApplicationEventPublisher,
 ) {
     fun register(carInfoIdHash: String, ownerId: String, nickname: String, brand: String?, model: String?): VehicleRecord {
         val existing = vehicles.findByCarInfoIdHashForUpdate(carInfoIdHash)
@@ -31,6 +33,10 @@ class VehicleRegistry(
         val revoked = refreshTokens.revokeAll(existing.vehicleId)
         val isPrimary = !vehicles.hasActivePrimary(ownerId, excludingVehicleId = existing.vehicleId)
         val transferred = vehicles.transfer(existing.vehicleId, ownerId, nickname, brand, model, isPrimary)
+        // 다른 계정으로 넘어가면 이전 소유자의 그룹에서는 빠져야 한다 (group 모듈이 같은 트랜잭션에서 처리)
+        if (existing.ownerId != ownerId) {
+            events.publishEvent(VehicleUnpaired(existing.vehicleId, existing.ownerId, VehicleUnpaired.Reason.TRANSFERRED))
+        }
         log.info(
             "vehicle re-paired vehicleId={} ownerChanged={} wasRevoked={} primary={} refreshTokensRevoked={}",
             existing.vehicleId, existing.ownerId != ownerId, !existing.active, isPrimary, revoked,

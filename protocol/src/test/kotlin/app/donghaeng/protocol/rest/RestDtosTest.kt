@@ -45,6 +45,7 @@ class RestDtosTest {
         roundTrip(GroupCreateRequest("추석 귀성길", Place(35.1595454, 126.8526012, "광주 할머니댁")))
         roundTrip(GroupCreateResponse("grp_01H", "veh_01H", InviteDto("inv_x", "http://10.0.2.2:8080/j/inv_x", 1793000000000), GroupTopics("dh/v1/group/grp_01H/state", "dh/v1/group/grp_01H/event")))
         roundTrip(GroupJoinRequest("inv_x"))
+        roundTrip(InvitePreviewResponse("추석 귀성길", "veh_01H", "아빠 차", Place(35.1, 126.8, "광주"), 2, 10, 1793000000000))
         roundTrip(GroupJoinResponse("grp_01H", "추석 귀성길", listOf(MemberDto("veh_01H", "아빠 차", "#2E7DFF", "LEADER", 1793000000000, "KIA", "EV9"))))
         roundTrip(GroupDetailResponse("grp_01H", "추석 귀성길", "veh_01H", "ACTIVE"))
         roundTrip(MyGroupDto("grp_01H", "추석 귀성길", "veh_01H", "ACTIVE", Place(35.1, 126.8, "광주"), 2, listOf("veh_02H"), 1793000000000))

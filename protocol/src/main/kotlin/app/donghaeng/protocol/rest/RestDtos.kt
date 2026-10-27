@@ -227,6 +227,22 @@ data class GroupCreateResponse(
     val mqttTopics: GroupTopics,
 )
 
+/**
+ * 초대 미리보기 — `GET {DH_PUBLIC_BASE_URL}/j/{token}` 을 `Accept: application/json` 으로 읽으면(인증 없음, 토큰 자체가 비밀) 돌려준다.
+ * 호스트 앱이 QR 을 찍은 뒤 "함께 가기" 전에 그룹명·방장·목적지·인원을 보여 주는 용도. 사용 횟수에 포함되지 않는다. 만료·없음은 410 `INVITE_EXPIRED`.
+ */
+@Serializable
+data class InvitePreviewResponse(
+    val name: String,
+    val leaderVehicleId: String,
+    val leaderNickname: String,
+    val destination: Place,
+    val memberCount: Int,
+    val maxMembers: Int,
+    /** epoch ms */
+    val expiresAt: Long,
+)
+
 /** `POST /groups/join` (사용자 JWT). vehicleId 생략 시 대표 차량 */
 @Serializable
 data class GroupJoinRequest(

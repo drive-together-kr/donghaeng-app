@@ -38,7 +38,7 @@ companion/
 | `data class GroupMember(vehicleId, nickname, color, role: MemberRole)` / `enum MemberRole { LEADER, MEMBER }` | |
 | `data class GroupJoinResult(groupId, name, members)` / `data class PairResult(vehicleId, nickname)` | |
 | `data class GroupSnapshot(groupId, members: List<protocol.MemberState>, events: List<protocol.GroupEvent>)` | 상태·이벤트는 `app.donghaeng.protocol` 타입을 그대로 사용 |
-| `sealed class DongHaengException` — `NotInitialized`, `Unauthorized`, `InvalidQr(reason)`, `OtherServer(host)`, `Api(code, message)` | API 호출이 던지는 모든 오류(`init` 의 설정 오류만 `IllegalArgumentException`). `Api.code` 는 서버 오류 봉투의 `error.code`(`CODE_EXPIRED`, `INVITE_EXPIRED` …)이고 `message` 는 서버가 준 사용자용 문구. 모듈이 만드는 코드: `NETWORK`(연결 실패·타임아웃 10초, "서버에 연결할 수 없어요"), `HTTP_<status>`(봉투 없는 오류), `BAD_RESPONSE`(본문 해석 실패), 그룹 경로의 404 `NOT_FOUND` → "그룹 기능은 아직 서버에 없어요 (T14)" |
+| `sealed class DongHaengException` — `NotInitialized`, `Unauthorized`, `InvalidQr(reason)`, `OtherServer(host)`, `Api(code, message)` | API 호출이 던지는 모든 오류(`init` 의 설정 오류만 `IllegalArgumentException`). `Api.code` 는 서버 오류 봉투의 `error.code`(`CODE_EXPIRED`, `INVITE_EXPIRED` …)이고 `message` 는 서버가 준 사용자용 문구. 모듈이 만드는 코드: `NETWORK`(연결 실패·타임아웃 10초, "서버에 연결할 수 없어요"), `HTTP_<status>`(봉투 없는 오류), `BAD_RESPONSE`(본문 해석 실패). 서버 404 `NOT_FOUND`(멤버가 아닌 그룹·나간 그룹, docs/03 §2.3)는 서버 문구 그대로 전달된다 |
 
 ### QR 판별 (docs/07 §5)
 QR 은 서버가 `{DH_PUBLIC_BASE_URL}` + 경로로 만든다. 모듈은 **호스트가 아니라 경로**로 종류를 가르고, 호스트는 `publicBaseUrl` 과 같은지만 본다(포트까지 비교).
@@ -111,7 +111,7 @@ QR 은 서버가 `{DH_PUBLIC_BASE_URL}` + 경로로 만든다. 모듈은 **호�
 | 로그인(dev) | 이메일·닉네임(미리 채워진 dev 계정) → 호스트의 `DevAuthClient` 가 `POST /v1/auth/login {provider:"dev", email, displayName}` 호출 → 토큰 쌍을 `DemoSession` 메모리에 보관 → `DongHaeng.init(…, AccountProvider.DEV, DevTokenProvider { accessToken })`. 입력 검증·네트워크·서버 오류는 화면에 한국어로 표시(서버에 `/v1/auth/login` 이 없으면 "아직 없어요(T10)" 안내). 모듈은 첫 호출 때 이 토큰을 `/v1/auth/exchange` 로 교환한다 |
 | 홈 | 제목 "동행 — 공식 앱 흉내 (데모용)", 내 차 목록(`listMyVehicles` = 서버 `GET /v1/me/vehicles`), 상단 **새로고침** 버튼(화면 복귀 시에도 자동 재조회), 비어 있으면 "계정에 연결된 차가 없어요. 차 화면의 QR을 스캔해 등록하세요", 큰 **QR 스캔** 버튼, 참여 중인 그룹 |
 | 스캔 | CameraX `PreviewView` + ML Kit 바코드(번들). 첫 QR 값 → 경로 보고 "그룹 합류 / 차량 등록" 확인 → `joinGroup`/`pairVehicle`. 카메라 없는 에뮬레이터용 **"QR 문자열 붙여넣기"** 입력칸(차 화면 QR 문자열 — logcat 의 `verifyUri`/초대 `url` — 을 그대로)과 예시 버튼. 차량 등록 성공 시 `PairResult`(별명·차량 ID)를 보여 주고 홈으로 돌아가며 목록이 다시 읽힌다 |
-| 그룹 | `observeGroup`(15초 폴링) → 멤버(닉네임·상태·ETA·잔량)와 최근 이벤트 5개, 하단 입력창 → `sendPassengerMessage`. **서버 그룹 API 는 T14** — 그전까지 합류·조회는 `Api(NOT_FOUND, "그룹 기능은 아직 서버에 없어요 (T14)")` 문구가 그대로 보인다 |
+| 그룹 | `observeGroup`(15초 폴링) → 멤버(닉네임·상태·ETA·잔량)와 최근 이벤트 5개, 하단 입력창 → `sendPassengerMessage`. 서버 그룹 API 는 T14 에서 구현됐다(docs/03 §2) |
 
 - 서버 주소는 `BuildConfig.DH_PUBLIC_BASE_URL` — Gradle 속성 `dhPublicBaseUrl`(기본 `http://10.0.2.2:8080`). 클라우드: `-PdhPublicBaseUrl=https://<VM-IP>.sslip.io`
 - 평문 HTTP: `android:usesCleartextTraffic="${usesCleartext}"` — `dhPublicBaseUrl` 이 `http://` 일 때만 true (car-app 과 같은 규칙)

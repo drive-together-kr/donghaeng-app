@@ -129,6 +129,8 @@ refresh 토큰은 불투명 문자열(랜덤 32바이트 Base62, 30일, 서버�
 초대 토큰: `inv_` + 랜덤 32바이트 Base62(≈47자). 10분 유효, 사용 횟수 `3 × (maxMembers - 1)`(정원은 `GROUP_FULL` 이 지키고 이 한도는 나가고 다시 들어오는 여유를 둔 재생 상한). 서버엔 SHA-256 해시만 저장(docs/06 §5).
 
 ### 2.2 그룹 합류 (공식 앱의 companion 모듈이 QR 스캔 후 — `joinGroup`)
+**초대 미리보기(호스트 앱용, 인증 없음):** 그룹 QR 의 URL `{DH_PUBLIC_BASE_URL}/j/{token}` 을 `Accept: application/json` 으로 읽으면 200 `InvitePreviewResponse` `{ name, leaderVehicleId, leaderNickname, destination, memberCount, maxMembers, expiresAt }` 을 돌려준다(브라우저의 `text/html` 요청은 기존 안내 페이지). 호스트 앱이 "함께 가기" 전에 그룹명·방장·목적지·인원을 보여 주는 용도이며 사용 횟수에 포함되지 않는다. 토큰이 없음·형식 오류·만료·사용 횟수 초과·그룹 종료면 410 `INVITE_EXPIRED`. companion 모듈 공개 API 는 그대로 6개다(미리보기는 모듈을 거치지 않는 공개 URL 조회).
+
 `POST /groups/join` (사용자 JWT)
 ```json
 // req

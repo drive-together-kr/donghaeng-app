@@ -4,6 +4,7 @@ import app.donghaeng.identity.repo.VehicleRepository
 import app.donghaeng.protocol.rest.MyVehicleDto
 import app.donghaeng.protocol.rest.VehiclePatchRequest
 import org.slf4j.LoggerFactory
+import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.Clock
@@ -14,6 +15,7 @@ class MyVehicleService(
     private val directory: VehicleDirectory,
     private val vehicles: VehicleRepository,
     private val refreshTokens: RefreshTokenService,
+    private val events: ApplicationEventPublisher,
     private val clock: Clock,
 ) {
     fun list(userId: String): List<MyVehicleDto> = directory.vehiclesOf(userId)
@@ -49,6 +51,8 @@ class MyVehicleService(
         val updated = vehicles.revoke(vehicleId, userId, clock.instant())
         if (updated == 0) throw IdentityErrors.vehicleNotFound()
         val revokedTokens = refreshTokens.revokeAll(vehicleId)
+        // 같은 트랜잭션 안에서 group 모듈이 받아 활성 그룹에서 뺀다 (방장이면 승계, 마지막이면 종료)
+        events.publishEvent(VehicleUnpaired(vehicleId, userId, VehicleUnpaired.Reason.REVOKED))
         log.info("vehicle unpaired vehicleId={} refreshTokensRevoked={}", vehicleId, revokedTokens)
     }
 

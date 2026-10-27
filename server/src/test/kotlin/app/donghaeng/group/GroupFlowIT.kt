@@ -3,6 +3,9 @@ package app.donghaeng.group
 import app.donghaeng.KPostgresContainer
 import app.donghaeng.KRedisContainer
 import app.donghaeng.common.config.DhProperties
+import app.donghaeng.common.security.SecureTokens
+import app.donghaeng.protocol.GroupEnded
+import app.donghaeng.protocol.GroupJoined
 import app.donghaeng.protocol.DhJson
 import app.donghaeng.protocol.GroupEvent
 import app.donghaeng.protocol.GroupEventType
@@ -23,6 +26,7 @@ import app.donghaeng.protocol.rest.GroupJoinRequest
 import app.donghaeng.protocol.rest.GroupJoinResponse
 import app.donghaeng.protocol.rest.GroupLeaveRequest
 import app.donghaeng.protocol.rest.InviteDto
+import app.donghaeng.protocol.rest.InvitePreviewResponse
 import app.donghaeng.protocol.rest.LeaderRequest
 import app.donghaeng.protocol.rest.LoginRequest
 import app.donghaeng.protocol.rest.MyGroupDto
@@ -35,6 +39,10 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
+import org.springframework.boot.test.context.TestConfiguration
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Import
+import org.springframework.context.annotation.Primary
 import org.springframework.boot.test.web.client.TestRestTemplate
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
 import org.springframework.data.redis.core.StringRedisTemplate
@@ -48,6 +56,9 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -59,8 +70,24 @@ import kotlin.test.assertTrue
  * group 통합 테스트 (docs/03 §2 계약): 실제 PostgreSQL 16 + Redis 7 로 부팅해 HTTP 로 생성·초대·합류·조회·나가기·종료·위임·메시지를 돈다.
  * 차량은 identity 의 페어링 흐름(코드 → 승인 → 토큰)으로 만든다. Docker 가 없으면 건너뛴다.
  */
+/** T15 전까지 cmd 출구는 로그뿐이라, 테스트에서는 호출을 기록하는 구현으로 바꿔 끼운다 (커밋 뒤 호출 여부까지 확인) */
+class RecordingVehicleCommandPort : VehicleCommandPort {
+    val joined = CopyOnWriteArrayList<Pair<String, GroupJoined>>()
+    val ended = CopyOnWriteArrayList<Pair<String, GroupEnded>>()
+    override fun groupJoined(vehicleId: String, cmd: GroupJoined) { joined += vehicleId to cmd }
+    override fun groupEnded(vehicleId: String, cmd: GroupEnded) { ended += vehicleId to cmd }
+}
+
+@TestConfiguration
+class RecordingCommandConfig {
+    @Bean
+    @Primary
+    fun recordingVehicleCommandPort() = RecordingVehicleCommandPort()
+}
+
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers(disabledWithoutDocker = true)
+@Import(RecordingCommandConfig::class)
 class GroupFlowIT {
 
     companion object {
@@ -90,6 +117,9 @@ class GroupFlowIT {
     @Autowired
     lateinit var props: DhProperties
 
+    @Autowired
+    lateinit var commands: RecordingVehicleCommandPort
+
     private val json = DhJson.json
 
     @BeforeEach
@@ -102,7 +132,7 @@ class GroupFlowIT {
     // ---------------------------------------------------------------- helpers
 
     /** 사용자 + 그 사용자 소유 차량 하나 (차량 토큰 포함) */
-    private class Driver(val user: TokenResponse, val vehicle: DeviceTokenResponse) {
+    private class Driver(val user: TokenResponse, val vehicle: DeviceTokenResponse, val carInfoId: String) {
         val userToken get() = user.accessToken
         val vehicleToken get() = vehicle.vehicleAccessToken
         val vehicleId get() = vehicle.vehicle.vehicleId
@@ -140,11 +170,12 @@ class GroupFlowIT {
         return res.assertOk().decode()
     }
 
-    private fun pair(user: TokenResponse, nickname: String, brand: String? = "HYUNDAI", model: String? = "GRANDEUR"): DeviceTokenResponse {
-        val n = seq.incrementAndGet()
+    private fun newCarId() = "CAR-INFO-GROUP-IT-${seq.incrementAndGet()}"
+
+    private fun pair(user: TokenResponse, nickname: String, brand: String? = "HYUNDAI", model: String? = "GRANDEUR", carId: String = newCarId()): DeviceTokenResponse {
         val code: DeviceCodeResponse = call(
             HttpMethod.POST, ApiPaths.DEVICE_CODE,
-            json.encodeToString(DeviceCodeRequest(vehicleId = "CAR-INFO-GROUP-IT-$n", model = model, brand = brand, appVersion = "0.1.0")),
+            json.encodeToString(DeviceCodeRequest(vehicleId = carId, model = model, brand = brand, appVersion = "0.1.0")),
         ).assertOk().decode()
         call(HttpMethod.POST, ApiPaths.DEVICE_APPROVE, json.encodeToString(DeviceApproveRequest(code.userCode, nickname)), user.accessToken).assertOk()
         // 승인 뒤 첫 폴링은 바로 200 (폴링 제한 키가 아직 없다)
@@ -153,8 +184,12 @@ class GroupFlowIT {
 
     private fun driver(label: String, nickname: String, brand: String? = "HYUNDAI", model: String? = "GRANDEUR"): Driver {
         val user = login(label)
-        return Driver(user, pair(user, nickname, brand, model))
+        val carId = newCarId()
+        return Driver(user, pair(user, nickname, brand, model, carId), carId)
     }
+
+    private fun leave(groupId: String, bearer: String, vehicleId: String? = null) =
+        call(HttpMethod.POST, ApiPaths.groupLeave(groupId), vehicleId?.let { json.encodeToString(GroupLeaveRequest(it)) }, bearer)
 
     private fun create(d: Driver, name: String = "추석 귀성길", maxMembers: Int = 10, destination: Place = DEST): GroupCreateResponse =
         call(HttpMethod.POST, ApiPaths.GROUPS, json.encodeToString(GroupCreateRequest(name, destination, maxMembers)), d.vehicleToken).assertOk(201).decode()
@@ -204,6 +239,18 @@ class GroupFlowIT {
         assertEquals(1, jdbc.queryForObject("select count(*) from group_invite where group_id = ? and max_uses = 6", Long::class.javaObjectType, gid), "max_uses = 3 × (maxMembers - 1)")
         assertTrue(redisTemplate.opsForSet().isMember(membersKey(gid), a.vehicleId) == true)
         assertEquals(gid, redisTemplate.opsForValue().get(vehicleGroupKey(a.vehicleId)))
+
+        // 1b) 초대 미리보기 — QR URL 을 JSON 으로 (인증 없음). HTML 요청은 안내 페이지
+        val previewHeaders = HttpHeaders().apply { accept = listOf(MediaType.APPLICATION_JSON) }
+        val previewRes = rest.exchange(java.net.URI(created.invite.url).path, HttpMethod.GET, HttpEntity<Void>(previewHeaders), String::class.java)
+        assertEquals(200, previewRes.statusCode.value(), previewRes.body)
+        val preview: InvitePreviewResponse = previewRes.decode()
+        assertEquals(InvitePreviewResponse("추석 귀성길", a.vehicleId, "아빠 차", DEST.copy(address = "광주광역시 …"), 1, 3, created.invite.expiresAt), preview)
+        val htmlHeaders = HttpHeaders().apply { accept = listOf(MediaType.TEXT_HTML) }
+        val htmlRes = rest.exchange(java.net.URI(created.invite.url).path, HttpMethod.GET, HttpEntity<Void>(htmlHeaders), String::class.java)
+        assertEquals(200, htmlRes.statusCode.value())
+        assertTrue(htmlRes.headers.contentType!!.isCompatibleWith(MediaType.TEXT_HTML) && htmlRes.body!!.contains("그룹 합류"), htmlRes.body)
+        rest.exchange("/j/inv_" + "B".repeat(43), HttpMethod.GET, HttpEntity<Void>(previewHeaders), String::class.java).assertError(410, ErrorCodes.INVITE_EXPIRED)
 
         // 2) 합류 — 사용자 토큰만 (차량 토큰 403). vehicleId 생략 → 대표 차량
         call(HttpMethod.POST, ApiPaths.GROUPS_JOIN, json.encodeToString(GroupJoinRequest(created.invite.token)), b.vehicleToken).assertError(403, ErrorCodes.FORBIDDEN)
@@ -437,6 +484,134 @@ class GroupFlowIT {
         call(HttpMethod.DELETE, ApiPaths.meVehicle(a.vehicleId), bearer = a.userToken).assertOk(204)
         create(json.encodeToString(GroupCreateRequest("x", DEST))).assertError(403, ErrorCodes.FORBIDDEN)
         detail(ok.groupId, a.userToken).assertError(404, ErrorCodes.NOT_FOUND)
+    }
+
+    @Test
+    fun `vehicle commands - GROUP_JOINED to the joiner and GROUP_ENDED to every member, only after commit`() {
+        val a = driver("ca", "아빠 차")
+        val b = driver("cb", "엄마 차")
+        val created = create(a)
+        val before = commands.joined.size
+        join(b, created.invite.token).assertOk()
+        val joined = commands.joined.drop(before).single()
+        assertEquals(b.vehicleId, joined.first)
+        assertEquals(GroupJoined(created.groupId, "추석 귀성길", a.vehicleId, DEST.copy(address = "광주광역시 …"), created.mqttTopics), joined.second)
+        // 실패한 합류(만료)는 cmd 를 내지 않는다
+        val c = driver("cc", "삼촌 차")
+        jdbc.update("update group_invite set expires_at = now() - interval '1 minute' where group_id = ?", created.groupId)
+        join(c, created.invite.token).assertError(410, ErrorCodes.INVITE_EXPIRED)
+        assertEquals(before + 1, commands.joined.size)
+
+        val endedBefore = commands.ended.size
+        call(HttpMethod.POST, ApiPaths.groupEnd(created.groupId), bearer = a.vehicleToken).assertOk(204)
+        val ended = commands.ended.drop(endedBefore)
+        assertEquals(setOf(a.vehicleId, b.vehicleId), ended.map { it.first }.toSet())
+        assertTrue(ended.all { it.second == GroupEnded(created.groupId, "LEADER_ENDED") }, ended.toString())
+    }
+
+    @Test
+    fun `user with two cars - leave one by vehicleId, leadership passes to own second car, leave all ends the group`() {
+        val owner = login("two-cars")
+        val carA = pair(owner, "첫째 차")
+        val carB = pair(owner, "둘째 차")
+        val other = driver("tc-other", "남의 차")
+        val created: GroupCreateResponse = call(HttpMethod.POST, ApiPaths.GROUPS, json.encodeToString(GroupCreateRequest("두 대", DEST)), carA.vehicleAccessToken).assertOk(201).decode()
+        val gid = created.groupId
+        call(HttpMethod.POST, ApiPaths.GROUPS_JOIN, json.encodeToString(GroupJoinRequest(created.invite.token, carB.vehicle.vehicleId)), owner.accessToken).assertOk()
+        join(other, created.invite.token).assertOk()
+        assertEquals(3, detailOk(gid, owner.accessToken).members.size)
+
+        // 남의 차 ID·없는 ID 로는 못 뺀다 (404 NO_PAIRED_VEHICLE), 깨진 본문은 400
+        leave(gid, owner.accessToken, vehicleId = other.vehicleId).assertError(404, ErrorCodes.NO_PAIRED_VEHICLE)
+        leave(gid, owner.accessToken, vehicleId = "veh_NOPE").assertError(404, ErrorCodes.NO_PAIRED_VEHICLE)
+        call(HttpMethod.POST, ApiPaths.groupLeave(gid), "{not json", owner.accessToken).assertError(400, ErrorCodes.VALIDATION_FAILED)
+        // 비멤버 사용자의 나가기 → 404 NO_PAIRED_VEHICLE
+        leave(gid, login("tc-stranger").accessToken).assertError(404, ErrorCodes.NO_PAIRED_VEHICLE)
+
+        // 방장(첫째 차)만 빼면 둘째 차가 방장을 잇는다 (합류순: 둘째 차가 남의 차보다 먼저)
+        leave(gid, owner.accessToken, vehicleId = carA.vehicle.vehicleId).assertOk(204)
+        val afterOne = detailOk(gid, owner.accessToken)
+        assertEquals(carB.vehicle.vehicleId, afterOne.leaderVehicleId)
+        assertEquals(listOf(carB.vehicle.vehicleId to "LEADER", other.vehicleId to "MEMBER"), afterOne.members.map { it.vehicleId to it.role })
+        // 차량 토큰의 나가기는 본문의 vehicleId 를 무시하고 자기 자신을 뺀다
+        leave(gid, other.vehicleToken, vehicleId = carB.vehicle.vehicleId).assertOk(204)
+        assertEquals(listOf(carB.vehicle.vehicleId), detailOk(gid, owner.accessToken).members.map { it.vehicleId })
+        // 본문 없이 → 이 그룹의 내 차 전부 → 마지막 멤버라 종료
+        leave(gid, owner.accessToken).assertOk(204)
+        assertEquals("ENDED", groupStatus(gid))
+        assertEquals(emptyList<MyGroupDto>(), myGroups(Driver(owner, carA, "x"), active = true))
+    }
+
+    @Test
+    fun `join check order - no vehicle wins over malformed token, colors are reused, invite stored as sha256`() {
+        val noCar = login("order-nocar")
+        call(HttpMethod.POST, ApiPaths.GROUPS_JOIN, json.encodeToString(GroupJoinRequest("not-a-token")), noCar.accessToken).assertError(404, ErrorCodes.NO_PAIRED_VEHICLE)
+        call(HttpMethod.POST, ApiPaths.GROUPS_JOIN, json.encodeToString(GroupJoinRequest("")), noCar.accessToken).assertError(404, ErrorCodes.NO_PAIRED_VEHICLE)
+
+        val a = driver("col-a", "아빠 차")
+        val b = driver("col-b", "엄마 차")
+        val c = driver("col-c", "삼촌 차")
+        val d = driver("col-d", "이모 차")
+        val created = create(a)
+        join(b, created.invite.token).assertOk()
+        join(c, created.invite.token).assertOk()
+        val colors = detailOk(created.groupId, a.vehicleToken).members.associate { it.vehicleId to it.color }
+        assertEquals(MemberColors.PALETTE.take(3), listOf(colors[a.vehicleId], colors[b.vehicleId], colors[c.vehicleId]))
+        leave(created.groupId, b.vehicleToken).assertOk(204)
+        val joinedD: GroupJoinResponse = join(d, created.invite.token).assertOk().decode()
+        assertEquals(MemberColors.PALETTE[1], joinedD.members.first { it.vehicleId == d.vehicleId }.color, "freed colour is reused")
+        assertEquals(1, jdbc.queryForObject("select count(*) from group_invite where token_hash = ?", Long::class.javaObjectType, SecureTokens.sha256Hex(created.invite.token)))
+    }
+
+    @Test
+    fun `concurrent joins never exceed maxMembers`() {
+        val a = driver("cc-a", "아빠 차")
+        val created = create(a, maxMembers = 3)
+        val joiners = (1..6).map { driver("cc-$it", "차 $it") }
+        val pool = Executors.newFixedThreadPool(joiners.size)
+        try {
+            val futures = joiners.map { d -> pool.submit<Int> { join(d, created.invite.token).statusCode.value() } }
+            val statuses = futures.map { it.get(60, TimeUnit.SECONDS) }
+            assertEquals(2, statuses.count { it == 200 }, "exactly two seats: $statuses")
+            assertEquals(4, statuses.count { it == 409 }, "the rest are GROUP_FULL: $statuses")
+        } finally {
+            pool.shutdownNow()
+        }
+        assertEquals(3, detailOk(created.groupId, a.vehicleToken).members.size)
+        assertEquals(2, jdbc.queryForObject("select used_count from group_invite where group_id = ?", Int::class.javaObjectType, created.groupId))
+        assertEquals(3, redisTemplate.opsForSet().size(membersKey(created.groupId)))
+    }
+
+    @Test
+    fun `unpairing evicts the vehicle from its group, and a re-paired car rejects tokens of the previous owner`() {
+        val a = driver("up-a", "아빠 차")
+        val b = driver("up-b", "엄마 차")
+        val created = create(a)
+        val gid = created.groupId
+        join(b, created.invite.token).assertOk()
+
+        // b 가 폰에서 페어링 해제 → 그룹에서 빠진다(MEMBER_LEFT reason UNPAIRED), b 의 (아직 유효한) 차량 토큰은 403
+        call(HttpMethod.DELETE, ApiPaths.meVehicle(b.vehicleId), bearer = b.userToken).assertOk(204)
+        val afterRevoke = detailOk(gid, a.vehicleToken)
+        assertEquals(listOf(a.vehicleId), afterRevoke.members.map { it.vehicleId })
+        val left = afterRevoke.recentEvents.ofType(GroupEventType.MEMBER_LEFT).first()
+        assertEquals(b.vehicleId, left.sourceVehicleId)
+        assertEquals(GroupService.LEFT_REASON_UNPAIRED, left.payload["reason"]?.jsonPrimitive?.content)
+        detail(gid, b.vehicleToken).assertError(403, ErrorCodes.FORBIDDEN)
+        assertNull(redisTemplate.opsForValue().get(vehicleGroupKey(b.vehicleId)))
+
+        // 다른 계정 d 가 a 의 차를 다시 페어링(소유권 이전) → a 의 그룹에서 빠지고(혼자라 종료), a 의 옛 토큰(owner=a)은 403
+        val d = login("up-d")
+        val taken = pair(d, "넘겨받은 차", carId = a.carInfoId)
+        assertEquals(a.vehicleId, taken.vehicle.vehicleId, "same car → same vehicle row, new owner")
+        assertEquals("ENDED", groupStatus(gid))
+        call(HttpMethod.POST, ApiPaths.GROUPS, json.encodeToString(GroupCreateRequest("옛 토큰", DEST)), a.vehicleToken).assertError(403, ErrorCodes.FORBIDDEN)
+        detail(gid, a.vehicleToken).assertError(403, ErrorCodes.FORBIDDEN)
+        // 새 소유자의 새 차량 토큰으로는 그룹을 만들 수 있다
+        call(HttpMethod.POST, ApiPaths.GROUPS, json.encodeToString(GroupCreateRequest("새 주인", DEST)), taken.vehicleAccessToken).assertOk(201)
+        val rows = jdbc.queryForList("select type, payload::text as payload from group_event where group_id = ? order by occurred_at desc, event_id desc", gid)
+        assertEquals("GROUP_ENDED", rows[0]["type"])
+        assertEquals(GroupService.LEFT_REASON_TRANSFERRED, json.parseToJsonElement(rows[1]["payload"] as String).jsonObject["reason"]?.jsonPrimitive?.content)
     }
 
     @Test
