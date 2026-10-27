@@ -1,0 +1,75 @@
+package app.donghaeng.companion.sdk
+
+import app.donghaeng.protocol.GroupEvent
+import app.donghaeng.protocol.MemberState
+
+/**
+ * 계정에 연결된 내 차 한 대 (`GET /me/vehicles` 항목).
+ *
+ * @param vehicleId 서버가 발급한 차량 ID(`veh_...`)
+ * @param nickname 차 별명(예: "아빠 차")
+ * @param brand 제조사 코드(`HYUNDAI`, `KIA`, `GENESIS`)
+ * @param model 모델명 코드(`GRANDEUR`, `EV9` …)
+ * @param isPrimary 대표 차량 여부. [DongHaeng.joinGroup] 에 vehicleId 를 생략하면 이 차로 합류한다
+ */
+public data class MyVehicle(
+    public val vehicleId: String,
+    public val nickname: String,
+    public val brand: String,
+    public val model: String,
+    public val isPrimary: Boolean,
+)
+
+/** 그룹 안에서의 역할 */
+public enum class MemberRole {
+    /** 방장(선두차). 경로 변경·그룹 종료 권한 */
+    LEADER,
+
+    /** 일반 멤버 */
+    MEMBER,
+}
+
+/**
+ * 그룹 멤버 한 대 (docs/03 §2.4 Member 객체의 요약).
+ *
+ * @param color 화면 표시 색(`#RRGGBB`)
+ */
+public data class GroupMember(
+    public val vehicleId: String,
+    public val nickname: String,
+    public val color: String,
+    public val role: MemberRole,
+)
+
+/**
+ * [DongHaeng.joinGroup] 결과 — 합류한 그룹과 현재 멤버.
+ *
+ * @param name 그룹 이름(예: "추석 귀성길")
+ */
+public data class GroupJoinResult(
+    public val groupId: String,
+    public val name: String,
+    public val members: List<GroupMember>,
+)
+
+/**
+ * [DongHaeng.pairVehicle] 결과 — 계정에 새로 연결된 차.
+ */
+public data class PairResult(
+    public val vehicleId: String,
+    public val nickname: String,
+)
+
+/**
+ * [DongHaeng.observeGroup] 가 내보내는 그룹 스냅샷.
+ *
+ * 멤버 상태와 이벤트는 공용 스키마(`app.donghaeng.protocol`)의 타입을 그대로 쓴다 — 차량 앱·서버와 같은 정의다.
+ *
+ * @param members 각 차의 위치·속도·ETA·잔량·상태 (서버 STATE 와 동일 형태)
+ * @param events 최근 그룹 이벤트, 오래된 것부터 (합류·저잔량·동승자 메시지 등)
+ */
+public data class GroupSnapshot(
+    public val groupId: String,
+    public val members: List<MemberState>,
+    public val events: List<GroupEvent>,
+)
