@@ -7,7 +7,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import app.donghaeng.car.feature.creategroup.CreateGroupRoute
 import app.donghaeng.car.feature.events.EventsScreen
-import app.donghaeng.car.feature.groupdrive.GroupDriveScreen
+import app.donghaeng.car.feature.groupdrive.GroupDriveRoute
 import app.donghaeng.car.feature.home.HomeRoute
 import app.donghaeng.car.feature.pairing.PairingRoute
 import app.donghaeng.car.feature.permissions.LocationPermissionGate
@@ -35,6 +35,7 @@ fun DhNavHost(navController: NavHostController = rememberNavController()) {
             HomeRoute(
                 onPairPhone = { navController.navigate(DhRoutes.PAIRING) },
                 onStartGroup = { navController.navigate(DhRoutes.CREATE_GROUP) },
+                onOpenGroup = { navController.navigate(DhRoutes.GROUP_DRIVE) },
                 onOpenSettings = { navController.navigate(DhRoutes.SETTINGS) },
                 onOpenDiagnostics = { navController.navigate(DhRoutes.DIAGNOSTICS) },
             )
@@ -46,8 +47,18 @@ fun DhNavHost(navController: NavHostController = rememberNavController()) {
                 onPaired = { navController.popBackStack(DhRoutes.HOME, inclusive = false) },
             )
         }
-        composable(DhRoutes.CREATE_GROUP) { CreateGroupRoute(onBack = { navController.popBackStack() }) }
-        composable(DhRoutes.GROUP_DRIVE) { GroupDriveScreen() }
+        composable(DhRoutes.CREATE_GROUP) {
+            CreateGroupRoute(
+                onBack = { navController.popBackStack() },
+                onOpenDrive = { navController.navigate(DhRoutes.GROUP_DRIVE) { popUpTo(DhRoutes.HOME) } },
+            )
+        }
+        composable(DhRoutes.GROUP_DRIVE) {
+            GroupDriveRoute(
+                onBack = { navController.popBackStack(DhRoutes.HOME, inclusive = false) },
+                onOpenInvite = { navController.navigate(DhRoutes.CREATE_GROUP) },
+            )
+        }
         composable(DhRoutes.EVENTS) { EventsScreen() }
         composable(DhRoutes.PRESETS) { PresetsScreen() }
         composable(DhRoutes.SETTINGS) {

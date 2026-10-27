@@ -39,6 +39,7 @@ import app.donghaeng.car.ui.theme.DongHaengTheme
 fun HomeRoute(
     onPairPhone: () -> Unit,
     onStartGroup: () -> Unit,
+    onOpenGroup: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     viewModel: HomeViewModel = hiltViewModel(),
@@ -47,7 +48,7 @@ fun HomeRoute(
     HomeScreen(
         state = state,
         onPairPhone = onPairPhone,
-        onStartGroup = onStartGroup,
+        onStartGroup = { if (state.groupSession != null) onOpenGroup() else onStartGroup() },
         onOpenSettings = onOpenSettings,
         onOpenDiagnostics = onOpenDiagnostics,
     )

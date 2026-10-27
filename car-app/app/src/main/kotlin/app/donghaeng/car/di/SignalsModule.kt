@@ -6,6 +6,7 @@ import app.donghaeng.car.core.common.TokenStore
 import app.donghaeng.car.core.common.TokenStoreState
 import app.donghaeng.car.core.network.mqtt.MqttGateway
 import app.donghaeng.car.domain.location.LocationFeed
+import app.donghaeng.car.domain.location.MyFixSource
 import app.donghaeng.car.domain.navi.NaviEventMonitor
 import app.donghaeng.car.domain.session.MqttSessionManager
 import app.donghaeng.car.domain.telemetry.TelemetryCollector
@@ -48,6 +49,10 @@ object SignalsModule {
         navi = naviMonitor.state,
         publish = { topic, telemetry -> mqtt.publish(topic, MessageTypes.TELEMETRY, telemetry, Telemetry.serializer(), qos = 0) },
     )
+
+    @Provides
+    @Singleton
+    fun provideMyFixSource(feed: LocationFeed): MyFixSource = feed
 
     @Provides
     @Singleton

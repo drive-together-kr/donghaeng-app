@@ -81,7 +81,8 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 | `feature.home` | 홈: 연결 상태(`TokenStore` 구독 — 확인 중/연결 안 됨/연결됨 · 별명 + 차량 ID 마스킹), `내 폰과 연결하기`(활성), `같이 가기 시작`(T17 까지 비활성), 설정·진단 버튼, 빌드 정보·SDK 점검 카드 | T04/T12 |
 | `feature.pairing` | `PairingViewModel`(상태 기계) + `PairingScreen`(ZXing QR·`KQ7-4MZ` 코드·남은 시간·오류/재시도), `PairingFormat`, `QrCodes` | T12 |
 | `feature.settings` | `SettingsScreen`(연결 상태·**연결 해제**·진단 진입), `DiagnosticsScreen`(capability 표 · SDK 점검 · 빌드 정보 · 차량 ID 마스킹) | T11/T12 |
-| `feature.creategroup` / `groupdrive` / `events` / `presets` | 자리표시자 | T17 / T25 / T26 / T53 |
+| `feature.groupdrive` | `GroupDriveViewModel`(STATE 스냅샷·이벤트·내 위치·연결 → `GroupDriveUiState`) · `GroupDriveScreen`(가로/세로 반응형, 멤버 리스트·이벤트 스트립·초대 QR/나가기·종료) · `GroupMapCanvas` + `GroupMapProjection`(Canvas 경량 지도) | T25 |
+| `feature.events` / `presets` | 자리표시자 | T26 / T53 |
 
 규칙: Pleos SDK 타입은 `adapter.*` 밖으로 내보내지 않는다. 밖에서는 `domain.model` 타입만 쓴다.
 
@@ -202,6 +203,11 @@ mqtt subscribed topic=dh/v1/group/grp_…**/state  /  …/event
 - 포그라운드 서비스: `drive session service: start 요청 (group=…)` → `foreground type=location`(위치 권한 없으면 `dataSync`). 그룹이 끝나면 `stop 요청`.
 - 진단 화면 **텔레메트리 (T23)** 카드: 상태(발행 중/대기), 발행/실패/건너뜀 수, 마지막 발행 요약, ETA/에너지 포함 횟수, 토픽(마스킹), 서비스 실행 여부.
 - 브로커에서 확인(스크립트 `t23_telemetry_check.py`): EMQX 대시보드 API 로 로그인(`POST /api/v5/login`, admin/public) → `POST /api/v5/trace {name, type:"topic", topic:"dh/v1/vehicle/+/telemetry", start_at, end_at}` → `GET /api/v5/trace/{name}/log?bytes=…` 에 발행 페이로드가 그대로 남는다. 2026-10-27 실측: 1초 간격 seq 연속, `authorization_matched_allow … emqx_authz_http`, Virtual Console 속도 30 → `"speedKph":30.0`, SoC 23→61 → `"energy":{"socPct":61}` 2회(변화 시만), ETA 는 내비 미동작으로 없음.
+
+### T25 — 그룹 주행 화면
+- 홈 → **그룹 보기**(활성 그룹이 있을 때) → 그룹 주행 화면. 가로: 좌 멤버 리스트(별명·선두/나 태그·속도·선두까지 거리·ETA·에너지·상태·n초 전) / 우 경량 지도(선두차 중심, 북쪽 위, 거리 링, 멤버 점 + 진행 방향, 내 차 테두리, 목적지 깃발 또는 가장자리 화살표). 아래 최근 소식 3줄 + **초대 QR 보기**(방장)/**그룹 종료·나가기**(확인 대화상자). 주행 중이면 버튼 비활성.
+- 상단 연결 칩(연결됨/다시 연결 중/연결 안 됨)과 "그룹 상태 n초 전"(서버 2초 스냅샷). 스냅샷이 아직 없으면 "서버에서 그룹 상태를 기다리는 중".
+- Pleos AVD 실측(2026-10-27): 멤버 2대 — DemoCar(선두·나, 정차, 배터리 61%), DemoCarB(오프라인). 캡처 `docs/images/t25/`. 스크립트 `t25_drive_check.py`.
 
 ### Virtual Console (차량 상태 조작, docs/09 §1)
 

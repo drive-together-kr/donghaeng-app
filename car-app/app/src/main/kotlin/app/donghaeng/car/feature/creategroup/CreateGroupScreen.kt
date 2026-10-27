@@ -48,6 +48,7 @@ import app.donghaeng.protocol.rest.MemberDto
 @Composable
 fun CreateGroupRoute(
     onBack: () -> Unit,
+    onOpenDrive: () -> Unit = {},
     viewModel: CreateGroupViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -62,6 +63,7 @@ fun CreateGroupRoute(
         onReissue = viewModel::reissueInvite,
         onEndOrLeave = viewModel::endOrLeave,
         onRefresh = viewModel::refreshMembers,
+        onOpenDrive = onOpenDrive,
     )
 }
 
@@ -81,6 +83,7 @@ fun CreateGroupScreen(
     onReissue: () -> Unit,
     onEndOrLeave: () -> Unit,
     onRefresh: () -> Unit,
+    onOpenDrive: () -> Unit = {},
 ) {
     Scaffold { innerPadding ->
         Column(
@@ -109,7 +112,10 @@ fun CreateGroupScreen(
                     Text(stringResource(R.string.group_loading), style = MaterialTheme.typography.titleMedium)
                 }
                 is CreateGroupState.Form -> FormContent(state, onLoadNavi, onPickPreset, onName, onMaxMembers, onCreate)
-                is CreateGroupState.Active -> ActiveContent(state, onReissue, onEndOrLeave, onRefresh)
+                is CreateGroupState.Active -> {
+                    Button(onClick = onOpenDrive, modifier = Modifier.fillMaxWidth().heightIn(min = 60.dp)) { Text(stringResource(R.string.group_btn_open_drive)) }
+                    ActiveContent(state, onReissue, onEndOrLeave, onRefresh)
+                }
             }
         }
     }

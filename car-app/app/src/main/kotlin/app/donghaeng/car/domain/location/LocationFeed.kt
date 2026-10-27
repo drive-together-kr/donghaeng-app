@@ -29,6 +29,11 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** 내 최신 위치를 구독하는 창구 — 화면·수집기가 [LocationFeed] 대신 이 인터페이스에 의존하면 테스트에서 바꿔 끼울 수 있다 (T25) */
+interface MyFixSource {
+    val fixes: SharedFlow<Fix>
+}
+
 /** 진단용 위치 피드 상태(좌표는 마스킹 문자열만) */
 data class LocationFeedState(
     val running: Boolean = false,
@@ -59,7 +64,7 @@ data class LocationFeedState(
 class LocationFeed @Inject constructor(
     private val adapter: LocationAdapter,
     @ApplicationContext private val context: Context,
-) {
+) : MyFixSource {
     private var dispatcher: CoroutineDispatcher = Dispatchers.Default
     private var restartDelayMs: Long = RESTART_DELAY_MS
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -69,7 +74,7 @@ class LocationFeed @Inject constructor(
     private val _fixes = MutableSharedFlow<Fix>(replay = 1, extraBufferCapacity = 16)
 
     /** 최신 Fix 1개 replay. 느린 구독자가 있으면 오래된 것부터 버린다 */
-    val fixes: SharedFlow<Fix> = _fixes
+    override val fixes: SharedFlow<Fix> = _fixes
 
     private val _speedKph = MutableStateFlow<Float?>(null)
     val speedKph: StateFlow<Float?> = _speedKph
