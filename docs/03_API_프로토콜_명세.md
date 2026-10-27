@@ -197,6 +197,12 @@ refresh 토큰은 불투명 문자열(랜덤 32바이트 Base62, 30일, 서버�
 
 ACL: 차량 `{vid}`는 자신의 `telemetry/event/ack/presence`에만 publish, 자신의 `cmd`와 소속 그룹의 `state/event`만 subscribe. 서버 클라이언트만 `cmd`·`group/*` publish. 서버는 `$share/server/dh/v1/vehicle/+/#` 공유 구독.
 
+**구현(T15):**
+- 인증: EMQX JWT(JWKS) + `verify_claims {sub = "${username}"}` → MQTT username 이 곧 신원이다. 차량은 `username = clientId = veh_…`, password = 차량 JWT. 서버 자신은 `username = clientId = srv_<ULID>`, password = 자기 키로 서명한 서버 토큰(`typ = server`, 12h, 재연결 때마다 새로 발급).
+- 인가: EMQX 의 유일한 authorization 소스는 서버의 HTTP 훅 `POST /internal/mqtt/acl` `{ username, clientid, topic, action: publish|subscribe }` → `{ "result": "allow" | "deny" }`. `no_match = deny`. 판정(`mqtt/MqttAclService`): `veh_…` 는 publish 자기 `telemetry/event/ack/presence`, subscribe 자기 `cmd` + 현재 소속 그룹(Redis `veh:{vid}:group` → DB)의 `state/event`; 와일드카드·`$share`·`$SYS`·남의 토픽은 거부. `srv_…` 는 `dh/v1/` 아래 전부 + 공유 구독. 그 외 username 거부. 훅은 `X-Internal-Token`(`DH_INTERNAL_TOKEN`, 비우면 검사 안 함)으로 보호한다.
+- 서버 수신: 공유 구독 → `TopicRouter` 가 토픽의 `{vid}` 와 봉투 `vid` 가 같을 때만 종류별 핸들러(`MqttInboundHandler`)에 전달한다(불일치·형식 오류는 버리고 WARN). 서버 발행 봉투의 `vid` 는 서버 clientId(`srv_…`), `seq` 는 토픽별 단조 증가.
+- cmd `GROUP_JOINED`/`GROUP_ENDED` 는 그룹 변경이 커밋된 뒤 `dh/v1/vehicle/{vid}/cmd` 에 QoS 1 로, 그룹 이벤트는 저장 커밋 뒤 `dh/v1/group/{gid}/event` 에 QoS 1 로 발행된다(봉투 type `EVENT`).
+
 ## 5. 메시지 스키마
 
 공통 봉투(envelope):

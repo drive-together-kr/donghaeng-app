@@ -72,6 +72,18 @@ services:
       # 토큰 sub == MQTT username(vid) 바인딩. 없으면 유효 토큰 하나로 다른 vid 의 username 으로 접속해 username 기반 ACL 을 물려받을 수 있다 (docs/06 §3·§5).
       # $$ 는 compose 보간 회피. EMQX 5.8 은 VERIFY_CLAIMS__SUB 처럼 쪼갠 키를 받지 않으므로 HOCON 값을 통째로 준다.
       EMQX_AUTHENTICATION__1__VERIFY_CLAIMS: '{sub = "$${username}"}'
+      # 인가(ACL, T15) — 서버의 HTTP 훅 하나만 쓴다 (docs/03 §4, docs/06 §5). 응답 {"result":"allow"|"deny"}.
+      # 기본 파일 소스(acl.conf 의 {allow, all})를 이 배열이 대체하고, 어느 규칙에도 안 걸리면 거부(no_match = deny).
+      # X-Internal-Token 은 서버의 DH_INTERNAL_TOKEN 과 같아야 한다(비우면 서버도 검사하지 않음).
+      EMQX_AUTHORIZATION__NO_MATCH: deny
+      EMQX_AUTHORIZATION__DENY_ACTION: ignore
+      # 인가 결과 캐시 TTL — '거부'도 캐시되므로 짧게(합류 직후 그룹 토픽 구독이 최대 이 시간 지연될 수 있다). 발행(1Hz 텔레메트리)은 캐시로 훅 호출을 줄인다.
+      EMQX_AUTHORIZATION__CACHE__TTL: 10s
+      EMQX_AUTHORIZATION__SOURCES: >-
+        [{type = http, enable = true, method = post, url = "http://server:8080/internal/mqtt/acl",
+          headers {content-type = "application/json", x-internal-token = "${DH_INTERNAL_TOKEN:-}"},
+          body {username = "$${username}", clientid = "$${clientid}", topic = "$${topic}", action = "$${action}"},
+          request_timeout = "5s", connect_timeout = "5s", pool_size = 4}]
     volumes:
       - emqx-data:/opt/emqx/data
     healthcheck:
@@ -108,6 +120,8 @@ services:
       DH_JWT_PRIVATE_KEY_PEM: ${DH_JWT_PRIVATE_KEY_PEM:-}
       # CarInfo 차량 ID 해시 salt (docs/04 vehicle.car_info_id_hash). 운영에서는 반드시 바꾸고, 바꾼 뒤에는 유지한다.
       DH_CAR_ID_SALT: ${DH_CAR_ID_SALT:-dev-salt-change-me}
+      # EMQX ACL 훅 공유 비밀 (emqx 서비스의 x-internal-token 헤더와 같은 값). 비우면 검사 안 함(로컬).
+      DH_INTERNAL_TOKEN: ${DH_INTERNAL_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy

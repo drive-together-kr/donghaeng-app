@@ -123,6 +123,8 @@ class SecurityConfig(private val objectMapper: ObjectMapper) {
             "/v1/auth/refresh",
             "/v1/device/code",
             "/v1/device/token",
+            // EMQX 인증·인가 훅 — 컨테이너 네트워크 안에서만 닿고, ACL 훅은 X-Internal-Token(dh.internal-token)으로 한 번 더 막는다
+            "/internal/mqtt/acl",
             "/error",
         )
     }

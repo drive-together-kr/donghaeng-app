@@ -58,6 +58,8 @@ IDE(`cd server && ./gradlew bootRun`)에서 서버를 직접 띄울 때는 호�
   (클라이언트는 username = 차량/사용자 ID, password = JWT). 서버(T10)가 아직 없거나 떠 있지 않으면
   EMQX 로그에 JWKS 를 가져오지 못했다는 경고가 반복되는데, 브로커 자체는 정상 동작하며 서버가 뜨면 자동으로 복구된다.
   JWKS 는 `EMQX_JWKS_REFRESH_INTERVAL`(기본 30초) 주기로만 다시 가져오므로, 서버가 뜬 뒤 최대 그 시간 동안은 MQTT 접속이 `not authorized` 로 거부될 수 있다.
+- 인가(ACL, T15): authorization 소스는 서버의 HTTP 훅 `http://server:8080/internal/mqtt/acl` 하나뿐이고 `no_match = deny` 다(docs/03 §4). `.env` 의 `DH_INTERNAL_TOKEN` 을 두면 EMQX 가 `x-internal-token` 헤더로 보내고 서버가 검사한다.
+  대시보드 → Access Control → Authorization 에서 소스가 `http` 하나인지, Clients 에서 서버 클라이언트 `srv_…` 가 붙어 있는지 확인할 수 있다. 서버 재시작 직후에는 서버 클라이언트가 몇 초간 `not authorized` 로 재시도하다가 JWKS 가 갱신되면 붙는다.
 - 토큰 바인딩: `verify_claims { sub = "${username}" }` — 토큰의 `sub` 와 MQTT username(vid)이 같아야 접속을 허용한다.
   서버 자신의 MQTT 클라이언트도 username = 자기 토큰의 sub 로 접속해야 한다 (T15).
   Access Control(ACL)은 서버의 `/internal/mqtt/acl` 훅으로 판정한다 (`docs/06` §5, 이후 작업에서 연결).

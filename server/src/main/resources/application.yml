@@ -36,6 +36,10 @@ dh:
   mqtt:
     uri: ${DH_MQTT_URI:tcp://localhost:1883}
     public-uri: ${DH_MQTT_PUBLIC_URI:tcp://10.0.2.2:1883}
+    # false 면 서버가 브로커에 붙지 않는다(브로커 없는 로컬 실행·웹 테스트). cmd·그룹 이벤트 발행은 로그로만 남는다.
+    enabled: ${DH_MQTT_ENABLED:true}
+  # EMQX ACL 훅(POST /internal/mqtt/acl)의 X-Internal-Token. 비우면 검사하지 않음(로컬). 클라우드에서는 필수.
+  internal-token: ${DH_INTERNAL_TOKEN:}
   jwt:
     # RS256 개인키 (PKCS#8 PEM, 한 줄 `\n` 이스케이프 허용). 비우면 기동 시 개발용 키 생성(WARN, 재시작마다 바뀜).
     private-key-pem: ${DH_JWT_PRIVATE_KEY_PEM:}

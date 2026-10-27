@@ -47,6 +47,19 @@ class JwtIssuer(
             VEHICLE_TOKEN_TTL,
         )
 
+    /**
+     * 서버 자신의 MQTT 접속용 토큰: `sub = srv_…`, `typ = server`. EMQX 가 `sub == username` 으로 묶으므로 username 도 같은 값이어야 한다.
+     * REST 역할(ROLE_USER/ROLE_VEHICLE)은 받지 않는다.
+     */
+    fun serverToken(subject: String, now: Instant = clock.instant()): String =
+        sign(
+            JWTClaimsSet.Builder()
+                .subject(subject)
+                .claim(CLAIM_TYP, TYP_SERVER),
+            now,
+            SERVER_TOKEN_TTL,
+        )
+
     private fun sign(builder: JWTClaimsSet.Builder, now: Instant, ttl: Duration): String {
         val claims = builder
             .issuer(ISSUER)
@@ -67,7 +80,9 @@ class JwtIssuer(
         const val CLAIM_OWNER = "owner"
         const val TYP_USER = "user"
         const val TYP_VEHICLE = "vehicle"
+        const val TYP_SERVER = "server"
         val USER_TOKEN_TTL: Duration = Duration.ofHours(1)
         val VEHICLE_TOKEN_TTL: Duration = Duration.ofHours(24)
+        val SERVER_TOKEN_TTL: Duration = Duration.ofHours(12)
     }
 }

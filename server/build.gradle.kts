@@ -42,6 +42,8 @@ dependencies {
     implementation("org.flywaydb:flyway-core")
     implementation("org.flywaydb:flyway-database-postgresql")
     runtimeOnly("org.postgresql:postgresql")
+    // MQTT 클라이언트(서버 ↔ EMQX): 공유 구독·cmd 발행 (docs/06 §1)
+    implementation("com.hivemq:hivemq-mqtt-client:1.3.3")
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("org.jetbrains.kotlin:kotlin-reflect")
 

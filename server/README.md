@@ -27,7 +27,7 @@ curl localhost:8080/v1/me/vehicles -H "Authorization: Bearer <accessToken>"
 ```
 
 - `DH_JWT_PRIVATE_KEY_PEM` 이 비어 있으면 기동 때마다 개발용 RSA 키를 새로 만든다(WARN 로그). **재시작하면 발급된 토큰이 전부 무효**가 되므로 오래 쓰는 환경은 `.env` 에 키를 넣는다:
-  `openssl genpkey -algorithm RSA -pkcs8 -pkeyopt rsa_keygen_bits:2048 | awk 'BEGIN{ORS="\\n"}{print}'` (PKCS#8, 한 줄 `\n` 표기).
+  `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 | awk 'BEGIN{ORS="\\n"}{print}'` (PKCS#8, 한 줄 `\n` 표기).
 
 - `SPRING_PROFILES_ACTIVE=local` 로 `application-local.yml` 이 덧붙는다 (compose 의 server 서비스가 사용).
 - 에뮬레이터에서 접근하는 공개 주소는 `DH_PUBLIC_BASE_URL`(기본 `http://10.0.2.2:8080`)이다. QR·딥링크 URL 은 항상 이 값 + 경로(`/pair?c=…`, `/j/{token}`)로 서버가 만든다 (docs/03).
@@ -44,6 +44,8 @@ curl localhost:8080/v1/me/vehicles -H "Authorization: Bearer <accessToken>"
 | `DH_MQTT_PUBLIC_URI` | `tcp://10.0.2.2:1883` | 차량 앱에 내려 주는 브로커 공개 주소. 클라우드: `ssl://<VM-IP>.sslip.io:8883` |
 | `DH_JWT_PRIVATE_KEY_PEM` | (없음 → 개발용 키 생성) | RS256 개인키, PKCS#8 PEM(`-----BEGIN PRIVATE KEY-----`). 한 줄 `\n` 이스케이프 허용. `identity/jwt/JwtKeyProvider` |
 | `DH_CAR_ID_SALT` | `dev-salt-change-me` | CarInfo 차량 ID 해시 salt (`SHA-256(id + salt)`). 운영에서 바꾸고 이후 유지 |
+| `DH_INTERNAL_TOKEN` | (없음 → 검사 안 함) | EMQX ACL 훅 `POST /internal/mqtt/acl` 의 `X-Internal-Token`. compose 의 emqx 서비스가 같은 값을 헤더로 보낸다. 클라우드에서는 필수 |
+| `DH_MQTT_ENABLED` | `true` | `false` 면 브로커에 붙지 않는다(브로커 없는 로컬 실행). 테스트 기본값은 false(`src/test/resources/application.properties`), `MqttIT` 만 켠다 |
 | `SPRING_PROFILES_ACTIVE` | (없음) | `local` 등 |
 | `SERVER_PORT` | `8080` | HTTP 포트 |
 
@@ -76,7 +78,7 @@ curl localhost:8080/v1/me/vehicles -H "Authorization: Bearer <accessToken>"
 | `insight` | 규칙 엔진(휴게소 제안·이탈·오프라인·연속 주행) | — |
 | `poi` | 휴게소 시드·조회 | — |
 | `notify` | FCM 푸시, 음성 문구 템플릿 | — |
-| `mqtt` | 브로커 연결·재연결·토픽 라우팅 | — |
+| `mqtt` | EMQX 연결(`ServerMqttClient`, 서버 토큰 `srv_…`)·공유 구독·`TopicRouter`·cmd 발행(`MqttVehicleCommandPort`)·그룹 이벤트 팬아웃(`GroupEventMqttFanout`)·ACL 훅(`POST /internal/mqtt/acl`, `MqttAclService`) — docs/03 §4 | T15 완료 |
 | `common` | 공용 코드 (아래) | T03 |
 
 `common/` 구성: `config/DhProperties`(`dh.*` 설정), `config/HttpJsonConfig`(kotlinx 컨버터), `config/ClockConfig`, `api/ApiError`(docs/03 오류 형식 + `ApiException` + 전역 예외 처리), `id/Ids`(접두사 ULID), `security/SecurityConfig`(무상태·JWT 리소스 서버·역할 규칙·JSON 401/403), `security/SecureTokens`(불투명 토큰 난수·SHA-256 — refresh·디바이스 코드·초대 토큰 공용), `jdbc/JdbcSupport`(timestamptz ↔ Instant), `tx/afterCommit`(커밋 뒤 부수 효과 — Redis·MQTT), `web/LandingController`(`/pair`, `/j/{token}` 웹 폴백). JWKS 는 `identity/web/JwksController` 로 옮겼다.
@@ -101,6 +103,8 @@ curl localhost:8080/v1/me/vehicles -H "Authorization: Bearer <accessToken>"
 | `identity/UserCodesTest` · `CarIdHasherTest` · `SecureTokensTest` · `jwt/JwtIssuerTest` | 단위 | 사용자 코드 알파벳·정규화, CarInfo 해시 결정성, refresh 토큰 난수·SHA-256, JWT 클레임·kid·왕복 검증·PEM 로드 |
 | `HealthEndpointIT` | `@SpringBootTest` + Testcontainers | postgres:16 + redis:7 로 부팅, `/actuator/health` 200 "UP", Flyway 적용·`travel_group` 존재 확인. **Docker 가 없으면 자동으로 건너뜀**(`disabledWithoutDocker`) |
 | `identity/IdentityFlowIT` | `@SpringBootTest` + Testcontainers | docs/03 §1 전체 흐름: login → device/code → token 428 → 429 → approve 200 → token 200(JWKS 로 서명 검증) → me/vehicles → exchange(dev) → refresh 회전(이전 토큰 401) → approve 재시도 409; 소유권 이전·대표 차량 규칙; 만료/없는 코드 410/404; 미인증 401 JSON; kotlinx 컨버터 우선순위; V2 인덱스 |
+| `mqtt/MqttIT` | `@SpringBootTest`(고정 포트 18089) + Testcontainers(postgres·redis·**emqx 5.8**) | EMQX 가 이 서버의 JWKS 로 인증하고 `/internal/mqtt/acl` 로 인가한다: 서버 자기 토큰 접속·공유 구독, 차량 토큰 접속, 자기 cmd 만 구독(남의 cmd·와일드카드·`$share` 거부), 비멤버의 그룹 토픽 거부 → 합류 뒤 허용, 합류 시 cmd `GROUP_JOINED` 수신, `MEMBER_JOINED`·`PASSENGER_MESSAGE` 팬아웃, 남의 telemetry 토픽 발행·봉투 vid 위조는 핸들러에 닿지 않음, ACL 훅의 내부 토큰 403 |
+| `mqtt/MqttAclServiceTest` | 단위 | docs/03 §4 ACL 표 전체(차량 publish/subscribe, 그룹 소속, 와일드카드·공유 구독 거부, 서버 허용, 모르는 주체 거부) |
 | `group/GroupFlowIT` | `@SpringBootTest` + Testcontainers | docs/03 §2 전체 흐름: 차량 토큰 생성 201(초대 URL·토픽·Redis 소속 키) → 사용자 합류(대표 차량·명시 차량·색·역할) → ALREADY_MEMBER/GROUP_FULL → 조회(멤버·소유자 200, 남 404, 이벤트 최신순) → 내 그룹 → 동승자 메시지 201/400/404 → 방장 위임 → 초대 재발급(이전 토큰 410) → 나가기(차량·사용자, 방장 승계, 마지막 멤버 → 종료) → 종료(Redis 삭제, 이후 409 GROUP_ENDED); 그룹 전환 자동 이탈·재합류; 초대 만료·사용 횟수·형식 오류 410; 생성 검증 400; 해제 차량 403; V3 컬럼·인덱스 |
 | `event/JosaTest` · `SpeechComposerTest` · `group/InviteTokensTest` · `MemberColorsTest` | 단위 | 받침 판별(한글·숫자·영문·꼬리 기호), docs/06 §4 문구, 초대 토큰 형식·해시, 팔레트 색 배정 |
 
