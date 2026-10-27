@@ -20,7 +20,7 @@
     <string name="home_label_version">버전</string>
     <string name="home_sdk_probe_title">Pleos SDK 점검</string>
     <string name="home_sdk_probe_pending">점검 중…</string>
-    <string name="home_buttons_hint">\'같이 가기 시작\'은 그룹 생성(T17) 구현 후 활성화됩니다.</string>
+    <string name="home_buttons_hint">\'같이 가기 시작\'은 차량이 폰과 연결된 뒤 쓸 수 있어요. 정차 중에 사용하세요.</string>
 
     <!-- 페어링 (T12) -->
     <string name="pairing_title">내 폰과 연결하기</string>
@@ -89,4 +89,38 @@
     <string name="diag_label_device">기기</string>
 
     <string name="placeholder_in_progress">준비 중 — %1$s 에서 구현</string>
+    <!-- T17 그룹 생성 -->
+    <string name="group_title">같이 가기 시작</string>
+    <string name="group_back">홈으로</string>
+    <string name="group_loading">그룹 상태를 확인하는 중…</string>
+    <string name="group_not_paired">먼저 \'내 폰과 연결하기\'로 차량을 등록해 주세요.</string>
+    <string name="group_destination">목적지</string>
+    <string name="group_destination_none">목적지를 고르세요</string>
+    <string name="group_destination_loading">내비 목적지를 읽는 중…</string>
+    <string name="group_destination_from_navi">내비게이션의 현재 목적지</string>
+    <string name="group_destination_preset">시연용 목적지</string>
+    <string name="group_btn_load_navi">내비에서 불러오기</string>
+    <string name="group_presets">또는 시연용 목적지 선택</string>
+    <string name="group_name">그룹 이름</string>
+    <string name="group_max_members">최대 인원</string>
+    <string name="group_btn_create">같이 가기 시작</string>
+    <string name="group_create_hint">만들면 초대 QR이 뜹니다. 함께 갈 차의 운전자가 폰 공식 앱(동행 메뉴)으로 QR을 스캔하면 그 차가 그룹에 들어옵니다.</string>
+    <string name="group_scan_hint">폰 공식 앱의 동행 메뉴에서 이 QR을 스캔하세요</string>
+    <string name="group_invite_remaining">초대 남은 시간 %1$s</string>
+    <string name="group_invite_expired">초대가 만료됐어요. 다시 만들어 주세요.</string>
+    <string name="group_btn_reissue">초대 다시 만들기</string>
+    <string name="group_reissuing">만드는 중…</string>
+    <string name="group_member_joined_hint">그룹에 연결됐어요. 선두차를 따라갑니다.</string>
+    <string name="group_leader_label">선두차: %1$s</string>
+    <string name="group_members">멤버 %1$d대</string>
+    <string name="group_btn_refresh">새로고침</string>
+    <string name="group_members_pending">아직 합류한 차가 없어요</string>
+    <string name="group_recent_events">최근 소식</string>
+    <string name="group_btn_end">그룹 종료</string>
+    <string name="group_btn_leave">그룹 나가기</string>
+    <string name="group_role_leader">선두</string>
+    <string name="group_role_member">멤버</string>
+    <string name="home_group_active">그룹: %1$s</string>
+    <string name="home_group_active_leader">그룹: %1$s (선두)</string>
+    <string name="home_btn_open_group">그룹 보기</string>
 </resources>

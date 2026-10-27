@@ -139,6 +139,19 @@ private fun HeaderSection(state: HomeUiState) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+    state.groupSession?.let { session ->
+        Spacer(Modifier.height(8.dp))
+        Text(
+            if (session.isLeader) stringResource(R.string.home_group_active_leader, session.name) else stringResource(R.string.home_group_active, session.name),
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.tertiary,
+        )
+        Text(
+            "${stringResource(R.string.group_destination)}: ${session.destination.name}",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 @Composable
@@ -166,7 +179,7 @@ private fun ActionSection(
             .fillMaxWidth()
             .heightIn(min = 64.dp),
     ) {
-        Text(stringResource(R.string.home_btn_start_group))
+        Text(if (state.groupSession != null) stringResource(R.string.home_btn_open_group) else stringResource(R.string.home_btn_start_group))
     }
     Spacer(Modifier.height(8.dp))
     Text(

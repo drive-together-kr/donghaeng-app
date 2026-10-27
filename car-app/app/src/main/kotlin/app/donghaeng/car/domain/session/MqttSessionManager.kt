@@ -170,6 +170,27 @@ class MqttSessionManager @Inject constructor(
         }
     }
 
+    // ---------------------------------------------------------------- group 모듈이 부르는 진입점 (T17)
+
+    /** 이 차가 그룹을 만들었다(방장). 서버는 만든 차량에 GROUP_JOINED 를 보내지 않으므로 여기서 세션을 저장하고 그룹 토픽을 구독한다 */
+    suspend fun onGroupCreated(session: GroupSession) {
+        val previous = sessionStore.session.value
+        if (previous != null && previous.groupId != session.groupId) gateway.unsubscribe(previous.subscribeTopics)
+        sessionStore.save(session)
+        _groupState.value = null
+        gateway.subscribe(session.subscribeTopics)
+        DhLog.i("group session saved (leader) groupId=${TextMasking.maskVehicleId(session.groupId)}")
+    }
+
+    /** 나가기·종료를 이 차가 직접 했을 때 — 구독 해제 + 세션 삭제 */
+    suspend fun onGroupLeftLocally() {
+        val current = sessionStore.session.value ?: return
+        gateway.unsubscribe(current.subscribeTopics)
+        sessionStore.clear()
+        _groupState.value = null
+        DhLog.i("group session cleared (left/ended locally) groupId=${TextMasking.maskVehicleId(current.groupId)}")
+    }
+
     private fun note(type: CmdType, groupId: String?) {
         _lastCommand.value = LastCommand(type.name, groupId?.let(TextMasking::maskVehicleId), System.currentTimeMillis())
     }

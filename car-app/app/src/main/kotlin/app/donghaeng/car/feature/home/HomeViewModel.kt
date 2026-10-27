@@ -9,6 +9,8 @@ import app.donghaeng.car.core.common.TextMasking
 import app.donghaeng.car.core.common.TokenStore
 import app.donghaeng.car.core.common.TokenStoreState
 import app.donghaeng.car.core.network.ServerConfig
+import app.donghaeng.car.domain.session.GroupSession
+import app.donghaeng.car.domain.session.GroupSessionStore
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -33,8 +35,10 @@ data class HomeUiState(
     val vehicleIdMasked: String? = null,
     /** T12 페어링 화면 — 항상 열 수 있다(연결 상태에서는 '다시 연결' 안내) */
     val canPairPhone: Boolean = true,
-    /** T17 그룹 생성 구현 후 true (페어링 완료 조건 포함) */
+    /** 페어링돼 있으면 그룹을 만들 수 있다(T17). 이미 그룹이 있으면 '그룹 보기' 로 같은 화면을 연다 */
     val canStartGroup: Boolean = false,
+    /** 활성 그룹(방장 또는 GROUP_JOINED 로 들어온 멤버). null = 없음 */
+    val groupSession: GroupSession? = null,
     /** SDK 점검 결과. null = 아직 실행 전. pleos flavor 에서만 카드에 표시 */
     val sdkProbe: List<ProbeLine>? = null,
 ) {
@@ -45,22 +49,25 @@ data class HomeUiState(
 class HomeViewModel @Inject constructor(
     sdkProbe: SdkProbe,
     private val tokenStore: TokenStore,
+    sessionStore: GroupSessionStore,
 ) : ViewModel() {
 
     init {
         viewModelScope.launch { tokenStore.load() }
     }
 
-    val uiState: StateFlow<HomeUiState> = combine(sdkProbe.report, tokenStore.state) { lines, tokens -> build(lines, tokens) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), build(sdkProbe.report.value, tokenStore.state.value))
+    val uiState: StateFlow<HomeUiState> = combine(sdkProbe.report, tokenStore.state, sessionStore.session) { lines, tokens, session -> build(lines, tokens, session) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), build(sdkProbe.report.value, tokenStore.state.value, sessionStore.session.value))
 
-    private fun build(lines: List<ProbeLine>?, tokens: TokenStoreState): HomeUiState = when (tokens) {
+    private fun build(lines: List<ProbeLine>?, tokens: TokenStoreState, session: GroupSession?): HomeUiState = when (tokens) {
         TokenStoreState.Loading -> HomeUiState(connection = VehicleConnection.CHECKING, sdkProbe = lines)
         TokenStoreState.Empty -> HomeUiState(connection = VehicleConnection.DISCONNECTED, sdkProbe = lines)
         is TokenStoreState.Present -> HomeUiState(
             connection = VehicleConnection.CONNECTED,
             nickname = tokens.credentials.nickname,
             vehicleIdMasked = TextMasking.maskVehicleId(tokens.credentials.vehicleId),
+            canStartGroup = true,
+            groupSession = session,
             sdkProbe = lines,
         )
     }

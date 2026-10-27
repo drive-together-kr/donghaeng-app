@@ -2,6 +2,7 @@ package app.donghaeng.car.core.network
 
 import app.donghaeng.car.BuildConfig
 import app.donghaeng.car.core.common.DhLog
+import app.donghaeng.car.core.common.TokenStore
 import app.donghaeng.protocol.DhJson
 import dagger.Module
 import dagger.Provides
@@ -31,10 +32,12 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideOkHttpClient(): OkHttpClient = OkHttpClient.Builder()
+    fun provideOkHttpClient(tokenStore: TokenStore): OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
+        // 차량 JWT (T17 그룹 API) — 인증 경로에만 붙는다
+        .addInterceptor(VehicleAuthInterceptor(tokenStore))
         .apply {
             if (BuildConfig.DEBUG) {
                 val logging = HttpLoggingInterceptor { message -> DhLog.d("http $message") }
@@ -56,4 +59,8 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideIdentityApi(retrofit: Retrofit): IdentityApi = retrofit.create()
+
+    @Provides
+    @Singleton
+    fun provideGroupApi(retrofit: Retrofit): GroupApi = retrofit.create()
 }

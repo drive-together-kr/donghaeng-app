@@ -55,6 +55,9 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 | `core.common` | `DhLog`(태그 `DongHaeng`, capability 전용 `DH_CAP`), `CoordinateMasking`/`TextMasking`(규칙 8, `maskVehicleId`), `TokenStore`/`EncryptedTokenStore`(security-crypto)/`InMemoryTokenStore`, `VehicleIdFallback`(설치별 ID), `DrivingStateMonitor`(T29 자리) | T04/T12 |
 | `core.network` | `ServerConfig`(BuildConfig 주소), `IdentityApi`(Retrofit 2.11 + kotlinx-serialization, `/v1/device/code`·`/token`), `ApiResult`/`safeApiCall`(428/429/410/404 분기), `NetworkModule`(OkHttp BASIC 로그는 debug 만, Authorization 가림) | T12 |
 | `core.network.mqtt` | `MqttGateway`(인터페이스: connect/disconnect/subscribe/publish, `status`·`inbound` Flow) + `HiveMqttGateway`(HiveMQ MQTT 5 — username/clientId = vehicleId, password = 차량 JWT, 자동 재연결 1~30s 지수 백오프·재연결 시 최신 토큰, 연결될 때마다 구독 복구, LWT `presence {"online":false}` retained, 접속 시 `online:true`) + `InMemoryMqttGateway`(테스트). `MqttUriPolicy`: `ssl://`→TLS(8883), 서버가 https 인데 `tcp://` 면 접속 거부 | T16 |
+| `core.network` (T17) | `GroupApi`(Retrofit: `POST /v1/groups`, `/invites`, `GET /v1/groups/{id}`, `/leave`, `/end`), `VehicleAuthInterceptor`(차량 JWT Bearer) | T17 |
+| `domain.group` | `GroupRepository`(생성 → `GroupSession(isLeader, invite)` 저장 + 그룹 토픽 구독, 초대 재발급, 조회, 나가기/종료) | T17 |
+| `feature.creategroup` | `CreateGroupViewModel`(Form → Active, 멤버 5초 폴링 + 이벤트 갱신, 초대 남은 시간) · `CreateGroupScreen`(목적지 프리셋/내비, QR, 멤버, 종료/나가기) | T17 |
 | `domain.session` | `MqttSessionManager`(페어링 있으면 접속 + 자기 `cmd` 구독, cmd `GROUP_JOINED`→`GroupSessionStore` 저장 + 그룹 `state/event` 구독, `GROUP_ENDED`→정리, `TOKEN_REVOKED`→자격 증명 삭제; `groupEvents`/`groupState`/`lastCommand` 노출), `GroupSessionStore`(DataStore `group_session` / InMemory) | T16 |
 | `domain.model` | `Fix`, `Place`(= protocol `Place` typealias), `Gear`, `TurnSignalState`, `CapabilityDomain`/`CapabilityEntry`/`VehicleCapabilities`, `NaviEvent`, `RouteState`, `WaypointIndex`, `Priority` | T04/T11 |
 | `domain.capability` | `CapabilityReporter` — 앱 시작 시 `vehicleId()`·`capabilities()` 1회 → `DH_CAP` 로그 + 진단 화면 | T11 |
@@ -151,6 +154,19 @@ mqtt subscribed topic=dh/v1/vehicle/veh_…**/cmd
 - 브로커 재시작(`cd infra && docker compose restart emqx`) 뒤 `mqtt disconnected source=SERVER …` → 수 초 안에 `mqtt connected … reconnect=true` + `mqtt subscribed …` 가 다시 찍히면 자동 복구 OK. 설정 → 진단 화면의 **MQTT 연결** 카드에서 상태/재연결 횟수/구독 토픽/마지막 cmd 를 그대로 볼 수 있다.
 - 서버 재시작 뒤 `CONNACK … NOT_AUTHORIZED` 가 반복되면: EMQX 가 JWKS 를 다시 받을 때까지(최대 30초) 정상이며, 계속되면 토큰이 서버의 새 서명 키와 맞지 않는 것 — `infra/.env` 에 `DH_JWT_PRIVATE_KEY_PEM` 을 고정하고 차량을 다시 페어링한다.
 - TLS: `-PdhMqttPublicUri=ssl://…:8883` 또는 서버 응답 `mqtt.uri` 가 `ssl://` 이면 시스템 신뢰 저장소로 TLS 접속(`tls=true`). 서버가 https 인데 브로커가 `tcp://` 면 `mqtt refused: 서버가 https 이므로 브로커도 ssl:// 이어야 해요` 를 남기고 붙지 않는다(`MqttUriPolicyTest`).
+
+### T17 — 그룹 생성 · 초대 QR (`adb logcat -s DongHaeng`)
+홈(연결됨) → **같이 가기 시작** → 목적지(내비 안내 중이면 자동, 아니면 시연용 프리셋) · 그룹 이름 · 최대 인원 → **같이 가기 시작** 버튼 → 서버 `POST /v1/groups`(차량 JWT) → 초대 QR(`invite.url` 그대로) + 남은 시간 + 멤버 목록. 기대 로그:
+```
+navi destination none → preset          (Pleos AVD 는 내비 안내 중이 아님)
+group created groupId=grp_…** maxMembers=4 inviteExpiresAt=…
+group session saved (leader) groupId=grp_…**
+mqtt subscribed topic=dh/v1/group/grp_…**/state  /  …/event
+```
+- 홈으로 돌아가면 "그룹: … (선두)" 과 **그룹 보기** 버튼이 보인다. 멤버가 합류하면(T18) 멤버 목록이 5초 폴링·`MEMBER_JOINED` 이벤트로 갱신된다. 초대는 10분, **초대 다시 만들기**로 재발급(이전 QR 은 즉시 만료).
+- QR 아래에 초대 URL 텍스트도 보인다 — 카메라 없는 폰 AVD 에서는 demo-host 스캔 화면의 디버그 "QR 문자열 붙여넣기"에 그 값을 넣는다.
+- 차량 토큰은 `VehicleAuthInterceptor` 가 `/v1/groups/…`·`/v1/me/…` 요청에만 `Authorization: Bearer` 로 붙인다. 생성 차량은 `GROUP_JOINED` 를 받지 않으므로 `MqttSessionManager.onGroupCreated` 가 그룹 토픽을 직접 구독한다.
+- 캡처: `docs/images/car-app/t17_group_qr.png`
 
 ### Virtual Console (차량 상태 조작, docs/09 §1)
 
