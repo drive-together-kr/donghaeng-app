@@ -1,6 +1,6 @@
 # protocol — 공용 메시지 스키마
 
-car-app 과 server 가 함께 쓰는 Kotlin 데이터 클래스(kotlinx.serialization). MQTT 메시지 스키마는 **여기에서만** 정의한다(CLAUDE.md 규칙 7). car-app·server 에서 같은 클래스를 다시 만들지 않는다.
+car-app · server · companion/sdk 가 함께 쓰는 Kotlin 데이터 클래스(kotlinx.serialization). MQTT 메시지 스키마는 **여기에서만** 정의한다(CLAUDE.md 규칙 7). car-app·server·companion 에서 같은 클래스를 다시 만들지 않는다. companion/sdk 는 `GroupState.kt` 의 `MemberState` 와 `GroupEvent` 를 공개 API(`GroupSnapshot`)에 그대로 재노출한다(`api` 의존).
 
 - 명세: `docs/03_API_프로토콜_명세.md` §4(토픽)~§5(메시지), `docs/04_데이터모델.md` §4
 - 작업: T01 (`docs/08_구현계획서.md`)
@@ -30,7 +30,7 @@ car-app 과 server 가 함께 쓰는 Kotlin 데이터 클래스(kotlinx.serializ
 - `explicitNulls = false` — null 은 생략, 없는 필드는 null 로 읽음
 - 빈 본문(`HAZARD_ON`, `AIRBAG_DEPLOYED`, `TOKEN_REVOKED`)은 `@Serializable object` 라서 `{}` 로 직렬화됨
 
-car-app·server 는 자체 `Json {}` 을 만들지 말고 `DhJson.json` 을 쓴다. 양쪽의 해석 규칙이 어긋나지 않게 하기 위함이다.
+car-app·server·companion/sdk 는 자체 `Json {}` 을 만들지 말고 `DhJson.json` 을 쓴다. 세 소비자의 해석 규칙이 어긋나지 않게 하기 위함이다.
 
 ### 봉투 `type` 값
 
@@ -44,12 +44,12 @@ car-app·server 는 자체 `Json {}` 을 만들지 말고 `DhJson.json` 을 쓴�
 | `group/{gid}/event` | `MessageTypes.EVENT` | `GroupEvent` (세부 종류는 `GroupEvent.type`) |
 | `vehicle/{vid}/presence` | 봉투 없음 | `Presence` 그대로 (`{"online":false}`) |
 
-## car-app / server 에서 쓰는 법
+## car-app / server / companion 에서 쓰는 법
 
 모노레포 안의 **Gradle 합성 빌드(composite build)** 로 포함한다. 별도 publish 없이 소스가 바로 연결된다.
 
 ```kotlin
-// car-app/settings.gradle.kts 또는 server/settings.gradle.kts
+// car-app/settings.gradle.kts, server/settings.gradle.kts, companion/settings.gradle.kts
 includeBuild("../protocol")
 ```
 
@@ -57,6 +57,7 @@ includeBuild("../protocol")
 // 모듈의 build.gradle.kts
 dependencies {
     implementation("app.donghaeng:protocol")   // 버전 생략 — includeBuild 가 소스 프로젝트로 치환한다
+    // companion/sdk 만 api("app.donghaeng:protocol") — GroupSnapshot 이 MemberState·GroupEvent 를 호스트 앱에 그대로 노출하므로
 }
 ```
 
@@ -109,4 +110,4 @@ cd protocol
 
 1. `docs/03_API_프로토콜_명세.md` 를 먼저 고친다(계약 문서).
 2. 이 모듈의 클래스와 테스트를 고친다. 필드 추가는 **기본값이 있거나 nullable** 로만 한다(구버전 앱과의 호환).
-3. car-app 과 server 를 다시 빌드해서 깨지는 곳을 고친다.
+3. car-app · server · companion 을 다시 빌드해서 깨지는 곳을 고친다(companion/sdk 는 공개 API 에 재노출하므로 호스트 앱도 영향을 받는다).

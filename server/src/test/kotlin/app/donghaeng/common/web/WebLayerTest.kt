@@ -63,14 +63,16 @@ class WebLayerTest {
         mvc.get("/j/{token}", "inv_<script>x").andExpect {
             status { isOk() }
             content { contentTypeCompatibleWith("text/html") }
-            content { string(containsString("동행 앱을 설치하면 이 QR로 바로 연결돼요.")) }
+            // 재설계 이후 안내 문구는 "공식 앱의 '동행' 메뉴"를 가리킨다(docs/07 §5) — 별도 앱 설치 안내가 아니다
+            content { string(containsString("'동행' 메뉴")) }
+            content { string(not(containsString("앱을 설치"))) }
             content { string(containsString("&lt;script&gt;")) }
             content { string(not(containsString("<script>"))) }
         }
         mvc.get("/pair") { param("c", "KQ74MZ") }.andExpect {
             status { isOk() }
             content { string(containsString("KQ74MZ")) }
-            content { string(containsString("동행 앱을 설치하면 이 QR로 바로 연결돼요.")) }
+            content { string(containsString("'동행' 메뉴")) }
         }
     }
 }

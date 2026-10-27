@@ -5,6 +5,8 @@
 
     <string name="home_vehicle_connection">차량 연결 상태</string>
     <string name="home_connection_disconnected">연결 안 됨</string>
+    <string name="home_connection_pairing">연결 중</string>
+    <string name="home_connection_connected">연결됨</string>
     <string name="home_btn_pair_phone">내 폰과 연결하기</string>
     <string name="home_btn_start_group">같이 가기 시작</string>
     <string name="home_label_flavor">빌드 변형</string>

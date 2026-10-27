@@ -16,8 +16,8 @@ import javax.inject.Inject
 /** 차량 연결 상태 — 페어링(T12) 전까지는 항상 DISCONNECTED */
 enum class VehicleConnection { DISCONNECTED, PAIRING, CONNECTED }
 
+/** 사용자에게 보이는 문구(앱 이름·연결 상태 등)는 여기 두지 않고 res/values/strings.xml 에서 가져온다. */
 data class HomeUiState(
-    val appName: String = "동행",
     val flavor: String = BuildConfig.FLAVOR,
     val versionName: String = BuildConfig.VERSION_NAME,
     val publicBaseUrl: String = ServerConfig.publicBaseUrl,

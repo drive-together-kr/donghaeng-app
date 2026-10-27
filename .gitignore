@@ -1,6 +1,6 @@
 # ======================================================================
 #  동행(DongHaeng) 모노레포 .gitignore
-#  car-app(Android) · server(Kotlin/Spring) · phone-app(Flutter) · protocol · infra
+#  car-app(Android) · server(Kotlin/Spring) · companion(Android sdk + demo-host) · protocol · infra
 # ======================================================================
 
 # ---------- 비밀 값 · 서명 키 (CLAUDE.md 규칙 9: .env.example만 커밋) ----------
@@ -42,23 +42,8 @@ logs/
 hs_err_pid*
 replay_pid*
 
-# ---------- Flutter / Dart (phone-app) ----------
-.dart_tool/
-.packages
-.pub-cache/
-.pub/
-.flutter-plugins
-.flutter-plugins-dependencies
-.metadata.bak
-coverage/
-**/ios/Pods/
-**/ios/.symlinks/
-**/ios/Flutter/ephemeral/
-**/ios/Flutter/Generated.xcconfig
-**/ios/Flutter/flutter_export_environment.sh
-**/macos/Flutter/ephemeral/
-**/windows/flutter/ephemeral/
-**/linux/flutter/ephemeral/
+# ---------- (없음) Flutter / Dart ----------
+# 2026-10-27 재설계로 Flutter 폰 앱(phone-app)을 없애고 companion/(Android 라이브러리 + 시연용 호스트 앱)으로 대체했다. Flutter 전용 패턴은 두지 않는다.
 
 # ---------- 인프라 로컬 데이터 (docker volume 바인드) ----------
 infra/data/

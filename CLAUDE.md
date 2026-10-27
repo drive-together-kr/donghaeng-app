@@ -15,7 +15,7 @@
 car-app/     Android(AAOS/Pleos) Kotlin, Compose, Hilt   ── flavors: pleos / fake
 server/      Kotlin + Spring Boot 3.3 모듈러 모놀리스        ── packages = 미래 마이크로서비스
 companion/   공식 앱(블루링크·마이현대·기아 커넥트·제네시스) 내장 모듈 ── sdk/(Android AAR, 공개 API 6개) + demo-host/(시연용 호스트 앱)
-protocol/    Kotlin 공용 메시지 스키마 (car-app, server가 의존)
+protocol/    Kotlin 공용 메시지 스키마 (car-app·server·companion/sdk 가 의존 — sdk 는 MemberState·GroupEvent 를 공개 API 에 재노출)
 infra/       docker-compose(postgres, redis, emqx, server), Caddy(T32 예정)
 docs/        설계 문서
 apk/         제출용 release APK
@@ -41,9 +41,9 @@ cd companion && ./gradlew :sdk:testDebugUnitTest :sdk:assembleDebug :demo-host:a
 2. 모든 어댑터는 Pleos 구현 + Fake 구현을 함께 만든다. Fake로 단위·통합 테스트가 돌아야 한다.
 3. SDK 콜백은 `callbackFlow`로 감싸고 `awaitClose`에서 **같은 리스너로** unregister. `Vehicle.release()`는 모든 콜백 이후.
 4. 기능 사용 전 `checkXxxCapabilities` → 미지원이면 UI에서 숨기고 로그만 남긴다. 크래시 금지.
-5. **준비 중 SDK(FusedLocation, TTS, STT, Vehicle Control)에 의존하지 않는다.** 위치는 NaviHelper → Android LocationManager → Fake, 음성은 Android `TextToSpeech`.
+5. **준비 중 SDK(FusedLocation, TTS, STT, Vehicle Control)에 기능적으로 의존하지 않는다.** 위치 기본 체인은 NaviHelper → Android LocationManager → Fake 이며, FusedLocation 은 `isSupported()` 와 런타임 권한 승인이 모두 true 일 때만 선택적으로 앞에 붙인다(없어도 동작). 음성은 Android `TextToSpeech`.
 6. 차량 제어(Set) API 사용 금지 — 조회만. 안전 원칙: 주행 중 입력 UI 비활성(CarUxRestrictions), 정보는 음성 우선.
-7. 메시지 스키마는 `protocol/`에만 정의. car-app·server에서 중복 정의 금지.
+7. 메시지 스키마는 `protocol/`에만 정의. car-app·server·companion에서 중복 정의 금지.
 8. 로그에 좌표·닉네임·토큰 원문 금지(마스킹 유틸 사용).
 9. 비밀 값(.env, keystore, JWT 키)은 커밋 금지. `.env.example`만 커밋.
 10. **실명·학교 등 개인정보를 코드·README·커밋 메시지·리소스에 넣지 않는다**(블라인드 심사).

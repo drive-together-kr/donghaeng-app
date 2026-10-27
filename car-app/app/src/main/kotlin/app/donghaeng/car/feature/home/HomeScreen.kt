@@ -104,7 +104,7 @@ fun HomeScreen(
 
 @Composable
 private fun HeaderSection(state: HomeUiState) {
-    Text(state.appName, style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
+    Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
     Text(
         stringResource(R.string.app_tagline),
         style = MaterialTheme.typography.titleMedium,
@@ -113,8 +113,8 @@ private fun HeaderSection(state: HomeUiState) {
     Spacer(Modifier.height(16.dp))
     val connectionText = when (state.connection) {
         VehicleConnection.DISCONNECTED -> stringResource(R.string.home_connection_disconnected)
-        VehicleConnection.PAIRING -> "연결 중"
-        VehicleConnection.CONNECTED -> "연결됨"
+        VehicleConnection.PAIRING -> stringResource(R.string.home_connection_pairing)
+        VehicleConnection.CONNECTED -> stringResource(R.string.home_connection_connected)
     }
     Text(
         "${stringResource(R.string.home_vehicle_connection)}: $connectionText",

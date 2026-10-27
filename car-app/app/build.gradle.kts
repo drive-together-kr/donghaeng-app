@@ -29,6 +29,10 @@ android {
 
         buildConfigField("String", "DH_PUBLIC_BASE_URL", "\"$dhPublicBaseUrl\"")
         buildConfigField("String", "DH_MQTT_PUBLIC_URI", "\"$dhMqttPublicUri\"")
+
+        // 평문 HTTP 허용 여부를 서버 주소 스킴에 묶는다: http://(로컬 개발) → true, https://(클라우드) → false
+        //   AndroidManifest.xml 의 android:usesCleartextTraffic="${usesCleartext}" 로 들어간다
+        manifestPlaceholders["usesCleartext"] = dhPublicBaseUrl.startsWith("http://").toString()
     }
 
     // 어댑터 구현 선택: pleos = 실 SDK (Pleos Connect AVD), fake = 전부 Fake (일반 AVD 에서도 실행)

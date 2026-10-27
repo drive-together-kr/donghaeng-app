@@ -12,11 +12,12 @@ public sealed class DongHaengException(message: String) : Exception(message) {
     public class Unauthorized : DongHaengException("계정 토큰이 없거나 만료됐습니다")
 
     /**
-     * 동행 QR 이 아님(경로가 `/pair`·`/j/{token}` 이 아니거나 URL 이 아님).
+     * 이 API 가 받는 동행 QR이 아님 — 경로가 `/pair`·`/j/{token}` 이 아니거나 URL 이 아니거나, 다른 API 용 QR
+     * (차량 등록 QR을 [DongHaeng.joinGroup] 에, 그룹 QR을 [DongHaeng.pairVehicle] 에 준 경우).
      *
-     * @param reason 사용자에게 보여 줄 수 있는 짧은 이유
+     * @param reason 사용자에게 그대로 보여 줄 수 있는 한 문장(API 이름 같은 개발자용 힌트는 KDoc 에만 둔다)
      */
-    public class InvalidQr(public val reason: String) : DongHaengException("동행 QR이 아닙니다: $reason")
+    public class InvalidQr(public val reason: String) : DongHaengException("처리할 수 없는 QR입니다: $reason")
 
     /**
      * 경로는 맞지만 호스트가 이 앱에 설정된 서버([DongHaengConfig.publicBaseUrl])와 다름.

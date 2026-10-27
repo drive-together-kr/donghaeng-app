@@ -70,7 +70,7 @@ fun HomeScreen(
         ) {
             item {
                 Text(
-                    "${account?.nickname ?: "손님"} 님의 차고",
+                    "${account?.nickname ?: "손님"}님의 차고",
                     style = MaterialTheme.typography.titleLarge,
                 )
             }
@@ -89,7 +89,7 @@ fun HomeScreen(
                     TextButton(onClick = viewModel::refresh) { Text("다시 시도") }
                 }
                 state.vehicles.isEmpty() -> item {
-                    Text("계정에 연결된 차가 없어요. 차 화면의 등록 QR 을 스캔해 추가하세요.")
+                    Text("계정에 연결된 차가 없어요. 차 화면의 등록 QR을 스캔해 추가하세요.")
                 }
                 else -> items(state.vehicles, key = { it.vehicleId }) { VehicleCard(it) }
             }
@@ -105,7 +105,7 @@ fun HomeScreen(
                     Text("QR 스캔", style = MaterialTheme.typography.titleLarge)
                 }
                 Text(
-                    "차 화면의 그룹 QR(합류) 또는 차량 등록 QR 을 스캔합니다",
+                    "차 화면의 그룹 QR(합류) 또는 차량 등록 QR을 스캔합니다",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),

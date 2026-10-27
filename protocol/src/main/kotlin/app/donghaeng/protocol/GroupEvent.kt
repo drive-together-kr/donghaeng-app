@@ -67,7 +67,7 @@ enum class GroupEventType {
     /** 선두 경로 이탈 감지 */
     DEVIATION,
 
-    /** 폰 앱 동승자 메시지 */
+    /** companion 모듈(공식 앱의 동행 메뉴) 동승자 메시지 */
     PASSENGER_MESSAGE,
 
     /** 그룹 종료 */

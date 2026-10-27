@@ -9,8 +9,8 @@ import org.springframework.web.bind.annotation.ResponseBody
 import org.springframework.web.util.HtmlUtils
 
 /**
- * QR 웹 폴백 (docs/07 §4). 앱이 없는 폰 기본 카메라로 QR 을 찍었을 때 "앱 설치하기" 안내 페이지를 돌려준다.
- * 폰 앱이 설치돼 있으면 같은 URL 을 딥링크로 받아 경로(`/pair`, `/j/`)로 종류를 판별한다.
+ * QR 웹 폴백 (docs/07 §5). 앱이 없는 폰 기본 카메라로 QR 을 찍었을 때 "공식 앱의 동행 메뉴" 안내 페이지를 돌려준다.
+ * companion 모듈을 내장한 공식 앱(또는 demo-host)의 스캐너가 같은 URL 을 읽으면 경로(`/pair`, `/j/`)로 종류를 판별한다(docs/07 §5).
  * 도메인 비의존 — 서버 내장 정적 HTML, 개인정보 없음. 사용자 입력(코드·토큰)은 모두 HTML 이스케이프한다.
  */
 @Controller
@@ -51,9 +51,9 @@ class LandingController {
         |<body>
         |<main>
         |<h1>동행 — $title</h1>
-        |<p>동행 앱을 설치하면 이 QR로 바로 연결돼요.</p>
+        |<p>블루링크·마이현대·기아 커넥트·제네시스 앱의 '동행' 메뉴에서 이 QR을 스캔해 주세요.</p>
         |${detail?.let { "<p>$it</p>" } ?: ""}
-        |<p class="hint">앱을 설치한 뒤 같은 QR을 다시 찍어 주세요.</p>
+        |<p class="hint">공식 앱을 연 뒤 '동행' 메뉴의 QR 스캔으로 같은 QR을 다시 찍어 주세요. (데모: 동행 데모 호스트 앱)</p>
         |</main>
         |</body>
         |</html>

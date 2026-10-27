@@ -24,9 +24,10 @@
 // res 200
 { "accessToken": "jwt", "refreshToken": "opaque", "user": { "userId": "usr_01H...", "displayName": "홍길동" } }
 ```
-운영 전환: 호스트 공식 앱의 OAuth 2.0 access token 을 교환한다.
-`POST /auth/exchange` `{ "provider": "bluelink" | "myhyundai" | "kia_connect" | "genesis_connected", "accessToken": "<호스트 앱 토큰>" }` → 위와 같은 토큰 쌍.
-서버는 provider 별 `ExternalTokenVerifier` 로 검증한다(인터페이스만 두고 MVP 는 `dev` 구현). 실제 IdP 연동은 OEM 협의 대상.
+companion 모듈은 제공자와 무관하게 아래 교환 한 가지 경로만 쓴다(호스트 공식 앱의 OAuth 2.0 access token → 동행 JWT).
+`POST /auth/exchange` `{ "provider": "dev" | "bluelink" | "myhyundai" | "kia_connect" | "genesis_connected", "accessToken": "<호스트 앱 토큰>" }` → 위와 같은 토큰 쌍.
+`dev` 의 `accessToken` 은 `/auth/login` 응답의 `accessToken`(JWT) 을 그대로 넘긴다 — 서버 `DevTokenVerifier` 가 이를 인정한다. 모듈은 토큰 형식을 해석하지 않는다.
+서버는 provider 별 `ExternalTokenVerifier.verify(provider, token) → ExternalIdentity(provider, sub, displayName)` 로 검증한다(인터페이스만 두고 MVP 구현은 `DevTokenVerifier`; Bluelink/MyHyundai/KiaConnect/GenesisConnected 는 구현 자리). 실제 IdP 연동은 OEM 협의 대상.
 
 `POST /auth/refresh` `{ "refreshToken": "..." }` → 새 토큰 쌍
 

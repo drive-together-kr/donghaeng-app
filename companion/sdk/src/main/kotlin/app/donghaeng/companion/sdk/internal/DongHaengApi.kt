@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.Flow
 
 /**
  * 서버 전송 계층. [DongHaeng] 은 QR 해석·초기화 검사만 하고 실제 호출은 이 인터페이스에 맡긴다.
- * 구현: [FakeDongHaengApi](DEV, 메모리) / [HttpDongHaengApi](REST, T13).
+ * 구현: [FakeDongHaengApi](메모리 — T13 전까지 DEV 가 임시로 사용, 이후 테스트·데모 전용) / [HttpDongHaengApi](REST, T13 — DEV 포함 모든 제공자).
  */
 internal interface DongHaengApi {
 

@@ -5,7 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** docs/07 §4 QR 판별 규칙 */
+/** docs/07 §5 QR 판별 규칙 */
 class QrParserTest {
 
     private val localBase = "http://10.0.2.2:8080"

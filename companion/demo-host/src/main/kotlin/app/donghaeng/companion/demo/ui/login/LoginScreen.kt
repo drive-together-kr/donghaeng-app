@@ -83,7 +83,7 @@ fun LoginScreen(onLoggedIn: () -> Unit) {
             }
             Spacer(Modifier.height(16.dp))
             Text(
-                "서버 ${BuildConfig.DH_PUBLIC_BASE_URL} · 제공자 DEV(서버 없이 Fake 동작) · v${BuildConfig.VERSION_NAME}",
+                "서버 ${BuildConfig.DH_PUBLIC_BASE_URL} · 제공자 DEV(T13 전까지 Fake 동작) · v${BuildConfig.VERSION_NAME}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

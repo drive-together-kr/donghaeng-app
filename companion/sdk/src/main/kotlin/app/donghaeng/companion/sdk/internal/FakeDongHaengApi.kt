@@ -30,12 +30,13 @@ import kotlin.math.atan2
 import kotlin.math.max
 
 /**
- * 서버 없이 동작하는 메모리 구현 ([app.donghaeng.companion.sdk.AccountProvider.DEV]).
+ * 서버 없이 동작하는 메모리 구현. 서버 identity 가 생기는 T13 전까지 [app.donghaeng.companion.sdk.AccountProvider.DEV] 가
+ * 임시로 쓰고, T13 부터는 테스트·데모 전용(internal 훅)으로만 남는다(docs/07 §4.2).
  *
  * - 내 차 2대로 시작하고 [approvePairing] 때마다 한 대 늘어난다
  * - [joinGroup] 은 선두차·내 차·후속차 3대짜리 그룹을 만든다(같은 초대 토큰이면 같은 그룹)
- * - [observeGroup] 은 약 2초마다 멤버가 짧은 경로를 따라 움직이는 스냅샷을 내보내고, 10틱마다 후속차 `LOW_ENERGY` 를 넣는다.
- *   이벤트가 추가되면(동승자 메시지 등) 다음 틱을 기다리지 않고 즉시 다시 내보낸다
+ * - [observeGroup] 은 약 2초마다(Fake 전용 주기 — 서버 전송은 15초 폴링 → 푸시) 멤버가 짧은 경로를 따라 움직이는 스냅샷을 내보내고,
+ *   10틱마다 후속차 `LOW_ENERGY` 를 넣는다. 이벤트가 추가되면(동승자 메시지 등) 다음 틱을 기다리지 않고 즉시 다시 내보낸다
  * - 토큰은 검사만 한다: [TokenProvider] 가 빈 문자열을 주면 [DongHaengException.Unauthorized]
  */
 internal class FakeDongHaengApi(

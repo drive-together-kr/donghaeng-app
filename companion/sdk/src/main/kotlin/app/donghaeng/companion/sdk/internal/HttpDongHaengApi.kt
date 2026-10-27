@@ -13,10 +13,15 @@ import java.util.concurrent.TimeUnit
 /**
  * REST 전송 구현 — **T13 에서 채운다.** 지금은 스텁이며 호출하면 [NotImplementedError] 가 난다.
  *
- * 계획(docs/03): `Authorization: Bearer <tokenProvider.accessToken()>` 헤더로
- * `GET /v1/me/vehicles`, `POST /v1/groups/join`, `POST /v1/device/approve`, `POST /v1/groups/{id}/messages` 를 호출하고,
- * [observeGroup] 은 `GET /v1/groups/{id}` 15초 폴링으로 시작해 이후 푸시로 바꾼다.
- * 401 → [app.donghaeng.companion.sdk.DongHaengException.Unauthorized], 그 외 오류 본문 `error.code` → `Api(code, message)`.
+ * 계획(docs/07 §4.1):
+ * 1. 인증 — `tokenProvider.accessToken()`(호스트 앱 토큰) → `POST /v1/auth/exchange { provider, accessToken }` → 동행 JWT(사용자 토큰 1h)를
+ *    캐시하고, 이후 모든 요청에 `Authorization: Bearer <동행 JWT>` 로 싣는다. 호스트 토큰을 매 요청에 보내지 않는다.
+ *    401 이면 교환을 1회 재시도한 뒤 [app.donghaeng.companion.sdk.DongHaengException.Unauthorized].
+ * 2. 호출 — `GET /v1/me/vehicles`, `POST /v1/groups/join`, `POST /v1/device/approve`, `POST /v1/groups/{id}/messages`.
+ * 3. [observeGroup] — `GET /v1/groups/{id}` 15초 폴링으로 시작해 이후 푸시로 바꾼다(docs/07 §3).
+ * 4. 그 외 오류 본문 `error.code` → `Api(code, message)`.
+ *
+ * DEV 제공자도 T13 부터 이 구현을 쓴다(dev 토큰 = `POST /v1/auth/login` 응답의 accessToken, docs/03 §1.1).
  */
 internal class HttpDongHaengApi(
     private val config: DongHaengConfig,

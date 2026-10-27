@@ -17,10 +17,19 @@ cd car-app
 
 # 클라우드(T32) 빌드 — 서버 주소를 Gradle 속성으로 덮어쓴다 (기본값은 gradle.properties: 에뮬레이터 → 호스트)
 .\gradlew.bat :app:assemblePleosRelease -PdhPublicBaseUrl=https://1-2-3-4.sslip.io -PdhMqttPublicUri=ssl://1-2-3-4.sslip.io:8883
+# T40 전까지 release 에는 signingConfig 가 없어 위 명령의 산출물은 app-pleos-release-unsigned.apk(미서명) 이고 adb install 이 거부한다
+# (INSTALL_PARSE_FAILED_NO_CERTIFICATES). 설치해서 확인할 클라우드 빌드가 필요하면 같은 -P 옵션으로 :app:assemblePleosDebug 를 쓴다.
+
+# 캐시 없이 전부 다시 빌드·테스트해 확인하고 싶을 때 (gradle.properties 의 org.gradle.caching=true 는 유지)
+.\gradlew.bat :app:assembleFakeDebug :app:testFakeDebugUnitTest --rerun-tasks --no-build-cache --console=plain
 ```
 
 산출물: `app/build/outputs/apk/{pleos|fake}/{debug|release}/app-{flavor}-{buildType}.apk`
+— release 는 T40 까지 `app-pleos-release-unsigned.apk` / `app-fake-release-unsigned.apk` (서명 없음)
 (release 서명·`apk/{팀명}_동행_release.apk` 복사는 T40)
+
+`-PdhPublicBaseUrl` 의 스킴이 매니페스트 `android:usesCleartextTraffic` 을 정한다: `http://`(기본값, 로컬 개발) → `true`,
+`https://`(클라우드) → `false`. HiveMQ(`tcp://`)에는 적용되지 않으므로 MqttGateway(T16)는 서버 주소가 https 면 `ssl://` 만 허용한다.
 
 AGP 9 로 올리지 않는다(Android Studio 가 권해도 거절). 툴체인 버전은 `gradle/libs.versions.toml` 한 곳에서만 바꾼다.
 
@@ -70,15 +79,17 @@ adb -s emulator-5554 shell am start -n app.donghaeng.car/.MainActivity
 adb -s emulator-5554 logcat -d -s DongHaeng            # "car app started flavor=pleos …", "sdk probe: …"
 ```
 
-기대 로그:
+기대 로그 (시작 2줄 + SDK 점검 5줄, 서비스 버전은 AVD 이미지에 따라 다를 수 있다 — `Pleos_Connect_v2.1.0` 실측값):
 ```
 I DongHaeng: car app started flavor=pleos base=http://10.0.2.2:8080 mqtt=tcp://10.0.2.2:1883
+I DongHaeng: version=0.1.0-pleos(1) adapter=pleos debug=true
 I DongHaeng: sdk probe: Vehicle 2.3.2 OK — ai.pleos.playground.vehicle.Vehicle
 I DongHaeng: sdk probe: NaviHelper 3.0.5 OK — ai.pleos.playground.navi.helper.NaviHelper
 I DongHaeng: sdk probe: FusedLocation 1.1.3 OK — ai.pleos.playground.location.fused.FusedLocation
-I DongHaeng: sdk probe: Vehicle Service OK — ai.pleos.playground.service.vehicle v2.3.x
+I DongHaeng: sdk probe: Vehicle Service OK — ai.pleos.playground.service.vehicle v2.3.22
+I DongHaeng: sdk probe: FusedLocation Service OK — ai.pleos.playground.service.location.fused v1.0.0
 ```
-같은 내용이 홈 화면 "Pleos SDK 점검" 카드에도 나온다(pleos flavor 만).
+같은 내용이 홈 화면 "Pleos SDK 점검" 카드에도 나온다(pleos flavor 만). fake flavor 는 시작 2줄 뒤에 `sdk probe: fake flavor (Pleos SDK 미포함)` 한 줄만 나온다.
 
 ### Virtual Console (차량 상태 조작, docs/09 §1)
 

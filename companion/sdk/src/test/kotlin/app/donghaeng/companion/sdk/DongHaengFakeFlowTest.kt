@@ -119,6 +119,20 @@ class DongHaengFakeFlowTest {
     }
 
     @Test
+    fun `init 에 스킴 없는 publicBaseUrl 을 주면 IllegalArgumentException`() = runTest {
+        listOf("10.0.2.2:8080", "ftp://10.0.2.2:8080", "   ").forEach { bad ->
+            val error = runCatching { DongHaeng.init(config.copy(publicBaseUrl = bad), devToken) }.exceptionOrNull()
+            assertTrue("publicBaseUrl='$bad' → $error", error is IllegalArgumentException)
+        }
+        // 잘못된 init 은 세션을 만들지 않는다
+        val afterError = runCatching { DongHaeng.listMyVehicles() }.exceptionOrNull()
+        assertTrue(afterError is DongHaengException.NotInitialized)
+        // 대소문자가 섞인 스킴과 끝 슬래시는 허용
+        DongHaeng.init(config.copy(publicBaseUrl = "HTTPS://1-2-3-4.sslip.io/"), devToken)
+        assertEquals(2, DongHaeng.listMyVehicles().size)
+    }
+
+    @Test
     fun `init 전에 호출하면 NotInitialized`() = runTest {
         val listError = runCatching { DongHaeng.listMyVehicles() }.exceptionOrNull()
         assertTrue(listError is DongHaengException.NotInitialized)

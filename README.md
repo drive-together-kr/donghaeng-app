@@ -3,14 +3,15 @@
 > 전화 없이, 한 대처럼. — 여러 대의 현대·기아·제네시스 차량을 하나의 그룹으로 묶어 위치·도착 예정·차량 상태·경로를 실시간으로 공유하고 음성으로 알려 주는 차량 앱
 
 ## 실행 방법
-_(구현 후 작성)_ 1) `infra/`에서 `docker compose up -d` 2) Pleos Connect 에뮬레이터에 `apk/` APK 설치 3) 공식 앱을 흉내 낸 demo-host(companion)로 차량 QR 스캔
+_(구현 후 작성)_ 1) `infra/`에서 `docker compose up -d` 2) Pleos Connect 에뮬레이터에 `apk/` 의 차량 APK 설치 3) Medium_Phone AVD 또는 실기기에 `apk/` 의 demo-host APK(공식 앱을 흉내 낸 companion 호스트) 설치 → 차량 QR 스캔 (T41 에서 빌드·설치 명령 확정)
 
 ## 테스트 환경 · 설정
-- Android Studio, Pleos Connect Emulator v2.1.0 (API 34), minSdk 28
+- 차량: Android Studio, Pleos Connect Emulator v2.1.0 (API 34), minSdk 28
+- 폰(demo-host): Medium_Phone AVD(API 35) 또는 실기기(Android 9+, 카메라) — 에뮬레이터는 "테스트 QR 붙여넣기"로 대신
 - 서버: Docker Compose (PostgreSQL 16, Redis 7, EMQX 5, Spring Boot 3.3)
 
 ## APK
-`apk/` 폴더
+`apk/` 폴더 — 차량 앱 `{팀명}_동행_release.apk` + 데모 호스트 `{팀명}_동행_demo-host_release.apk` (T40)
 
 ## 문서
 | 문서 | 내용 |
@@ -33,7 +34,7 @@ _(구현 후 작성)_ 1) `infra/`에서 `docker compose up -d` 2) Pleos Connect 
 | `car-app/` | Pleos 차량 앱 (Kotlin, Compose, Hilt) — flavor `pleos` / `fake` |
 | `companion/` | 공식 앱 내장 모듈: `sdk/`(Android AAR, 공개 API 6개) + `demo-host/`(시연용 호스트 앱) |
 | `server/` | Kotlin + Spring Boot 3.3 모듈러 모놀리스 |
-| `protocol/` | car-app·server 공용 메시지 스키마 (kotlinx.serialization) |
+| `protocol/` | car-app·server·companion/sdk 공용 메시지 스키마 (kotlinx.serialization; sdk 는 `MemberState`·`GroupEvent` 를 공개 API 에 재노출) |
 | `infra/` | docker compose (postgres·redis·emqx·server), Caddy(T32 예정) |
 | `docs/` | 기획·설계 문서 |
 | `apk/` | 제출용 release APK |

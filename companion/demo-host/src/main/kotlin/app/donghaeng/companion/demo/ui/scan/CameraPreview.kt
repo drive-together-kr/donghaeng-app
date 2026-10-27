@@ -114,13 +114,20 @@ class QrAnalyzer(private val onQr: (String) -> Unit) : ImageAnalysis.Analyzer {
             imageProxy.close()
             return
         }
-        val input = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-        scanner.process(input)
-            .addOnSuccessListener { barcodes ->
-                barcodes.firstNotNullOfOrNull { it.rawValue?.takeIf(String::isNotBlank) }?.let(onQr)
-            }
-            .addOnFailureListener { Log.w(DemoApplication.TAG, "barcode analyze failed: ${it.message}") }
-            .addOnCompleteListener { imageProxy.close() }
+        try {
+            val input = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+            scanner.process(input)
+                .addOnSuccessListener { barcodes ->
+                    barcodes.firstNotNullOfOrNull { it.rawValue?.takeIf(String::isNotBlank) }?.let(onQr)
+                }
+                .addOnFailureListener { Log.w(DemoApplication.TAG, "barcode analyze failed: ${it.message}") }
+                .addOnCompleteListener { imageProxy.close() }
+        } catch (e: Exception) {
+            // fromMediaImage/process 가 동기적으로 던지면(스캐너 close 이후 들어온 프레임 등) 프레임을 반납해야
+            // KEEP_ONLY_LATEST 분석 스트림이 멈추지 않는다
+            Log.w(DemoApplication.TAG, "barcode analyze threw: ${e.message}")
+            imageProxy.close()
+        }
     }
 
     fun close() = scanner.close()

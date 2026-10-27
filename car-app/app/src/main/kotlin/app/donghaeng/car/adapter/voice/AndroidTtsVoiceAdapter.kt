@@ -2,7 +2,6 @@ package app.donghaeng.car.adapter.voice
 
 import android.content.Context
 import android.speech.tts.TextToSpeech
-import app.donghaeng.car.BuildConfig
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.model.Priority
 import java.util.Locale
@@ -15,7 +14,8 @@ import java.util.concurrent.atomic.AtomicReference
  * - 한국어 음성 데이터가 없는 에뮬레이터에서도 크래시 없이 동작한다(LANG_MISSING_DATA → 로그 폴백).
  * - 오디오 포커스(AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)·선행 묵음 200ms·우선순위 큐는 T27 `VoiceAnnouncer` 에서.
  *
- * 로그에는 release 빌드에서 문장 원문을 남기지 않는다(닉네임이 들어갈 수 있음, CLAUDE.md 규칙 8).
+ * 문장 원문은 **어떤 빌드에서도** 로그에 남기지 않는다(닉네임 포함, CLAUDE.md 규칙 8) — 길이와 utteranceId 만 남긴다.
+ * 무엇을 말했는지 진단이 필요하면 문장을 조립하는 쪽(T27 `VoiceAnnouncer`)이 템플릿 + `TextMasking.maskNickname` 으로 남긴다.
  */
 class AndroidTtsVoiceAdapter(context: Context) : VoiceAdapter {
 
@@ -49,18 +49,18 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceAdapter {
     }
 
     override suspend fun speak(text: String, priority: Priority) {
+        val utteranceId = "dh-${utteranceSeq++}"
         val engine = tts
         if (engine == null || state.get() != State.READY) {
-            DhLog.i("TTS 폴백 [$priority] ${describe(text)}")
+            DhLog.i("TTS 폴백 [$priority] ${describe(text, utteranceId)}")
             return
         }
         val queueMode = if (priority == Priority.CRITICAL) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-        val utteranceId = "dh-${utteranceSeq++}"
         val result = engine.speak(text, queueMode, null, utteranceId)
         if (result != TextToSpeech.SUCCESS) {
-            DhLog.w("TTS speak 실패 result=$result [$priority] ${describe(text)}")
+            DhLog.w("TTS speak 실패 result=$result [$priority] ${describe(text, utteranceId)}")
         } else {
-            DhLog.d("TTS speak [$priority] ${describe(text)}")
+            DhLog.d("TTS speak [$priority] ${describe(text, utteranceId)}")
         }
     }
 
@@ -73,6 +73,8 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceAdapter {
         runCatching { tts?.shutdown() }
     }
 
-    private fun describe(text: String): String =
-        if (BuildConfig.DEBUG) "\"$text\"" else "(len=${text.length})"
+    internal companion object {
+        /** 로그용 요약 — 문장 원문 대신 길이와 utteranceId 만 (규칙 8). 빌드 타입과 무관하게 항상 동일. */
+        internal fun describe(text: String, utteranceId: String): String = "(len=${text.length} id=$utteranceId)"
+    }
 }

@@ -1,8 +1,8 @@
 package app.donghaeng.car
 
 import android.app.Application
-import android.util.Log
 import app.donghaeng.car.adapter.sdk.SdkProbe
+import app.donghaeng.car.core.common.DhLog
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
@@ -20,11 +20,9 @@ class DongHaengApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        Log.i(
-            "DongHaeng",
-            "car app started flavor=${BuildConfig.FLAVOR} base=${BuildConfig.DH_PUBLIC_BASE_URL} mqtt=${BuildConfig.DH_MQTT_PUBLIC_URI}",
-        )
-        Log.i("DongHaeng", "version=${BuildConfig.VERSION_NAME}(${BuildConfig.VERSION_CODE}) adapter=${BuildConfig.ADAPTER} debug=${BuildConfig.DEBUG}")
+        // android.util.Log 는 DhLog 에서만 직접 호출한다(규칙 8 마스킹 단일 창구)
+        DhLog.i("car app started flavor=${BuildConfig.FLAVOR} base=${BuildConfig.DH_PUBLIC_BASE_URL} mqtt=${BuildConfig.DH_MQTT_PUBLIC_URI}")
+        DhLog.i("version=${BuildConfig.VERSION_NAME}(${BuildConfig.VERSION_CODE}) adapter=${BuildConfig.ADAPTER} debug=${BuildConfig.DEBUG}")
         sdkProbe.runOnce()
     }
 }

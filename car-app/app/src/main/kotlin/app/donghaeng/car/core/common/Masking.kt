@@ -34,13 +34,17 @@ object CoordinateMasking {
     fun mask(lat: Double?, lon: Double?): String = "(${mask(lat)}, ${mask(lon)})"
 
     /**
-     * 임의의 문자열에서 좌표처럼 보이는 숫자(소수점 둘째 자리 이상)를 찾아 마스킹한다.
+     * 임의의 문자열에서 좌표처럼 보이는 숫자를 찾아 마스킹한다.
      * SDK 가 toString() 한 객체를 그대로 로그에 남겨야 할 때 마지막 안전망으로 쓴다.
+     *
+     * "좌표처럼 보이는" 기준: 정수부 1~3자리 + **소수 넷째 자리 이상**(0.0001° ≈ 11 m). SDK 좌표는 소수 6자리 안팎이고,
+     * 버전(`2.3.13`)·퍼센트(`62.5`)·속도(`42.0`)·타임스탬프 같은 숫자는 건드리지 않는다.
+     * 앞에 숫자나 점이 붙은 조각(`1730000000.1234` 의 `000.1234`, `2.3.1234` 의 `3.1234`)도 좌표로 보지 않는다.
      */
     fun maskInText(text: String): String =
         COORDINATE_LIKE.replace(text) { match -> mask(match.value.toDoubleOrNull()) }
 
-    private val COORDINATE_LIKE = Regex("""-?\d{1,3}\.\d{2,}""")
+    private val COORDINATE_LIKE = Regex("""(?<![\d.])-?\d{1,3}\.\d{4,}""")
 }
 
 /**
@@ -48,9 +52,10 @@ object CoordinateMasking {
  */
 object TextMasking {
 
-    /** 닉네임: 첫 글자만 남긴다. "아빠차" → "아**" */
+    /** 닉네임: 첫 글자만 남긴다. "아빠차" → "아**". 한 글자 닉네임은 전부 가린다("A" → "*"). */
     fun maskNickname(nickname: String?): String {
         if (nickname.isNullOrEmpty()) return "?"
+        if (nickname.length == 1) return "*"
         return nickname.take(1) + "*".repeat((nickname.length - 1).coerceIn(1, 8))
     }
 

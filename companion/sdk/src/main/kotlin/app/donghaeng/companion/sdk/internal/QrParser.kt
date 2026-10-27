@@ -4,7 +4,7 @@ import java.net.URI
 import java.net.URLDecoder
 
 /**
- * 동행 QR 문자열 해석 (docs/07 §4 판별 규칙).
+ * 동행 QR 문자열 해석 (docs/07 §5 판별 규칙).
  *
  * 서버가 `{DH_PUBLIC_BASE_URL}` + 경로로 QR 을 만들므로 **호스트가 아니라 경로**로 종류를 가른다.
  * ```

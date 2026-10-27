@@ -25,8 +25,9 @@ object DemoSession {
     val groups: StateFlow<List<GroupJoinResult>> = _groups.asStateFlow()
 
     /**
-     * 공식 앱의 로그인 성공 시점에 해당. 네트워크 없이 dev 토큰(`dev:<email>`)을 만들고 동행 모듈을 초기화한다.
-     * 실제 공식 앱이라면 여기서 자기 OAuth 2.0 토큰 저장소를 감싼 [TokenProvider] 를 넘긴다.
+     * 공식 앱의 로그인 성공 시점에 해당. dev 로그인 토큰은 서버 `DevTokenVerifier` 가 검증하는 `POST /v1/auth/login` 응답의
+     * accessToken 이어야 한다(docs/07 §4.2). 서버 identity 가 없는 T13 전까지는 임시 placeholder 토큰으로 동행 모듈을 초기화하고,
+     * 모듈은 이때 메모리 Fake 로 동작한다. 실제 공식 앱이라면 여기서 자기 OAuth 2.0 토큰 저장소를 감싼 [TokenProvider] 를 넘긴다.
      */
     fun login(email: String, nickname: String) {
         val tokenProvider = DevTokenProvider(email)
@@ -52,7 +53,11 @@ object DemoSession {
     }
 }
 
-/** dev 로그인용 토큰 제공자 — `dev:<email>` 을 그대로 돌려준다(서버 identity 의 dev 제공자와 짝). */
+/**
+ * dev 로그인용 토큰 제공자 — 임시 placeholder 문자열을 돌려준다. 계약상 dev 토큰은 `POST /v1/auth/login` 응답의 accessToken(JWT)이며
+ * 아래 문자열 형식은 어떤 문서·서버 코드도 정의하지 않는다(모듈은 형식을 해석하지 않고 Bearer 로만 싣는다).
+ * TODO(T13): `POST {base}/v1/auth/login {provider:"dev", email, displayName}` 응답의 accessToken 으로 교체(호스트 메모리에만 보관).
+ */
 class DevTokenProvider(private val email: String) : TokenProvider {
     override suspend fun accessToken(): String = "dev:$email"
 }

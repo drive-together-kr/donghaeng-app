@@ -58,6 +58,18 @@ class CoordinateMaskingTest {
     fun `소수 한 자리 숫자는 좌표로 보지 않는다`() {
         assertEquals("fuel=62 speed=42.5", CoordinateMasking.maskInText("fuel=62 speed=42.5"))
     }
+
+    @Test
+    fun `버전 퍼센트 속도처럼 좌표가 아닌 숫자는 바꾸지 않는다`() {
+        val raw = "sdk probe: Vehicle 2.3.13 OK — service v2.3.22 fuel=62.5% speed=42.0 ts=1730000000.1234"
+        assertEquals(raw, CoordinateMasking.maskInText(raw))
+        assertEquals("FusedLocation 1.1.3 OK", CoordinateMasking.maskInText("FusedLocation 1.1.3 OK"))
+    }
+
+    @Test
+    fun `문자열 안의 음수 좌표도 가린다`() {
+        assertEquals("lat=-33.8**, lon=151.2**", CoordinateMasking.maskInText("lat=-33.8688, lon=151.2093"))
+    }
 }
 
 class TextMaskingTest {
@@ -65,9 +77,15 @@ class TextMaskingTest {
     @Test
     fun `닉네임은 첫 글자만`() {
         assertEquals("아**", TextMasking.maskNickname("아빠차"))
-        assertEquals("A*", TextMasking.maskNickname("A"))
         assertEquals("?", TextMasking.maskNickname(""))
         assertEquals("?", TextMasking.maskNickname(null))
+    }
+
+    @Test
+    fun `한 글자 닉네임은 전부 가린다`() {
+        assertEquals("*", TextMasking.maskNickname("A"))
+        assertEquals("*", TextMasking.maskNickname("아"))
+        assertFalse(TextMasking.maskNickname("A").contains("A"))
     }
 
     @Test

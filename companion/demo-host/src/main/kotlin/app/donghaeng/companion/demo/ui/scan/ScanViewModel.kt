@@ -2,6 +2,7 @@ package app.donghaeng.companion.demo.ui.scan
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.donghaeng.companion.demo.BuildConfig
 import app.donghaeng.companion.demo.DemoQrKind
 import app.donghaeng.companion.demo.DemoSession
 import app.donghaeng.companion.demo.QrPathRule
@@ -41,11 +42,11 @@ class ScanViewModel : ViewModel() {
         if (_state.value != UiState.Scanning) return
         val trimmed = payload.trim()
         if (trimmed.isEmpty()) return
-        // 호스트 앱이 경로만 보고 어느 동행 API 를 부를지 고른다(두 경로 규칙). 엄격한 검증은 모듈 몫
-        _state.value = when (QrPathRule.classify(trimmed)) {
+        // 호스트 앱이 경로만 보고 어느 동행 API 를 부를지 고른다(두 경로 규칙, 모듈 QrParser 와 같은 모양). 호스트·토큰 검증은 모듈 몫
+        _state.value = when (QrPathRule.classify(trimmed, BuildConfig.DH_PUBLIC_BASE_URL)) {
             DemoQrKind.JOIN -> UiState.ConfirmJoin(trimmed)
             DemoQrKind.PAIR -> UiState.ConfirmPair(trimmed)
-            DemoQrKind.UNKNOWN -> UiState.Error("동행 QR이 아니에요")
+            DemoQrKind.UNKNOWN -> UiState.Error("동행 QR이 아니에요. 차 화면의 그룹 QR 또는 차량 등록 QR을 비춰 주세요")
         }
     }
 

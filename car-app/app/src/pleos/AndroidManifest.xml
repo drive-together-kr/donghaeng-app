@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- pleos flavor 전용 매니페스트 — Pleos 차량 권한 (docs/05 §1.2, 최소 권한 원칙: 조회 권한만, CONTROL_* 없음).
-     Pleos 차량 권한은 런타임 팝업 없이 매니페스트 선언만으로 동작한다(공식 샘플 가이드). FusedLocation 은 런타임 승인 필요. -->
+     pleos.car.permission.* 와 android.car.permission.CAR_POWERTRAIN 은 normal(설치 시 자동 승인, 런타임 팝업 없음).
+     android.car.permission.CAR_SPEED 는 dangerous(런타임, 그룹 '차량 정보') — Pleos AVD 에서 granted=false 로 설치됨(dumpsys 실측).
+     ACCESS_FINE_LOCATION·POST_NOTIFICATIONS·(FusedLocation 사용 시) FUSED_LOCATION 과 함께 정차 상태에서 1회 요청하고(T22),
+     거부 시 속도는 Haversine 계산으로 폴백한다. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- Vehicle SDK (조회만) -->
@@ -12,9 +15,9 @@
     <!-- NaviHelper -->
     <uses-permission android:name="pleos.car.permission.NAVI_ROUTE" />
     <uses-permission android:name="pleos.car.permission.NAVI_ROUTE_SEARCH" />
-    <!-- FusedLocation (오픈 시) -->
+    <!-- FusedLocation (오픈 시) — 런타임 권한. isSupported() 와 승인이 모두 true 일 때만 선택적으로 사용(CLAUDE.md 규칙 5, T21) -->
     <uses-permission android:name="pleos.car.permission.FUSED_LOCATION" />
-    <!-- 속도·기어: AAOS 표준 Car API 시도용 (T22) -->
+    <!-- 속도·기어: AAOS 표준 Car API 시도용 (T22). CAR_SPEED 는 런타임 권한 — T22 정차 시 요청, 미승인이면 Haversine 속도. CAR_POWERTRAIN 은 normal -->
     <uses-permission android:name="android.car.permission.CAR_SPEED" />
     <uses-permission android:name="android.car.permission.CAR_POWERTRAIN" />
 

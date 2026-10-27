@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.Flow
  * 3. 합류한 그룹은 [observeGroup] 로 상태를 받고 [sendPassengerMessage] 로 동승자 메시지를 보낸다
  *
  * 자체 로그인 화면·토큰 저장소는 없다. 모든 호출은 호스트 앱이 [TokenProvider] 로 준 토큰으로 인증한다.
- * 실패는 전부 [DongHaengException] 하위 타입으로 던진다.
+ * API 호출 실패는 전부 [DongHaengException] 하위 타입으로 던진다([init] 의 설정 오류만 [IllegalArgumentException]).
  */
 public object DongHaeng {
 
@@ -36,16 +36,22 @@ public object DongHaeng {
     /**
      * 모듈을 초기화한다. 여러 번 호출하면 마지막 설정으로 교체된다(계정 전환 시 다시 호출).
      *
-     * [DongHaengConfig.provider] 가 [AccountProvider.DEV] 면 서버 없이 메모리 Fake 로 동작하고,
-     * 그 외 제공자는 서버 REST 전송(T13)을 쓴다.
+     * [DongHaengConfig.provider] 가 [AccountProvider.DEV] 면 개발·시연용 dev 로그인 계정이다 — 토큰은 서버
+     * `DevTokenVerifier` 가 검증하는 `POST /v1/auth/login` 응답의 accessToken(docs/07 §4.2). 서버 identity 가 생기는
+     * T13 전까지는 임시로 메모리 Fake 로 동작하며, T13 에서 DEV 도 서버 REST 전송(`/v1/auth/exchange` → 동행 JWT)으로
+     * 전환한다. 그 외 제공자는 서버 REST 전송(T13)을 쓴다.
      *
      * @param config 서버 주소·계정 제공자·앱 버전
      * @param tokenProvider 호스트 앱의 계정 액세스 토큰 제공자
-     * @throws IllegalArgumentException publicBaseUrl 이 비어 있을 때
+     * @throws IllegalArgumentException publicBaseUrl 이 비어 있거나 `http://`·`https://` 로 시작하지 않을 때
      */
     public fun init(config: DongHaengConfig, tokenProvider: TokenProvider) {
         val baseUrl = config.publicBaseUrl.trim().trimEnd('/')
         require(baseUrl.isNotBlank()) { "publicBaseUrl 이 비어 있습니다" }
+        require(baseUrl.startsWith("http://", ignoreCase = true) || baseUrl.startsWith("https://", ignoreCase = true)) {
+            "publicBaseUrl 은 http:// 또는 https:// 로 시작해야 합니다: $baseUrl"
+        }
+        // T13: DEV 도 HttpDongHaengApi 로 전환하고, Fake 는 internal 테스트 훅으로만 고른다(docs/07 §4.2). 공개 API 는 바뀌지 않는다.
         val api: DongHaengApi = when (config.provider) {
             AccountProvider.DEV -> FakeDongHaengApi(tokenProvider)
             else -> HttpDongHaengApi(config.copy(publicBaseUrl = baseUrl), tokenProvider)
@@ -68,7 +74,8 @@ public object DongHaeng {
      *
      * @param qrPayload 공식 앱 스캐너가 읽은 QR 문자열 그대로
      * @param vehicleId 합류할 내 차. 생략하면 대표 차량
-     * @throws DongHaengException.InvalidQr 그룹 QR 이 아님(차량 등록 QR 이면 [pairVehicle] 을 쓰라는 이유가 담긴다)
+     * @throws DongHaengException.InvalidQr 그룹 QR이 아님. 차량 등록 QR(`/pair?c=…`)이면 호스트 앱이 [pairVehicle] 을 불러야 한다
+     *   — `reason` 은 사용자에게 그대로 보여 줄 수 있는 문구다
      * @throws DongHaengException.OtherServer QR 의 호스트가 설정된 서버와 다름
      * @throws DongHaengException.Api `INVITE_EXPIRED`, `GROUP_FULL`, `NO_PAIRED_VEHICLE`, `ALREADY_MEMBER`
      */
@@ -76,9 +83,9 @@ public object DongHaeng {
         val s = requireSession()
         val token = when (val qr = QrParser.parse(qrPayload, s.baseUrl)) {
             is QrParser.Result.Join -> qr.token
-            is QrParser.Result.Pair -> throw DongHaengException.InvalidQr("차량 등록용 QR입니다. pairVehicle 을 사용하세요")
+            is QrParser.Result.Pair -> throw DongHaengException.InvalidQr("차량 등록용 QR이에요. '차량 등록'에서 스캔해 주세요")
             is QrParser.Result.OtherServer -> throw DongHaengException.OtherServer(qr.host)
-            QrParser.Result.Unknown -> throw DongHaengException.InvalidQr("그룹 초대 QR 이 아닙니다")
+            QrParser.Result.Unknown -> throw DongHaengException.InvalidQr("그룹 초대 QR이 아니에요")
         }
         return s.api.joinGroup(token, vehicleId)
     }
@@ -91,7 +98,8 @@ public object DongHaeng {
      *
      * @param qrPayload 차 화면 QR 문자열 그대로
      * @param nickname 이 차에 붙일 별명
-     * @throws DongHaengException.InvalidQr 차량 등록 QR 이 아님
+     * @throws DongHaengException.InvalidQr 차량 등록 QR이 아님. 그룹 QR(`/j/{token}`)이면 호스트 앱이 [joinGroup] 을 불러야 한다
+     *   — `reason` 은 사용자에게 그대로 보여 줄 수 있는 문구다
      * @throws DongHaengException.OtherServer QR 의 호스트가 설정된 서버와 다름
      * @throws DongHaengException.Api `CODE_EXPIRED`, `CODE_NOT_FOUND`
      */
@@ -99,9 +107,9 @@ public object DongHaeng {
         val s = requireSession()
         val code = when (val qr = QrParser.parse(qrPayload, s.baseUrl)) {
             is QrParser.Result.Pair -> qr.code
-            is QrParser.Result.Join -> throw DongHaengException.InvalidQr("그룹 초대 QR입니다. joinGroup 을 사용하세요")
+            is QrParser.Result.Join -> throw DongHaengException.InvalidQr("그룹 초대 QR이에요. '그룹 합류'에서 스캔해 주세요")
             is QrParser.Result.OtherServer -> throw DongHaengException.OtherServer(qr.host)
-            QrParser.Result.Unknown -> throw DongHaengException.InvalidQr("차량 등록 QR 이 아닙니다")
+            QrParser.Result.Unknown -> throw DongHaengException.InvalidQr("차량 등록 QR이 아니에요")
         }
         return s.api.approvePairing(code, nickname.trim())
     }
@@ -116,7 +124,9 @@ public object DongHaeng {
     }
 
     /**
-     * 그룹 상태 스트림. 멤버 위치·ETA·잔량과 최근 이벤트가 담긴 [GroupSnapshot] 을 약 2초마다(이벤트 발생 시 즉시) 내보낸다.
+     * 그룹 상태 스트림. 멤버 위치·ETA·잔량과 최근 이벤트가 담긴 [GroupSnapshot] 을 내보낸다.
+     * 발행 주기는 서버 전송 방식이 정한다 — MVP 는 `GET /v1/groups/{id}` 15초 폴링, 이후 푸시로 바뀌면 이벤트 즉시(docs/07 §3).
+     * 약 2초 틱(이벤트 시 즉시)으로 움직이는 것은 T13 전 DEV 메모리 Fake 의 동작일 뿐 계약이 아니다.
      * 구독을 취소하면 수신도 끝난다. 호출 시점에 [init] 이 안 되어 있으면 즉시 던진다.
      *
      * @throws DongHaengException.NotInitialized [init] 전 호출

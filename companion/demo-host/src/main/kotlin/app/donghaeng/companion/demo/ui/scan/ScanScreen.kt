@@ -109,14 +109,14 @@ fun ScanScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Text("QR 을 찍으려면 카메라 권한이 필요해요", color = Color.White)
+                        Text("QR을 찍으려면 카메라 권한이 필요해요", color = Color.White)
                         Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) {
                             Text("카메라 권한 허용")
                         }
                     }
                 }
                 Text(
-                    "차 화면의 QR 을 비추세요",
+                    "차 화면의 QR을 비추세요",
                     color = Color.White,
                     style = MaterialTheme.typography.labelLarge,
                     modifier = Modifier
@@ -160,7 +160,7 @@ fun ScanScreen(
             title = { Text("그룹 합류") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("이 QR 로 대표 차량을 그룹에 합류시킬까요?")
+                    Text("이 QR로 대표 차량을 그룹에 합류시킬까요?")
                     Text(s.payload, style = MaterialTheme.typography.labelSmall)
                 }
             },
@@ -175,7 +175,7 @@ fun ScanScreen(
                 title = { Text("차량 등록") },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("차 화면의 QR 로 이 차를 내 계정에 등록합니다. 별명을 정해 주세요.")
+                        Text("차 화면의 QR로 이 차를 내 계정에 등록합니다. 별명을 정해 주세요.")
                         OutlinedTextField(
                             value = nickname,
                             onValueChange = { nickname = it },
@@ -218,7 +218,7 @@ fun ScanScreen(
         is ScanViewModel.UiState.Paired -> AlertDialog(
             onDismissRequest = {},
             title = { Text("등록 완료") },
-            text = { Text("'${s.result.nickname}' (${s.result.vehicleId}) 이(가) 내 차에 추가됐어요") },
+            text = { Text("'${s.result.nickname}'(${s.result.vehicleId})이(가) 내 차에 추가됐어요") },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.dismiss()
