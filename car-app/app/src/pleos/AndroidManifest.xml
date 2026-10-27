@@ -23,4 +23,9 @@
     <uses-permission android:name="android.car.permission.CAR_SPEED" />
     <uses-permission android:name="android.car.permission.CAR_POWERTRAIN" />
 
+    <application>
+        <!-- AAOS 공유 라이브러리. required=false: 없는 기기에서도 설치되고 CarApiSignals 가 "미지원" 으로 끝난다 -->
+        <uses-library android:name="android.car" android:required="false" />
+    </application>
+
 </manifest>

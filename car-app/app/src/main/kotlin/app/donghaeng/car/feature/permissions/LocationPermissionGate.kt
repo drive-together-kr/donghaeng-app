@@ -6,6 +6,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -15,6 +16,7 @@ import app.donghaeng.car.core.common.DrivingStateMonitor
 import app.donghaeng.car.core.common.LocationPermissions
 import app.donghaeng.car.domain.location.LocationFeed
 import app.donghaeng.car.domain.session.MqttSessionManager
+import app.donghaeng.car.domain.vehicle.VehicleSignals
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.SharingStarted
@@ -30,6 +32,7 @@ import javax.inject.Inject
 @HiltViewModel
 class LocationPermissionViewModel @Inject constructor(
     private val locationFeed: LocationFeed,
+    private val vehicleSignals: VehicleSignals,
     sessionManager: MqttSessionManager,
     drivingMonitor: DrivingStateMonitor,
     @ApplicationContext private val context: Context,
@@ -50,6 +53,7 @@ class LocationPermissionViewModel @Inject constructor(
     fun onResult(result: Map<String, Boolean>) {
         DhLog.i("location permissions: ${result.entries.joinToString { "${it.key.substringAfterLast('.')}=${it.value}" }}")
         locationFeed.restart()
+        vehicleSignals.restart()   // CAR_SPEED 승인 → Car API 속도 재구독
     }
 }
 
@@ -57,12 +61,13 @@ class LocationPermissionViewModel @Inject constructor(
 @Composable
 fun LocationPermissionGate(viewModel: LocationPermissionViewModel = hiltViewModel()) {
     val shouldAsk by viewModel.shouldAsk.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { viewModel.onResult(it) }
     LaunchedEffect(shouldAsk) {
         if (shouldAsk) {
             viewModel.markAsked()
             DhLog.i("location permissions: 그룹 활성 + 정차 → 요청")
-            launcher.launch(LocationPermissions.runtimePermissions())
+            launcher.launch(LocationPermissions.runtimePermissions(context))
         }
     }
 }

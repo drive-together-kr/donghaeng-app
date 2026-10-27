@@ -7,6 +7,7 @@ import app.donghaeng.car.domain.capability.CapabilityReporter
 import app.donghaeng.car.domain.location.LocationFeed
 import app.donghaeng.car.domain.navi.NaviEventMonitor
 import app.donghaeng.car.domain.session.MqttSessionManager
+import app.donghaeng.car.domain.vehicle.VehicleSignals
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
@@ -37,6 +38,9 @@ class DongHaengApp : Application() {
     @Inject
     lateinit var locationFeed: LocationFeed
 
+    @Inject
+    lateinit var vehicleSignals: VehicleSignals
+
     override fun onCreate() {
         super.onCreate()
         // android.util.Log 는 DhLog 에서만 직접 호출한다(규칙 8 마스킹 단일 창구)
@@ -47,5 +51,6 @@ class DongHaengApp : Application() {
         mqttSessionManager.start()
         naviEventMonitor.start()
         locationFeed.start()
+        vehicleSignals.start()
     }
 }

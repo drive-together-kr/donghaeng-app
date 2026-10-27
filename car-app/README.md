@@ -60,6 +60,8 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 | `feature.creategroup` | `CreateGroupViewModel`(Form → Active, 멤버 5초 폴링 + 이벤트 갱신, 초대 남은 시간) · `CreateGroupScreen`(목적지 프리셋/내비, QR, 멤버, 종료/나가기) | T17 |
 | `adapter.navi` | `NaviAdapter` + `PleosNaviAdapter`(NaviHelper 3.0.5 콜백 → `NaviEvent`, 1Hz 위치 요청, 요청 API 매핑) + `FakeNaviAdapter`(`assets/gpx/*.gpx` 1Hz 재생, 도착·경유지 이벤트) + `GpxRoute`(파서·재표본화·거리/방위) | T20 |
 | `adapter.location` | `LocationSource` + `CompositeLocationAdapter`(Fused→Navi→Android→Fake 폴백·상위 병렬 재탐색) + `NaviLocationSource`·`AndroidLocationSource`·`FakeLocationAdapter` (+pleos `PleosFusedLocationAdapter`) | T21 |
+| `adapter.vehicle` (T22) | `PleosVehicleAdapter` 신호 Flow(Fuel·EvBattery·Brake·TurnSignal·Airbag register/unregister, 미지원은 null/빈 스트림) + `CarApiSignals`(AAOS Car API 속도 `PERF_VEHICLE_SPEED`·기어 `GEAR_SELECTION` 폴백) | T22 |
+| `domain.vehicle` | `VehicleSignals`(앱 유일 신호 구독자 — 최신값·수신 수·스트림 상태, 끝난 스트림 30s 재구독, 값 변경 시만 로그) | T22 |
 | `domain.location` | `LocationFeed`(앱 유일 위치 구독자 — `fixes`/`speedKph`/`state`, 권한 변경 시 restart) + `SpeedEstimator`(Haversine 3샘플) | T21 |
 | `feature.permissions` | `LocationPermissionGate`(활성 그룹 + 정차 시 위치·알림 권한 1회 요청) | T21 |
 | `domain.navi` | `NaviEventMonitor`(앱에서 유일한 내비 구독자 — 콜백 종류별 수·마지막 값 `state`, 공유 `events`, 끊기면 10초 뒤 재구독) | T20 |
@@ -187,6 +189,12 @@ mqtt subscribed topic=dh/v1/group/grp_…**/state  /  …/event
 - AVD 에서 움직이는 GPS 넣기: `adb -s emulator-5556 emu geo fix <lon> <lat>` 를 1초마다 보내면(세션 스크립트 `t21_location_check.py` 의 `geo_walk`) Android 소스가 1Hz 로 받고 속도가 계산된다. 캡처: `docs/images/t21/`.
 - Pleos AVD 실측(2026-10-27): `FUSED_LOCATION=미승인` → FUSED 건너뜀, NAVI 첫 Fix 없음 → ANDROID(gps) 활성, 속도 ≈ 62 km/h. fake flavor: NAVI(GPX 재생) 활성 ≈ 60 km/h.
 
+### T22 — 차량 신호 (`adb logcat -s DongHaeng | grep "vehicle signal"`)
+- 앱 시작 시 `Vehicle SDK fuelPercent registered` … 값이 바뀔 때만 `vehicle signal gear=P`, `turn=OFF`, `brake=false`, `soc=100`, `speed=0.0`(Car API, CAR_SPEED 승인 시). 미지원은 `… 미지원/실패: …` 한 줄 뒤 `stream completed`(30초 뒤 재시도).
+- 진단 화면 **차량 신호 (T22)** 카드: 에너지(연료·SoC) / 주행(속도·기어·브레이크) / 차체(방향지시등·에어백) / 신호별 수신 수(마지막 수신 n초 전) / 끝난·실패 스트림. 버튼 **신호 다시 구독**.
+- Virtual Console 로 바꾸기(스크립트 `t22_vehicle_check.py`): `adb -s emulator-5556 forward tcp:8089 tcp:8088` → `POST /browser/session` 을 1초마다(세션 timeout 3초, 없으면 PUT 503) → `PUT /vehicle/gear?gear=Reverse`, `PUT /vehicle/controls?speed_kph=55&brake_pct=70`, `PUT /vehicle/turn-signal?mode=BlinkLeft`, `PUT /vehicle/ev-battery?field=soc&value=23`.
+- Pleos AVD 실측(2026-10-27): 위 조작 → `vehicle signal gear=R`, `brake=true`, `turn=LEFT`, `soc=23`, `speed=55.0`; 원복 → `gear=P`, `brake=false`, `speed=0.0`, `turn=OFF`. Fuel 은 AVD 미지원(`property ID is not in carPropertyConfig list`), Airbag check 실패 → 빈 스트림. DH_CAP: `Speed supported=true … CAR_API`, `Gear supported=true … PLEOS_SDK`.
+
 ### Virtual Console (차량 상태 조작, docs/09 §1)
 
 에뮬레이터마다 포트를 다르게 포워딩한다. 두 번째 포워딩이 안 되면 B 차량은 `fake` flavor 로 시연한다.
@@ -194,7 +202,8 @@ mqtt subscribed topic=dh/v1/group/grp_…**/state  /  …/event
 adb -s emulator-5554 forward tcp:8088 tcp:8088   # A → http://127.0.0.1:8088
 adb -s emulator-5556 forward tcp:8089 tcp:8088   # B → http://127.0.0.1:8089
 ```
-위치 이동은 Extended Controls → Location → Routes 에 GPX 를 불러와 재생한다(T30 에서 GPX 2개 제공).
+위치 이동은 Extended Controls → Location → Routes 에 GPX 를 불러와 재생한다(T30 에서 GPX 2개 제공). 스크립트에서는 `adb emu geo fix <lon> <lat>` 1Hz(T21) 로 대신한다.
+Virtual Console 은 웹 UI 외에 HTTP API 도 있다(위 T22 절 참고: `/vehicle/state`, `/vehicle/catalog`, `PUT /vehicle/...`, 세션 keepalive 필요).
 
 ## 서버 연결
 

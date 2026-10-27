@@ -17,6 +17,8 @@ val dhMqttPublicUri: String = (findProperty("dhMqttPublicUri") as String?)?.take
 android {
     namespace = "app.donghaeng.car"
     compileSdk = 35
+    // AAOS Car API(android.car) — pleos 소스셋의 CarApiSignals 만 참조. 런타임은 pleos 매니페스트 uses-library(required=false)
+    useLibrary("android.car")
 
     defaultConfig {
         applicationId = "app.donghaeng.car"

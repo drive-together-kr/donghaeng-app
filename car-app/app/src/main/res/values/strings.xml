@@ -100,6 +100,13 @@
     <string name="diag_loc_permissions">권한</string>
     <string name="diag_loc_action_permission">위치 권한 요청</string>
     <string name="diag_loc_action_restart">체인 다시 탐색</string>
+    <string name="diag_section_vehicle_signals">차량 신호 (T22)</string>
+    <string name="diag_vs_energy">에너지</string>
+    <string name="diag_vs_drive">주행</string>
+    <string name="diag_vs_body">차체</string>
+    <string name="diag_vs_updates">수신 수</string>
+    <string name="diag_vs_streams">스트림</string>
+    <string name="diag_vs_action_restart">신호 다시 구독</string>
     <string name="diag_group_session">활성 그룹</string>
     <string name="diag_group_none">없음 (GROUP_JOINED 대기)</string>
     <string name="diag_last_cmd">마지막 cmd</string>

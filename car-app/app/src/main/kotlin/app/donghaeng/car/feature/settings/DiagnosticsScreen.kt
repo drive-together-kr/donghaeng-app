@@ -25,6 +25,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -47,6 +48,7 @@ fun DiagnosticsRoute(
     viewModel: DiagnosticsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { viewModel.onPermissionResult(it) }
     DiagnosticsScreen(
         state = state,
@@ -54,8 +56,9 @@ fun DiagnosticsRoute(
         onNaviAction = viewModel::onNaviAction,
         onLocationAction = { action ->
             viewModel.onLocationAction(action)
-            if (action == LocationDebugAction.REQUEST_PERMISSION) permissionLauncher.launch(LocationPermissions.runtimePermissions())
+            if (action == LocationDebugAction.REQUEST_PERMISSION) permissionLauncher.launch(LocationPermissions.runtimePermissions(context))
         },
+        onRestartVehicleSignals = viewModel::restartVehicleSignals,
     )
 }
 
@@ -69,6 +72,7 @@ fun DiagnosticsScreen(
     onBack: () -> Unit,
     onNaviAction: (NaviDebugAction) -> Unit = {},
     onLocationAction: (LocationDebugAction) -> Unit = {},
+    onRestartVehicleSignals: () -> Unit = {},
 ) {
     Scaffold { innerPadding ->
         Column(
@@ -91,6 +95,7 @@ fun DiagnosticsScreen(
             MqttCard(state)
             NaviCard(state, onNaviAction)
             LocationCard(state, onLocationAction)
+            VehicleSignalCard(state, onRestartVehicleSignals)
             BuildCard(state)
         }
     }
@@ -267,6 +272,28 @@ private fun NaviCard(state: DiagnosticsUiState, onNaviAction: (NaviDebugAction) 
                 OutlinedButton(onClick = { onNaviAction(NaviDebugAction.SHOW_NAVIGATION) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_navi_action_show)) }
             }
             LabelRow(stringResource(R.string.diag_navi_last_action), state.naviActionResult ?: "-")
+        }
+    }
+}
+
+/** T22 — 차량 신호 최신값·수신 수·스트림 상태. Virtual Console 로 값을 바꾸면 여기와 로그 `vehicle signal …` 가 따라와야 한다 */
+@Composable
+private fun VehicleSignalCard(state: DiagnosticsUiState, onRestart: () -> Unit) {
+    Card {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(stringResource(R.string.diag_section_vehicle_signals), style = MaterialTheme.typography.titleMedium)
+            HorizontalDivider()
+            val v = state.vehicle
+            fun n(x: Any?) = x?.toString() ?: "-"
+            val speedText = v.speedKph?.let { s -> "%.1f km/h".format(s) } ?: "-"
+            LabelRow(stringResource(R.string.diag_vs_energy), "연료 ${n(v.fuelPercent)}%   EV SoC ${n(v.evSoc)}%")
+            LabelRow(stringResource(R.string.diag_vs_drive), "속도 $speedText   기어 ${n(v.gear)}   브레이크 ${n(v.brakePedal)}")
+            LabelRow(stringResource(R.string.diag_vs_body), "방향지시등 ${n(v.turnSignal)}   에어백 전개 ${n(v.airbagDeployed)}")
+            val now = System.currentTimeMillis()
+            LabelRow(stringResource(R.string.diag_vs_updates), if (v.updates.isEmpty()) "-" else v.updates.entries.joinToString("   ") { e -> "${e.key} ${e.value}" + (v.lastTs[e.key]?.let { ts -> "(${(now - ts) / 1000}s)" } ?: "") })
+            LabelRow(stringResource(R.string.diag_vs_streams), if (v.streams.isEmpty()) "-" else v.streams.entries.filter { e -> e.value != "구독 중" }.joinToString("\n") { e -> "${e.key}: ${e.value}" }.ifEmpty { "모두 구독 중" })
+            LabelRow(stringResource(R.string.diag_loc_counts), "total ${v.totalUpdates} / restarts ${v.restarts}" + if (v.running) "" else "  (중지)")
+            OutlinedButton(onClick = onRestart, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_vs_action_restart)) }
         }
     }
 }

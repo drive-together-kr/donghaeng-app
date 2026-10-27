@@ -14,6 +14,7 @@ import android.os.Build
  */
 object LocationPermissions {
     const val FUSED_LOCATION = "pleos.car.permission.FUSED_LOCATION"
+    const val CAR_SPEED = "android.car.permission.CAR_SPEED"
 
     fun fineGranted(context: Context): Boolean = granted(context, Manifest.permission.ACCESS_FINE_LOCATION)
 
@@ -23,14 +24,18 @@ object LocationPermissions {
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || granted(context, Manifest.permission.POST_NOTIFICATIONS)
 
     /** 런타임 요청 대상 전체(승인 여부와 무관) — 요청 다이얼로그 한 번에 묶는다 */
-    fun runtimePermissions(): Array<String> = buildList {
+    fun runtimePermissions(context: Context): Array<String> = buildList {
         add(Manifest.permission.ACCESS_FINE_LOCATION)
         add(Manifest.permission.ACCESS_COARSE_LOCATION)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.POST_NOTIFICATIONS)
+        // 자동차 기기에서만: Car API 속도(PERF_VEHICLE_SPEED) 용 dangerous 권한. 거부 시 위치 계산 속도로 폴백(T22)
+        if (context.packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE)) add(CAR_SPEED)
     }.toTypedArray()
 
+    fun carSpeedGranted(context: Context): Boolean = granted(context, CAR_SPEED)
+
     /** 아직 승인되지 않은 런타임 권한. 비어 있으면 요청할 것이 없다 */
-    fun missing(context: Context): List<String> = runtimePermissions().filterNot { granted(context, it) }
+    fun missing(context: Context): List<String> = runtimePermissions(context).filterNot { granted(context, it) }
 
     private fun granted(context: Context, permission: String): Boolean =
         context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED

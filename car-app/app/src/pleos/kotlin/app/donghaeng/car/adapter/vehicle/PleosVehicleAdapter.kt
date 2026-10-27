@@ -4,6 +4,14 @@ import ai.pleos.playground.vehicle.Vehicle
 import ai.pleos.playground.vehicle.api.model.area.SeatArea
 import ai.pleos.playground.vehicle.api.model.capability.AccessType
 import ai.pleos.playground.vehicle.api.model.capability.CapabilityConfig
+import ai.pleos.playground.vehicle.constant.area.TurnSignalValue
+import ai.pleos.playground.vehicle.constant.control.VehicleGear
+import ai.pleos.playground.vehicle.listener.BrakePedalStatusListener
+import ai.pleos.playground.vehicle.listener.EvBatteryStateOfChargeListener
+import ai.pleos.playground.vehicle.listener.FuelPercentListener
+import ai.pleos.playground.vehicle.listener.GearSelectionListener
+import ai.pleos.playground.vehicle.listener.SeatAirbagDeployedListener
+import ai.pleos.playground.vehicle.listener.TurnSignalStateListener
 import android.content.Context
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.model.CapabilityDomain
@@ -15,45 +23,52 @@ import app.donghaeng.car.domain.model.VehicleCapabilities
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.channels.ProducerScope
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * Pleos Vehicle SDK 2.3.2 어댑터 — T11: [vehicleId] (CarInfo) + [capabilities] (checkXxxCapabilities).
+ * Pleos Vehicle SDK 2.3.2 어댑터 — T11: [vehicleId] (CarInfo) + [capabilities] (checkXxxCapabilities), T22: 신호 Flow.
  *
  * SDK 시그니처는 Gradle 캐시의 `Vehicle-2.3.2` AAR 을 javap 로 확인했다(공식 샘플 pleos-sample-vehicle-app 은 Door 만 다룬다):
  * ```
  * Vehicle(context).initialize() / release()        // initialize = bindService. 연결 전 요청은 SDK 내부 Queue 에 쌓였다가 연결 후 실행된다
  * carInfo.getVINInfo(onComplete: (String) -> Unit, onFailed: (Exception) -> Unit)          getCRNInfo(...) 동일
- * carInfo.checkVINInfoCapabilities(onComplete: (CapabilityConfig) -> Unit, onFailed)        checkCRNInfoCapabilities 동일
- * fuel.checkFuelPercentCapabilities / evBattery.checkEvBatteryStateOfChargeCapabilities /
- * brake.checkBrakePedalStatusCapabilities / turnSignal.checkTurnSignalStateCapabilities      → (CapabilityConfig) -> Unit
+ * fuel.getFuelPercent / registerFuelPercent(FuelPercentListener{onFuelPercentUpdated(Int?)}) / unregisterFuelPercent
+ * evBattery.getEvBatteryStateOfCharge / registerEvBatteryStateOfCharge(EvBatteryStateOfChargeListener) / unregister…
+ * brake.getCurrentBrakePedalStatus / registerBrakePedalStatus(BrakePedalStatusListener{onBrakePedalStatusUpdated(Boolean?)}) / unregister…
+ * turnSignal.getCurrentTurnSignalState / registerTurnSignalState(TurnSignalStateListener{onTurnSignalStateUpdated(TurnSignalValue)}) / unregister…
  * safety.checkAirbagDeployedCapabilities(onComplete: (CapabilityConfig, List<SeatArea>) -> Unit, onFailed)
+ * safety.registerSeatAirbagDeployed(SeatArea, SeatAirbagDeployedListener{onSeatAirbagDeployUpdated(Boolean?)}) / unregister…(area, listener)
+ * gear.getCurrentGearSelectionState / registerGearSelection(GearSelectionListener{onSelected(VehicleGear)}) / unregister…  — check 메서드 없음
+ * 모든 리스너는 VehicleListener.onFailed(Exception) 을 가진다.
  * CapabilityConfig.accessType: AccessType { NONE, READ, WRITE, READ_WRITE }  — NONE = 미지원(공식 샘플 VehicleApiExplorer 와 같은 판정)
  * TurnSignalValue { OFF, RIGHT, LEFT }               — 좌·우 동시 표시 값이 없다 → 비상등(HAZARD) 미지원(docs/10 R3)
- * Gear 도메인: getCurrentGearSelectionState / registerGearSelection 만 있고 check 메서드가 없다 → T22 에서 확인
  * ```
  * 규칙(CLAUDE.md 3): 콜백은 suspendCancellableCoroutine / callbackFlow 로 감싸고 awaitClose 에서 **같은 리스너로** unregister.
  * `release()` 는 모든 콜백 이후 — 이 어댑터는 앱 수명 동안 싱글턴이라 프로세스 종료까지 유지한다.
- * 규칙 4: 실패·미지원은 null / supported=false 로 돌려주고 절대 던지지 않는다.
- *
- * TODO(T22): 나머지 Flow(fuel·soc·brake·turnSignal·airbag) 는 register/unregister 를 callbackFlow 로 감싸 구현하고,
- *            speed/gear 는 Car API(PERF_VEHICLE_SPEED / GEAR_SELECTION) 또는 vehicle.getGear() 로 교체한다.
- *            그 전까지는 [fallback](FakeVehicleAdapter) 에 위임한다 — 데모 화면이 비지 않게 하기 위한 임시 값이다.
+ * 규칙 4: 실패·미지원은 null / 빈 스트림 / supported=false 로 돌려주고 절대 던지지 않는다.
+ * 속도는 Pleos SDK 에 없어 AAOS Car API([CarApiSignals], `PERF_VEHICLE_SPEED`, CAR_SPEED 런타임 권한)로, 기어는 Pleos `Gear` → 실패 시 Car API `GEAR_SELECTION`.
  */
 class PleosVehicleAdapter(
     context: Context,
-    private val fallback: VehicleAdapter = FakeVehicleAdapter(),
     private val callTimeoutMillis: Long = DEFAULT_CALL_TIMEOUT_MILLIS,
 ) : VehicleAdapter {
 
     private val appContext = context.applicationContext
+    private val carApi = CarApiSignals(appContext)
     private val mutex = Mutex()
     private var vehicle: Vehicle? = null
     private var initAttempts = 0
@@ -65,7 +80,7 @@ class PleosVehicleAdapter(
 
     /**
      * SDK 바인딩. 서비스 앱(ai.pleos.playground.service.vehicle)이 없으면 예외 → 로그만 남기고 null.
-     * ServiceConnection 콜백은 메인 루퍼로 오므로 bind 도 메인에서 한다. 최대 [MAX_INIT_ATTEMPTS]번만 재시도한다.
+     * ServiceConnection 콜백은 메인 루퍼로 오므로 bind 도 메인에서 한다. 최대 [MAX_INIT_ATTEMPTS]번만 재시도한다. [mutex] 안에서 부른다.
      */
     private suspend fun ensureInitialized(): Vehicle? {
         vehicle?.let { return it }
@@ -85,6 +100,8 @@ class PleosVehicleAdapter(
         }
     }
 
+    private suspend fun vehicleOrNull(): Vehicle? = mutex.withLock { ensureInitialized() }
+
     /** 모든 구독이 끝난 뒤에만 호출한다(테스트·종료 시). */
     fun release() {
         runCatching { vehicle?.release() }.onFailure { DhLog.w("PleosVehicleAdapter release 실패", it) }
@@ -93,6 +110,8 @@ class PleosVehicleAdapter(
         idResolved = false
         cachedVehicleId = null
     }
+
+    // ---------------------------------------------------------------- 차량 ID
 
     /**
      * CarInfo VIN → 쓸 만한 값이 아니면 CRN → 둘 다 아니면 null. 결과(없음 포함)는 캐시한다(페어링·진단 화면이 반복 호출).
@@ -123,19 +142,191 @@ class PleosVehicleAdapter(
         return id
     }
 
-    override fun fuelPercent(): Flow<Int?> = fallback.fuelPercent()                 // TODO(T22) registerFuelPercent
-    override fun evStateOfCharge(): Flow<Int?> = fallback.evStateOfCharge()         // TODO(T22) registerEvBatteryStateOfCharge
-    override fun brakePedal(): Flow<Boolean> = fallback.brakePedal()                // TODO(T22) registerBrakePedalStatus
-    override fun turnSignal(): Flow<TurnSignalState> = fallback.turnSignal()        // TODO(T22) registerTurnSignalState
-    override fun airbagDeployed(): Flow<Boolean> = fallback.airbagDeployed()        // TODO(T22) registerSeatAirbagDeployed(area)
-    override fun speedKph(): Flow<Float?> = fallback.speedKph()                     // TODO(T22) Car API PERF_VEHICLE_SPEED
-    override fun gear(): Flow<Gear?> = fallback.gear()                              // TODO(T22) vehicle.getGear() → 실패 시 Car API
+    // ---------------------------------------------------------------- 신호 Flow (T22)
+
+    /** awaitClose 에서 실행할 해제 동작 */
+    private fun interface Cleanup {
+        fun run()
+    }
+
+    /**
+     * register → (현재값 1회 조회) → awaitClose 에서 같은 리스너로 unregister 하는 공통 골격.
+     * SDK 가 없으면 빈 스트림으로 끝난다(미지원 취급). 등록 중 예외도 빈 스트림.
+     */
+    private fun <T> vehicleFlow(name: String, register: suspend ProducerScope<T>.(Vehicle) -> Cleanup): Flow<T> = callbackFlow {
+        val v = vehicleOrNull()
+        if (v == null) {
+            DhLog.w("Vehicle SDK 없음 → $name 스트림 없음")
+            close()
+            return@callbackFlow
+        }
+        val cleanup = try {
+            register(v)
+        } catch (e: Exception) {
+            DhLog.w("Vehicle SDK $name register 실패 ${e.javaClass.simpleName}: ${e.message?.take(80)}")
+            close()
+            return@callbackFlow
+        }
+        DhLog.i("Vehicle SDK $name registered")
+        awaitClose {
+            runCatching { cleanup.run() }.onFailure { DhLog.w("Vehicle SDK $name unregister 실패", it) }
+            DhLog.i("Vehicle SDK $name unregistered")
+        }
+    }
+
+    /** 미지원(onFailed) 은 null 한 번 흘리고 끝낸다 → 소비자는 "값 없음" 으로 숨기고, 수집기는 나중에 다시 시도한다 */
+    private fun <T> ProducerScope<T?>.unsupported(name: String, e: Exception) {
+        DhLog.w("Vehicle SDK $name 미지원/실패: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
+        trySend(null)
+        close()
+    }
+
+    override fun fuelPercent(): Flow<Int?> = vehicleFlow("fuelPercent") { v ->
+        val fuel = v.getFuel()
+        val listener = object : FuelPercentListener {
+            override fun onFuelPercentUpdated(percent: Int?) {
+                trySend(percent)
+            }
+
+            override fun onFailed(e: Exception) = unsupported("fuelPercent", e)
+        }
+        fuel.registerFuelPercent(listener)
+        fuel.getFuelPercent({ trySend(it) }, { e -> unsupported("getFuelPercent", e) })
+        Cleanup { fuel.unregisterFuelPercent(listener) }
+    }
+
+    override fun evStateOfCharge(): Flow<Int?> = vehicleFlow("evStateOfCharge") { v ->
+        val ev = v.getEvBattery()
+        val listener = object : EvBatteryStateOfChargeListener {
+            override fun onEvBatteryStateOfChargeUpdated(soc: Int?) {
+                trySend(soc)
+            }
+
+            override fun onFailed(e: Exception) = unsupported("evStateOfCharge", e)
+        }
+        ev.registerEvBatteryStateOfCharge(listener)
+        ev.getEvBatteryStateOfCharge({ trySend(it) }, { e -> unsupported("getEvBatteryStateOfCharge", e) })
+        Cleanup { ev.unregisterEvBatteryStateOfCharge(listener) }
+    }
+
+    override fun brakePedal(): Flow<Boolean> = vehicleFlow("brakePedal") { v ->
+        val brake = v.getBrake()
+        val listener = object : BrakePedalStatusListener {
+            override fun onBrakePedalStatusUpdated(pressed: Boolean?) {
+                pressed?.let { trySend(it) }
+            }
+
+            override fun onFailed(e: Exception) {
+                DhLog.w("Vehicle SDK brakePedal 미지원/실패: ${e.javaClass.simpleName}")
+                close()
+            }
+        }
+        brake.registerBrakePedalStatus(listener)
+        brake.getCurrentBrakePedalStatus({ it?.let { b -> trySend(b) } }, { e -> DhLog.w("getCurrentBrakePedalStatus 실패 ${e.javaClass.simpleName}") })
+        Cleanup { brake.unregisterBrakePedalStatus(listener) }
+    }
+
+    override fun turnSignal(): Flow<TurnSignalState> = vehicleFlow("turnSignal") { v ->
+        val turn = v.getTurnSignal()
+        val listener = object : TurnSignalStateListener {
+            override fun onTurnSignalStateUpdated(value: TurnSignalValue?) {
+                value?.let { trySend(it.toDomain()) }
+            }
+
+            override fun onFailed(e: Exception) {
+                DhLog.w("Vehicle SDK turnSignal 미지원/실패: ${e.javaClass.simpleName}")
+                close()
+            }
+        }
+        turn.registerTurnSignalState(listener)
+        turn.getCurrentTurnSignalState({ it?.let { v -> trySend(v.toDomain()) } }, { e -> DhLog.w("getCurrentTurnSignalState 실패 ${e.javaClass.simpleName}") })
+        Cleanup { turn.unregisterTurnSignalState(listener) }
+    }
+
+    /** 지원되는 모든 좌석 영역을 구독해 하나라도 전개되면 true */
+    override fun airbagDeployed(): Flow<Boolean> = vehicleFlow("airbagDeployed") { v ->
+        val safety = v.getSafety()
+        val probe = sdkCall<Pair<CapabilityConfig, List<SeatArea>>>("checkAirbagDeployedCapabilities") { ok, fail ->
+            safety.checkAirbagDeployedCapabilities({ config, areas -> ok(config to areas) }, fail)
+        }.getOrNull()
+        val areas = probe?.takeIf { it.first.isReadable() }?.second.orEmpty()
+        if (areas.isEmpty()) {
+            DhLog.i("Vehicle SDK airbagDeployed 미지원(영역 없음) → 스트림 없음")
+            close()
+            return@vehicleFlow Cleanup { }
+        }
+        val deployed = ConcurrentHashMap<SeatArea, Boolean>()
+        val listeners = areas.map { area ->
+            area to object : SeatAirbagDeployedListener {
+                override fun onSeatAirbagDeployUpdated(value: Boolean?) {
+                    deployed[area] = value == true
+                    trySend(deployed.values.any { it })
+                }
+
+                override fun onFailed(e: Exception) {
+                    DhLog.w("Vehicle SDK airbagDeployed(area) 실패: ${e.javaClass.simpleName}")
+                }
+            }
+        }
+        listeners.forEach { (area, l) -> safety.registerSeatAirbagDeployed(area, l) }
+        trySend(false)
+        Cleanup { listeners.forEach { (area, l) -> safety.unregisterSeatAirbagDeployed(area, l) } }
+    }
+
+    /** 속도는 Pleos SDK 에 없다 → Car API. 권한 없음·속성 없음이면 빈 스트림 */
+    override fun speedKph(): Flow<Float?> = carApi.speedKph()
+
+    /** Pleos Gear(check 메서드 없음 — 등록·조회가 실패하면) → Car API GEAR_SELECTION 폴백 */
+    override fun gear(): Flow<Gear?> = flow {
+        if (vehicleOrNull() == null) {
+            emitAll(carApi.gear())
+            return@flow
+        }
+        emitAll(
+            pleosGear().catch { e ->
+                DhLog.i("Pleos Gear 실패(${e.javaClass.simpleName}) → Car API GEAR_SELECTION 폴백")
+                emitAll(carApi.gear())
+            },
+        )
+    }
+
+    private fun pleosGear(): Flow<Gear?> = vehicleFlow("gearSelection") { v ->
+        val gear = v.getGear()
+        val listener = object : GearSelectionListener {
+            override fun onSelected(value: VehicleGear?) {
+                value?.let { trySend(it.toDomain()) }
+            }
+
+            override fun onFailed(e: Exception) {
+                close(e)
+            }
+        }
+        gear.registerGearSelection(listener)
+        gear.getCurrentGearSelectionState({ it?.let { g -> trySend(g.toDomain()) } }, { e -> close(e) })
+        Cleanup { gear.unregisterGearSelection(listener) }
+    }
+
+    private fun TurnSignalValue.toDomain(): TurnSignalState = when (this) {
+        TurnSignalValue.LEFT -> TurnSignalState.LEFT
+        TurnSignalValue.RIGHT -> TurnSignalState.RIGHT
+        TurnSignalValue.OFF -> TurnSignalState.OFF
+    }
+
+    private fun VehicleGear.toDomain(): Gear = when (this) {
+        VehicleGear.GEAR_PARK -> Gear.P
+        VehicleGear.GEAR_REVERSE -> Gear.R
+        VehicleGear.GEAR_NEUTRAL -> Gear.N
+        VehicleGear.GEAR_UNKNOWN -> Gear.UNKNOWN
+        else -> Gear.D   // GEAR_DRIVE, GEAR_1..8
+    }
+
+    // ---------------------------------------------------------------- capability
 
     /** 각 도메인의 checkXxxCapabilities 를 순서대로 호출한다. 결과는 캐시(앱 시작 시 한 번 + 진단 화면). */
     override suspend fun capabilities(): VehicleCapabilities = mutex.withLock {
         cachedCapabilities?.let { return it }
         val v = ensureInitialized()
-        val raw = mapOf("adapter" to "pleos", "sdk" to "Vehicle 2.3.2", "flows" to "fake until T22")
+        val raw = mapOf("adapter" to "pleos", "sdk" to "Vehicle 2.3.2", "flows" to "pleos (T22) + Car API speed/gear")
         val result = if (v == null) {
             VehicleCapabilities.allUnknown("SDK initialize 실패(서비스 앱 없음?) — 확인 못 함", CapabilitySource.PLEOS_SDK, raw)
         } else {
@@ -161,8 +352,9 @@ class PleosVehicleAdapter(
             ),
         )
         add(probeAirbag(v))
-        add(CapabilityEntry(CapabilityDomain.SPEED, supported = null, detail = "T22: Car API PERF_VEHICLE_SPEED(CAR_SPEED 런타임 권한) 확인 예정", source = CapabilitySource.UNCHECKED))
-        add(CapabilityEntry(CapabilityDomain.GEAR, supported = null, detail = "T22: vehicle.getGear() 는 check 메서드 없음 → registerGearSelection 시도 후 Car API GEAR_SELECTION 폴백", source = CapabilitySource.UNCHECKED))
+        val speed = carApi.probeSpeed()
+        add(CapabilityEntry(CapabilityDomain.SPEED, speed.supported, "Car API ${speed.detail}", CapabilitySource.CAR_API))
+        add(probeGear(v))
     }
 
     /** CarInfo 는 VIN·CRN 두 속성 중 하나라도 READ 가능하면 지원 (CRN check 는 deprecated — 폴백 확인용). */
@@ -202,6 +394,18 @@ class PleosVehicleAdapter(
                 )
             },
             onFailure = { e -> CapabilityEntry(CapabilityDomain.AIRBAG, supportedOnFailure(e), describeFailure(e), CapabilitySource.PLEOS_SDK) },
+        )
+    }
+
+    /** 기어: Pleos SDK 는 check 메서드가 없어 현재값 조회로 판정 → 실패 시 Car API GEAR_SELECTION */
+    private suspend fun probeGear(v: Vehicle): CapabilityEntry {
+        val pleos = sdkCall<VehicleGear?>("getCurrentGearSelectionState") { ok, fail -> v.getGear().getCurrentGearSelectionState(ok, fail) }
+        return pleos.fold(
+            onSuccess = { g -> CapabilityEntry(CapabilityDomain.GEAR, true, "Pleos SDK Gear 현재값=$g", CapabilitySource.PLEOS_SDK) },
+            onFailure = { e ->
+                val car = carApi.probeGear()
+                CapabilityEntry(CapabilityDomain.GEAR, car.supported, "Pleos Gear ${describeFailure(e)} → Car API ${car.detail}", CapabilitySource.CAR_API)
+            },
         )
     }
 

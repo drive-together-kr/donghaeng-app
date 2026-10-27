@@ -21,6 +21,8 @@ import app.donghaeng.car.domain.capability.CapabilityReport
 import app.donghaeng.car.domain.capability.CapabilityReporter
 import app.donghaeng.car.domain.location.LocationFeed
 import app.donghaeng.car.domain.location.LocationFeedState
+import app.donghaeng.car.domain.vehicle.VehicleSignalState
+import app.donghaeng.car.domain.vehicle.VehicleSignals
 import app.donghaeng.car.domain.model.Place
 import app.donghaeng.car.domain.navi.NaviEventMonitor
 import app.donghaeng.car.domain.navi.NaviMonitorState
@@ -58,6 +60,8 @@ data class DiagnosticsUiState(
     val naviActionResult: String? = null,
     /** T21 위치 체인·속도·권한 */
     val location: LocationFeedState = LocationFeedState(),
+    /** T22 차량 신호 최신값 */
+    val vehicle: VehicleSignalState = VehicleSignalState(),
 )
 
 /** 진단 화면의 내비 확인용 요청(T20) — 실제 기능 UI 가 아니라 콜백이 오는지 보는 버튼 */
@@ -66,7 +70,7 @@ enum class NaviDebugAction { REQUEST_ROUTE, SHOW_NAVIGATION, QUERY_DESTINATION }
 /** 진단 화면의 위치 확인용 동작(T21) — 권한 요청은 Route 의 런처가, 재탐색은 ViewModel 이 처리 */
 enum class LocationDebugAction { REQUEST_PERMISSION, RESTART }
 
-private data class SideState(val mqtt: MqttStatus, val navi: NaviMonitorState, val naviAction: String?, val location: LocationFeedState)
+private data class SideState(val mqtt: MqttStatus, val navi: NaviMonitorState, val naviAction: String?, val location: LocationFeedState, val vehicle: VehicleSignalState)
 
 /** 진단 화면 — capability 표(T11) + SDK 점검 + 빌드 정보. 확인용 화면이라 사용자 입력이 없다. */
 @HiltViewModel
@@ -79,6 +83,7 @@ class DiagnosticsViewModel @Inject constructor(
     naviMonitor: NaviEventMonitor,
     private val navi: NaviAdapter,
     private val locationFeed: LocationFeed,
+    private val vehicleSignals: VehicleSignals,
 ) : ViewModel() {
 
     private val naviActionResult = MutableStateFlow<String?>(null)
@@ -87,7 +92,7 @@ class DiagnosticsViewModel @Inject constructor(
         viewModelScope.launch { tokenStore.load() }
     }
 
-    val uiState: StateFlow<DiagnosticsUiState> = combine(reporter.report, sdkProbe.report, tokenStore.state, combine(mqtt.status, naviMonitor.state, naviActionResult, locationFeed.state) { m, n, a, l -> SideState(m, n, a, l) }, combine(sessionManager.session, sessionManager.lastCommand) { s, c -> s to c }) { report, probe, tokens, (mqttStatus, naviState, actionResult, locationState), (session, lastCmd) ->
+    val uiState: StateFlow<DiagnosticsUiState> = combine(reporter.report, sdkProbe.report, tokenStore.state, combine(mqtt.status, naviMonitor.state, naviActionResult, locationFeed.state, vehicleSignals.state) { m, n, a, l, v -> SideState(m, n, a, l, v) }, combine(sessionManager.session, sessionManager.lastCommand) { s, c -> s to c }) { report, probe, tokens, (mqttStatus, naviState, actionResult, locationState, vehicleState), (session, lastCmd) ->
         DiagnosticsUiState(
             report = report,
             probe = probe,
@@ -98,6 +103,7 @@ class DiagnosticsViewModel @Inject constructor(
             navi = naviState,
             naviActionResult = actionResult,
             location = locationState,
+            vehicle = vehicleState,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DiagnosticsUiState(report = reporter.report.value, probe = sdkProbe.report.value))
 
@@ -128,11 +134,14 @@ class DiagnosticsViewModel @Inject constructor(
         }
     }
 
-    /** 시스템 권한 다이얼로그 결과 → 체인 재탐색 */
+    /** 시스템 권한 다이얼로그 결과 → 체인 재탐색 + 차량 신호 재구독(CAR_SPEED) */
     fun onPermissionResult(result: Map<String, Boolean>) {
         DhLog.i("diag permissions: ${result.entries.joinToString { "${it.key.substringAfterLast('.')}=${it.value}" }}")
         locationFeed.restart()
+        vehicleSignals.restart()
     }
+
+    fun restartVehicleSignals() = vehicleSignals.restart()
 
     private companion object {
         /** 확인용 목적지 — 공공장소, 시연 전용 */
