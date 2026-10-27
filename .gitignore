@@ -81,6 +81,10 @@ desktop.ini
 ~$*
 
 # ---------- 제출 자료 · 개인정보 포함 파일 (CLAUDE.md 규칙 10: 블라인드 심사) ----------
-# 접수양식에는 실명·학교·연락처가 들어가므로 공개 저장소에 올리지 않는다.
-/동행_접수양식_기획서.docx
-/donghaeng_개발문서.zip
+# 접수양식(docx)·원본 문서 묶음(zip)에는 실명·학교·연락처가 들어가므로 어떤 docx/zip 도 올리지 않는다.
+*.docx
+*.zip
+
+# ---------- Firebase 클라이언트 설정 (프로젝트 ID·API 키 포함) ----------
+google-services.json
+GoogleService-Info.plist

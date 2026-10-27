@@ -10,6 +10,7 @@ import org.springframework.context.annotation.Import
 import org.springframework.security.test.context.support.WithMockUser
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.get
+import org.springframework.test.web.servlet.post
 
 /** 웹 계층 슬라이스 테스트: JWKS 플레이스홀더, 보안 기본 동작, QR 웹 폴백 페이지. DB 불필요. */
 @WebMvcTest(controllers = [WellKnownController::class, LandingController::class])
@@ -24,6 +25,16 @@ class WebLayerTest {
         mvc.get("/.well-known/jwks.json").andExpect {
             status { isOk() }
             content { json("""{"keys":[]}""", strict = true) }
+        }
+    }
+
+    @Test
+    fun `405 keeps the Allow header and uses the docs-03 error format`() {
+        mvc.post("/.well-known/jwks.json").andExpect {
+            status { isMethodNotAllowed() }
+            header { string("Allow", containsString("GET")) }
+            jsonPath("$.error.code") { value("METHOD_NOT_ALLOWED") }
+            jsonPath("$.error.traceId") { isNotEmpty() }
         }
     }
 

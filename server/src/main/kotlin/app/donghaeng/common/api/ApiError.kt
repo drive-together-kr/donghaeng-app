@@ -90,18 +90,20 @@ class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception::class)
     fun handleOther(e: Exception): ResponseEntity<ApiError> {
-        // Spring MVC 표준 오류(405, 415, 400 등)는 상태 코드를 그대로 살린다.
+        // Spring MVC 표준 오류(405, 406, 415, 503 등)는 상태 코드와 헤더(405 의 Allow 등)를 그대로 살린다.
         if (e is ErrorResponse) {
             val status = e.statusCode
-            if (status.is4xxClientError) {
-                val code = when (status.value()) {
-                    404 -> "NOT_FOUND"
-                    405 -> "METHOD_NOT_ALLOWED"
-                    415 -> "UNSUPPORTED_MEDIA_TYPE"
-                    else -> "BAD_REQUEST"
-                }
-                return ResponseEntity.status(status).body(ApiError.of(code, "요청을 처리할 수 없어요."))
+            val code = when (status.value()) {
+                404 -> "NOT_FOUND"
+                405 -> "METHOD_NOT_ALLOWED"
+                406 -> "NOT_ACCEPTABLE"
+                415 -> "UNSUPPORTED_MEDIA_TYPE"
+                503 -> "SERVICE_UNAVAILABLE"
+                else -> if (status.is4xxClientError) "BAD_REQUEST" else "INTERNAL_ERROR"
             }
+            val error = ApiError.of(code, "요청을 처리할 수 없어요.")
+            if (status.is5xxServerError) log.error("ErrorResponse {} traceId={}", status, error.error.traceId, e)
+            return ResponseEntity.status(status).headers(e.headers).body(error)
         }
         val error = ApiError.of("INTERNAL_ERROR", "서버 오류가 발생했어요.")
         log.error("Unhandled exception traceId={}", error.error.traceId, e)

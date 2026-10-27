@@ -110,6 +110,17 @@ services:
         condition: service_healthy
       emqx:
         condition: service_started
+    healthcheck:
+      # JRE 이미지에 curl/wget 이 없어 bash 의 /dev/tcp 로 readiness 를 확인한다 (인증 없이 열린 경로).
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /actuator/health/readiness HTTP/1.0\r\n\r\n' >&3 && grep -q '"status":"UP"' <&3
+      interval: 10s
+      timeout: 5s
+      start_period: 40s
+      retries: 10
     restart: unless-stopped
 
 volumes:
