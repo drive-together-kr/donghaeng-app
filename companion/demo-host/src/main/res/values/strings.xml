@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">동행 데모 호스트</string>
+    <!-- 기아 공식 앱을 흉내 낸 시연용 호스트 앱. 실제 브랜드 자산(로고·폰트·렌더 이미지)은 쓰지 않는다 -->
+    <string name="app_name">KIA (시연)</string>
+    <string name="disclaimer">본 앱은 공모전 시연용 재현 화면이며 기아 공식 앱이 아닙니다</string>
+    <string name="demo_tap">시연용 화면입니다</string>
+    <string name="notification_channel_donghaeng">동행 그룹 알림</string>
 </resources>

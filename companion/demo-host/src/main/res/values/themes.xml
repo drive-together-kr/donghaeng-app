@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Compose 가 그리므로 플랫폼 테마만 쓴다(액션바 없음) -->
-    <style name="Theme.DemoHost" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:windowBackground">@android:color/white</item>
+    <!-- Compose 가 그리므로 플랫폼 테마만 쓴다(액션바 없음). 기아 앱 재현 — 아주 어두운 네이비 배경, 밝은 아이콘 없는 상태바 -->
+    <style name="Theme.DemoHost" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/kia_bg</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 </resources>

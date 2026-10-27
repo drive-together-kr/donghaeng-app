@@ -13,6 +13,7 @@ composeBom = "2024.12.01"
 navigationCompose = "2.8.5"
 camerax = "1.4.1"
 mlkitBarcode = "17.3.0"
+osmdroid = "6.1.20"
 junit = "4.13.2"
 
 [libraries]
@@ -47,6 +48,9 @@ androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", 
 androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
 androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
 mlkit-barcode-scanning = { group = "com.google.mlkit", name = "barcode-scanning", version.ref = "mlkitBarcode" }
+
+# --- 지도 (demo-host 지도 탭, OSM 타일 — API 키 불필요) ---
+osmdroid = { group = "org.osmdroid", name = "osmdroid-android", version.ref = "osmdroid" }
 
 # --- 테스트 ---
 junit = { group = "junit", name = "junit", version.ref = "junit" }

@@ -102,22 +102,23 @@ QR 은 서버가 `{DH_PUBLIC_BASE_URL}` + 경로로 만든다. 모듈은 **호�
 
 권한: 모듈은 매니페스트에 아무 권한도 넣지 않는다. 카메라는 앱 스캐너의 것이고, 네트워크(`INTERNET`)는 앱이 이미 가진다.
 
-## 3. demo-host — 시연용 호스트 앱
+## 3. demo-host — 시연용 호스트 앱 (기아 앱 5탭 재현)
 
-공식 앱을 흉내 낸 최소 앱. 모든 데이터는 **실제 서버**(`BuildConfig.DH_PUBLIC_BASE_URL`)에서 온다. 화면 4개:
+공식 앱(기아 앱)의 화면 구조를 **정적으로 재현**하고(누르면 "시연용 화면입니다" 토스트), 동행이 들어가는 지점 A~G 만 실제로 동작한다. 설계·삽입 지점 표·캡처는 `docs/07_companion모듈_설계.md` §6.
 
-| 화면 | 내용 |
+| 구역 | 내용 |
 |---|---|
-| 로그인(dev) | 이메일·닉네임(미리 채워진 dev 계정) → 호스트의 `DevAuthClient` 가 `POST /v1/auth/login {provider:"dev", email, displayName}` 호출 → 토큰 쌍을 `DemoSession` 메모리에 보관 → `DongHaeng.init(…, AccountProvider.DEV, DevTokenProvider { accessToken })`. 입력 검증·네트워크·서버 오류는 화면에 한국어로 표시(서버에 `/v1/auth/login` 이 없으면 "아직 없어요(T10)" 안내). 모듈은 첫 호출 때 이 토큰을 `/v1/auth/exchange` 로 교환한다 |
-| 홈 | 제목 "동행 — 공식 앱 흉내 (데모용)", 내 차 목록(`listMyVehicles` = 서버 `GET /v1/me/vehicles`), 상단 **새로고침** 버튼(화면 복귀 시에도 자동 재조회), 비어 있으면 "계정에 연결된 차가 없어요. 차 화면의 QR을 스캔해 등록하세요", 큰 **QR 스캔** 버튼, 참여 중인 그룹 |
-| 스캔 | CameraX `PreviewView` + ML Kit 바코드(번들). 첫 QR 값 → 경로 보고 "그룹 합류 / 차량 등록" 확인 → `joinGroup`/`pairVehicle`. 카메라 없는 에뮬레이터용 **"QR 문자열 붙여넣기"** 입력칸(차 화면 QR 문자열 — logcat 의 `verifyUri`/초대 `url` — 을 그대로)과 예시 버튼. 차량 등록 성공 시 `PairResult`(별명·차량 ID)를 보여 주고 홈으로 돌아가며 목록이 다시 읽힌다 |
-| 그룹 | `observeGroup`(15초 폴링) → 멤버(닉네임·상태·ETA·잔량)와 최근 이벤트 5개, 하단 입력창 → `sendPassengerMessage`. 서버 그룹 API 는 T14 에서 구현됐다(docs/03 §2) |
+| 로그인 | dev 로그인(`DevAuthClient` → `POST /v1/auth/login`) → `DongHaeng.init(…, DEV, DevTokenProvider)` + `SdkGateway`. **"서버 없이 둘러보기 (시연 모드)"** 는 `FakeGateway`(호스트 쪽 가짜 그룹: 서울시청에서 움직이는 3대 + 시간표 이벤트)로 B·D·F·G 가 그대로 움직인다 |
+| 홈 / 지도 / 제어 / 스토어 / 마이카 | `feature/*` — 기아 앱 레이아웃 재현. 디자인 토큰 `ui/theme/KiaTheme.kt`(배경 `#08131B`, 카드 `#18222B`, 라임 `#8CC63F`, Pretendard), 공용 조각 `ui/components/`(KiaTopBar·KiaBottomBar·KiaCard·CarArt 벡터 실루엣·OsmMap) |
+| 동행 삽입 지점 | `donghaeng/` 패키지 하나에 모아 둔다 — **A** 상단 QR 스캔(`ScanScreen` + `JoinGroupSheet`: 초대 미리보기 → 차 선택 → `joinGroup`), **B** 홈 "동행 중" 카드(`ActiveGroupCard`), **C** 동행 메인(`DongHaengMainScreen`), **D** 지도 "동행" 칩 → 그룹 마커 + `GroupDriveSheet`, **E** 마이카 > 연동 서비스 > 동행 그룹 주행(`DongHaengSettingsScreen`), **F** 알림 벨(`NotificationsScreen`, 백그라운드면 시스템 알림), **G** 메시지 시트(`PassengerMessageSheet`, 프리셋 4 + 60자). 상태는 `DongHaengStore`, 서버/SDK 호출은 `DongHaengGateway` 로만 |
 
 - 서버 주소는 `BuildConfig.DH_PUBLIC_BASE_URL` — Gradle 속성 `dhPublicBaseUrl`(기본 `http://10.0.2.2:8080`). 클라우드: `-PdhPublicBaseUrl=https://<VM-IP>.sslip.io`
 - 평문 HTTP: `android:usesCleartextTraffic="${usesCleartext}"` — `dhPublicBaseUrl` 이 `http://` 일 때만 true (car-app 과 같은 규칙)
-- 시작 로그: `Log.i("DongHaeng", "demo-host started base=…")`, 로그인 `dev login ok user=usr_…`, 모듈 `exchange ok provider=dev ttlS=…` (토큰·닉네임은 찍지 않는다)
-- 카메라 권한은 스캔 화면 진입 시 런타임 요청. 에뮬레이터에서 미리 주려면 `adb shell pm grant app.donghaeng.companion.demo android.permission.CAMERA`
-- 시연 순서(차량 등록, docs/07 §4.3 대체 수단): 서버(`infra` compose) 기동 → Pleos AVD 의 차량 앱이 `POST /v1/device/code` 로 QR 표시 → Medium_Phone AVD 의 demo-host 로그인 → 스캔(또는 `verifyUri` 붙여넣기) → "차량 등록" → 홈 목록에 차가 생긴다
+- 초대 미리보기: QR 의 URL(`{base}/j/{token}`) 자체를 `Accept: application/json` 으로 읽는다(인증 없음, docs/03 §2.2). 모듈 공개 API 는 그대로 6개
+- 권한: `CAMERA`(스캔 진입 시), `POST_NOTIFICATIONS`(API 33+, 알림 화면 진입 시). 에뮬레이터: `adb shell pm grant app.donghaeng.companion.demo android.permission.CAMERA`
+- 카메라 없는 에뮬레이터: 스캔 화면 톱니(디버그) → "QR 문자열 붙여넣기" 에 차 화면 QR 문자열(초대 `url` / `verifyUri`)을 그대로. 시연 모드에서는 "그룹 QR 예시" 버튼으로 가짜 그룹에 합류한다
+- 브랜드 자산 미사용: 로고 자리 "KIA (시연)", 차량은 벡터 실루엣, 폰트 Pretendard(OFL, `res/font`), 아이콘 Material Symbols Outlined(Apache-2.0, `res/drawable/ms_*.xml`). 모든 화면 하단에 "본 앱은 공모전 시연용 재현 화면이며 기아 공식 앱이 아닙니다". 참고 스크린샷은 저장소 밖에만 둔다
+- 로그: `Log.i("DongHaeng", …)` — 토큰·닉네임·좌표는 찍지 않는다
 
 ## 4. 빌드 · 테스트
 

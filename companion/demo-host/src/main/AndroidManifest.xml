@@ -6,8 +6,11 @@
     <uses-feature
         android:name="android.hardware.camera.any"
         android:required="false" />
-    <!-- 동행 모듈(HttpDongHaengApi)과 호스트의 dev 로그인(DevAuthClient)이 서버와 통신한다 -->
+    <!-- 동행 모듈(HttpDongHaengApi)·호스트의 dev 로그인(DevAuthClient)·지도 타일(osmdroid)이 네트워크를 쓴다 -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 동행 그룹 이벤트를 앱이 백그라운드일 때 시스템 알림으로 (API 33+ 런타임 권한) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:name=".DemoApplication"
@@ -24,6 +27,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>

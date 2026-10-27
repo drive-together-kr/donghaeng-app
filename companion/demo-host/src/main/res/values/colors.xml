@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#0B3B74</color>
+    <!-- 디자인 토큰(스크린샷에서 추출). Compose 쪽은 ui/theme/KiaTheme.kt 의 KiaColors 가 같은 값을 갖는다 -->
+    <color name="kia_bg">#FF08131B</color>
+    <color name="kia_card">#FF18222B</color>
+    <color name="kia_accent">#FF8CC63F</color>
+    <color name="ic_launcher_background">#FF08131B</color>
 </resources>

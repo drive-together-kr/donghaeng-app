@@ -86,4 +86,7 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
     implementation(libs.mlkit.barcode.scanning)
+
+    // 지도 탭: osmdroid(OpenStreetMap 타일). 그룹 차량 마커(동행 D)도 이 위에 그린다
+    implementation(libs.osmdroid)
 }
