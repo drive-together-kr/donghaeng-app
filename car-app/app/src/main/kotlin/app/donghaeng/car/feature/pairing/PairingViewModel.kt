@@ -128,6 +128,7 @@ class PairingViewModel internal constructor(
             setState(PairingState.CodeIssued(issued.userCode, issued.verifyUri, expiresAt, intervalSec, attempt), extra = "expiresIn=${issued.expiresIn} interval=$intervalSec attempt=$attempt")
 
             // 폴링 루프 — 끝나는 경우: 연결(return) / 오류(return) / 코드 갱신(break → 다음 attempt)
+            var networkFailures = 0
             while (true) {
                 delay(intervalSec * 1000L)
                 if (clock() >= expiresAt) {
@@ -141,7 +142,7 @@ class PairingViewModel internal constructor(
                         _events.trySend(PairingEvent.Paired)
                         return
                     }
-                    is ApiResult.HttpFailure.Pending -> Unit                                   // 428: 계속
+                    is ApiResult.HttpFailure.Pending -> networkFailures = 0                    // 428: 계속
                     is ApiResult.HttpFailure.SlowDown -> {                                     // 429: 간격 +2초(누적)
                         intervalSec += SLOW_DOWN_STEP_SEC
                         DhLog.d("pairing poll=SLOW_DOWN interval=$intervalSec")
@@ -151,6 +152,16 @@ class PairingViewModel internal constructor(
                     is ApiResult.HttpFailure.Expired, is ApiResult.HttpFailure.NotFound -> {    // 410 / 404: 새 코드
                         DhLog.i("pairing poll=${r.summary} attempt=$attempt → 새 코드 요청")
                         break
+                    }
+                    is ApiResult.NetworkFailure -> {
+                        // 일시적 네트워크 오류(앱 전환·절전 등)는 코드가 살아 있는 동안 계속 폴링한다 — 폰이 이미 승인했을 수 있고,
+                        // 새 코드를 받으면 그 승인이 무효가 된다. 연속 실패가 쌓이면 그때 오류 화면으로
+                        networkFailures++
+                        DhLog.w("pairing poll=NETWORK ${r.summary} (#$networkFailures/$MAX_POLL_NETWORK_FAILURES) → ${intervalSec}s 뒤 재시도")
+                        if (networkFailures >= MAX_POLL_NETWORK_FAILURES) {
+                            setState(r.toErrorState())
+                            return
+                        }
                     }
                     is ApiResult.Failure -> {
                         setState(r.toErrorState())
@@ -187,6 +198,9 @@ class PairingViewModel internal constructor(
     companion object {
         /** 코드가 만료되어 다시 받는 횟수 상한(이번 시도 묶음 안에서) */
         const val MAX_CODE_REQUESTS = 3
+
+        /** 폴링 중 연속 네트워크 오류 허용 횟수(코드 수명 10분 안에서 ≈ 수 분) */
+        const val MAX_POLL_NETWORK_FAILURES = 20
         const val SLOW_DOWN_STEP_SEC = 2
         const val MIN_INTERVAL_SEC = 1
     }
