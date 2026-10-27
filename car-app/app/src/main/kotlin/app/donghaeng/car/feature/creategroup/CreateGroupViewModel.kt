@@ -51,8 +51,10 @@ sealed interface CreateGroupState {
         /** 페어링이 없어 만들 수 없음 */
         val notPaired: Boolean = false,
         val error: String? = null,
+        /** T29 주행 중 — 입력 비활성 */
+        val isDriving: Boolean = false,
     ) : CreateGroupState {
-        val canCreate: Boolean get() = name.isNotBlank() && destination != null && !creating && !notPaired
+        val canCreate: Boolean get() = name.isNotBlank() && destination != null && !creating && !notPaired && !isDriving
     }
 
     data class Active(
@@ -65,6 +67,8 @@ sealed interface CreateGroupState {
         val error: String? = null,
         /** 최근 그룹 이벤트 음성 문구(최대 5개, 최신 먼저) — T26 전까지 화면 표시만 */
         val recentSpeech: List<String> = emptyList(),
+        /** T29 주행 중 — 종료/나가기 비활성 */
+        val isDriving: Boolean = false,
     ) : CreateGroupState {
         val inviteExpired: Boolean get() = inviteRemainingS != null && inviteRemainingS <= 0
     }
@@ -80,7 +84,12 @@ class CreateGroupViewModel @Inject constructor(
     private val navi: NaviAdapter,
     private val tokenStore: TokenStore,
     private val sessionManager: MqttSessionManager,
+    driving: app.donghaeng.car.core.common.DrivingStateMonitor? = null,
 ) : ViewModel() {
+
+    init {
+        driving?.let { d -> viewModelScope.launch { d.isDriving().collect { v -> update<CreateGroupState.Form> { it.copy(isDriving = v) }; update<CreateGroupState.Active> { it.copy(isDriving = v) } } } }
+    }
 
     private val _state = MutableStateFlow<CreateGroupState>(CreateGroupState.Loading)
     val state: StateFlow<CreateGroupState> = _state.asStateFlow()

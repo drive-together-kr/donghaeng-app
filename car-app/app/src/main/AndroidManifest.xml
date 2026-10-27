@@ -33,8 +33,8 @@
              평문 허용; 클라우드(https) 빌드에서는 false 로 들어가 잘못된 http 주소(오타 -P 값, 서버가 준 verifyUri/invite.url, 리다이렉트)가
              평문으로 나가지 않게 막는다. 이 속성은 APK 전체에 적용되며 HiveMQ(tcp://) 소켓에는 적용되지 않으므로
              MqttGateway(T16)는 DH_PUBLIC_BASE_URL 이 https 일 때 ssl:// 만 허용한다.
-             공식 샘플(pleos-sample-vehicle-app)은 android.car.application / distractionOptimized 메타데이터를 선언하지 않으므로
-             여기서도 선언하지 않는다. 주행 중 UX 제한(distractionOptimized, CarUxRestrictions)은 T29 에서 다룬다. -->
+             T29: MainActivity 에 distractionOptimized=true 를 선언한다 — 없으면 AAOS 가 속도 > 0 에서 앱 화면을 "주행 중에는 사용할 수 없습니다" 로 가린다
+             (Pleos AVD 실측, docs/10 R11). 대신 앱이 스스로 CarUxRestrictionsManager(isRequiresDistractionOptimization) 를 보고 입력을 막는다(docs/05 §4). -->
 
         <activity
             android:name=".MainActivity"
@@ -42,6 +42,8 @@
             android:launchMode="singleTask"
             android:screenOrientation="unspecified"
             android:theme="@style/Theme.DongHaeng">
+            <!-- 주행 중에도 표시 허용(그룹 지도·리스트 보기, 음성 안내). 입력은 DrivingStateMonitor 로 앱이 막는다 -->
+            <meta-data android:name="distractionOptimized" android:value="true" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

@@ -15,6 +15,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -41,6 +42,8 @@ data class HomeUiState(
     val groupSession: GroupSession? = null,
     /** SDK 점검 결과. null = 아직 실행 전. pleos flavor 에서만 카드에 표시 */
     val sdkProbe: List<ProbeLine>? = null,
+    /** T29 주행 중(입력 비활성). 그룹 보기는 허용 */
+    val isDriving: Boolean = false,
 ) {
     val showSdkProbe: Boolean get() = flavor == "pleos"
 }
@@ -50,13 +53,14 @@ class HomeViewModel @Inject constructor(
     sdkProbe: SdkProbe,
     private val tokenStore: TokenStore,
     sessionStore: GroupSessionStore,
+    driving: app.donghaeng.car.core.common.DrivingStateMonitor,
 ) : ViewModel() {
 
     init {
         viewModelScope.launch { tokenStore.load() }
     }
 
-    val uiState: StateFlow<HomeUiState> = combine(sdkProbe.report, tokenStore.state, sessionStore.session) { lines, tokens, session -> build(lines, tokens, session) }
+    val uiState: StateFlow<HomeUiState> = combine(sdkProbe.report, tokenStore.state, sessionStore.session, driving.isDriving().onStart { emit(false) }) { lines, tokens, session, isDriving -> build(lines, tokens, session).copy(isDriving = isDriving) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), build(sdkProbe.report.value, tokenStore.state.value, sessionStore.session.value))
 
     private fun build(lines: List<ProbeLine>?, tokens: TokenStoreState, session: GroupSession?): HomeUiState = when (tokens) {

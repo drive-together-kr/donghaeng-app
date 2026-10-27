@@ -10,12 +10,12 @@ import app.donghaeng.car.adapter.location.PleosFusedLocationAdapter
 import app.donghaeng.car.adapter.navi.NaviAdapter
 import app.donghaeng.car.adapter.navi.PleosNaviAdapter
 import app.donghaeng.car.adapter.sdk.PleosSdkProbe
+import app.donghaeng.car.adapter.uxr.CarUxDrivingStateMonitor
 import app.donghaeng.car.adapter.sdk.SdkProbe
 import app.donghaeng.car.adapter.vehicle.PleosVehicleAdapter
 import app.donghaeng.car.adapter.vehicle.VehicleAdapter
 import app.donghaeng.car.adapter.voice.AndroidTtsVoiceAdapter
 import app.donghaeng.car.adapter.voice.VoiceAdapter
-import app.donghaeng.car.core.common.AlwaysParkedDrivingStateMonitor
 import app.donghaeng.car.core.common.DrivingStateMonitor
 import app.donghaeng.car.domain.navi.NaviEventMonitor
 import dagger.Module
@@ -31,8 +31,7 @@ import javax.inject.Singleton
  * - T11/T22 `PleosVehicleAdapter`: CarInfo 차량 ID + checkXxxCapabilities + Fuel·EvBattery·Brake·TurnSignal·Airbag 구독, 속도/기어는 Car API(CarApiSignals).
  * - T20 `PleosNaviAdapter`: NaviHelper 콜백 → NaviEvent. 초기화 실패 시 이벤트 없음(크래시 없음).
  * - T21 `CompositeLocationAdapter`: Fused(권한+isSupported 일 때만) → Navi → Android → Fake.
- * 교체 예정:
- * - T29     `CarUxDrivingStateMonitor`
+ * - T29 `CarUxDrivingStateMonitor`: CarUxRestrictionsManager → 주행 중 입력 제한.
  */
 @Module
 @InstallIn(SingletonComponent::class)
@@ -58,7 +57,7 @@ object AdapterModule {
 
     @Provides
     @Singleton
-    fun provideDrivingStateMonitor(): DrivingStateMonitor = AlwaysParkedDrivingStateMonitor() // TODO(T29)
+    fun provideDrivingStateMonitor(@ApplicationContext context: Context): DrivingStateMonitor = CarUxDrivingStateMonitor(context)
 
     @Provides
     @Singleton

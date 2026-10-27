@@ -152,7 +152,7 @@ private fun FormContent(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                OutlinedButton(onClick = onLoadNavi, enabled = !form.loadingNavi, modifier = Modifier.heightIn(min = 56.dp)) {
+                OutlinedButton(onClick = onLoadNavi, enabled = !form.loadingNavi && !form.isDriving, modifier = Modifier.heightIn(min = 56.dp)) {
                     Text(stringResource(R.string.group_btn_load_navi))
                 }
             }
@@ -162,6 +162,7 @@ private fun FormContent(
                 DESTINATION_PRESETS.forEach { place ->
                     FilterChip(
                         selected = !form.fromNavi && form.destination?.name == place.name,
+                        enabled = !form.isDriving,
                         onClick = { onPickPreset(place) },
                         label = { Text(place.name) },
                         modifier = Modifier.heightIn(min = 48.dp),
@@ -177,17 +178,19 @@ private fun FormContent(
                 onValueChange = onName,
                 label = { Text(stringResource(R.string.group_name)) },
                 singleLine = true,
+                enabled = !form.isDriving,
                 modifier = Modifier.fillMaxWidth(),
             )
             Text(stringResource(R.string.group_max_members), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 MAX_MEMBER_CHOICES.forEach { n ->
-                    FilterChip(selected = form.maxMembers == n, onClick = { onMaxMembers(n) }, label = { Text("${n}대") }, modifier = Modifier.heightIn(min = 48.dp))
+                    FilterChip(selected = form.maxMembers == n, enabled = !form.isDriving, onClick = { onMaxMembers(n) }, label = { Text("${n}대") }, modifier = Modifier.heightIn(min = 48.dp))
                 }
             }
         }
     }
     form.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyLarge) }
+    if (form.isDriving) Text(stringResource(R.string.group_driving_hint), color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.titleMedium)
     Button(onClick = onCreate, enabled = form.canCreate, modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp)) {
         if (form.creating) {
             CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 3.dp, color = MaterialTheme.colorScheme.onPrimary)
@@ -278,7 +281,8 @@ private fun MembersPane(active: CreateGroupState.Active, onEndOrLeave: () -> Uni
         }
     }
     active.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyLarge) }
-    OutlinedButton(onClick = onEndOrLeave, enabled = !active.busy, modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp)) {
+    if (active.isDriving) Text(stringResource(R.string.group_driving_hint), color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.titleMedium)
+    OutlinedButton(onClick = onEndOrLeave, enabled = !active.busy && !active.isDriving, modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp)) {
         Text(if (active.session.isLeader) stringResource(R.string.group_btn_end) else stringResource(R.string.group_btn_leave))
     }
 }

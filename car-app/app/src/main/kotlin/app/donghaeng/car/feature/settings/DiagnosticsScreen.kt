@@ -104,6 +104,7 @@ fun DiagnosticsScreen(
             EventEngineCard(state)
             VoiceCard(state, onVoiceAction)
             RouteSyncCard(state, onRouteSyncAction)
+            DrivingCard(state)
             BuildCard(state)
         }
     }
@@ -294,6 +295,21 @@ private fun NaviCard(state: DiagnosticsUiState, onNaviAction: (NaviDebugAction) 
                 OutlinedButton(onClick = { onNaviAction(NaviDebugAction.SHOW_NAVIGATION) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_navi_action_show)) }
             }
             LabelRow(stringResource(R.string.diag_navi_last_action), state.naviActionResult ?: "-")
+        }
+    }
+}
+
+/** T29 — 주행 제한: CarUxRestrictionsManager 의 requiresDistractionOptimization. Virtual Console 속도 > 0 이면 true 가 돼야 하고, 앱 화면은 가려지지 않아야 한다 */
+@Composable
+private fun DrivingCard(state: DiagnosticsUiState) {
+    Card {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(stringResource(R.string.diag_section_uxr), style = MaterialTheme.typography.titleMedium)
+            HorizontalDivider()
+            val d = state.driving
+            LabelRow(stringResource(R.string.diag_uxr_state), if (state.isDriving) "주행 중 — 입력 비활성" else "정차 — 입력 허용")
+            LabelRow(stringResource(R.string.diag_uxr_source), "${d.source}   requiresDO=${d.requiresDistractionOptimization ?: "?"}   restrictions=${d.activeRestrictions?.let { r -> "0x" + Integer.toHexString(r) } ?: "-"}   updates=${d.updates}")
+            LabelRow(stringResource(R.string.diag_mqtt_last_error), d.lastError ?: "-")
         }
     }
 }

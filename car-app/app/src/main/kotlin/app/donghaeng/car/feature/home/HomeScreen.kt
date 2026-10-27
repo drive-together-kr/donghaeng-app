@@ -165,7 +165,7 @@ private fun ActionSection(
 ) {
     Button(
         onClick = onPairPhone,
-        enabled = state.canPairPhone,
+        enabled = state.canPairPhone && !state.isDriving,
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 64.dp),
@@ -175,7 +175,7 @@ private fun ActionSection(
     Spacer(Modifier.height(12.dp))
     OutlinedButton(
         onClick = onStartGroup,
-        enabled = state.canStartGroup,
+        enabled = state.canStartGroup && (state.groupSession != null || !state.isDriving),
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 64.dp),
@@ -183,6 +183,9 @@ private fun ActionSection(
         Text(if (state.groupSession != null) stringResource(R.string.home_btn_open_group) else stringResource(R.string.home_btn_start_group))
     }
     Spacer(Modifier.height(8.dp))
+    if (state.isDriving) {
+        Text(stringResource(R.string.home_driving_hint), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.tertiary)
+    }
     Text(
         stringResource(R.string.home_buttons_hint),
         style = MaterialTheme.typography.bodyMedium,

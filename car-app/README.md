@@ -82,6 +82,7 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 | `feature.pairing` | `PairingViewModel`(상태 기계) + `PairingScreen`(ZXing QR·`KQ7-4MZ` 코드·남은 시간·오류/재시도), `PairingFormat`, `QrCodes` | T12 |
 | `feature.settings` | `SettingsScreen`(연결 상태·**연결 해제**·진단 진입), `DiagnosticsScreen`(capability 표 · SDK 점검 · 빌드 정보 · 차량 ID 마스킹) | T11/T12 |
 | `feature.groupdrive` | `GroupDriveViewModel`(STATE 스냅샷·이벤트·내 위치·연결 → `GroupDriveUiState`) · `GroupDriveScreen`(가로/세로 반응형, 멤버 리스트·이벤트 스트립·초대 QR/나가기·종료) · `GroupMapCanvas` + `GroupMapProjection`(Canvas 경량 지도) | T25 |
+| `adapter.uxr` (pleos) | `CarUxDrivingStateMonitor`(CarUxRestrictionsManager → `DrivingStateMonitor.isDriving()`/`status`) · fake 는 `AlwaysParkedDrivingStateMonitor` | T29 |
 | `domain.routesync` | `RouteSyncEngine`(선두: 내비 목적지/경유지 변경 → ROUTE_CHANGED 발행 · 멤버: ROUTE_FOLLOW_PROPOSAL → 음성·제안 카드 → 수락 시 내비 재요청 + ACK, 30초 자동 거절, 자동 따라가기) | T28 |
 | `domain.voice` | `VoiceAnnouncer`(그룹 이벤트 → 음성 큐: 신선도 5s·내 차 생략·우선순위·중복 10s·큐 대기 30s) | T27 |
 | `adapter.voice` | `VoiceAdapter` + `AndroidTtsVoiceAdapter`(오디오 포커스·선행 묵음 200 ms·완료 콜백·엔진 없으면 로그 폴백, `status`) | T04/T27 |
@@ -228,6 +229,11 @@ mqtt subscribed topic=dh/v1/group/grp_…**/state  /  …/event
 - 선두차: 내비 목적지·경유지가 바뀌면 `routesync: ROUTE_CHANGED published=true …`. AVD 는 내비 콜백이 없으므로 진단 → **경로 동기화 (T28)** 카드의 **경로 변경 테스트 발행**(그룹 목적지 + 덕평휴게소)으로 만든다.
 - 멤버: `cmd ROUTE_FOLLOW_PROPOSAL proposal=prp_…` → `routesync: proposal … waypoints=1` → 음성(`voice: speak ROUTE_FOLLOW_PROPOSAL`) + 그룹 주행 화면 제안 카드 → **따라가기**(`routesync: accepted … navi=true ack=true`, `FakeNavi requestRouteWithWaypoints …`) 또는 30초 뒤 `routesync: declined auto=true`. 설정 → **선두 경로 자동 따라가기** 스위치.
 - 서버 로그: `route proposal created proposalId=… targets=N sent=N`, `route ack proposalId=… accepted=…`. 스크립트 `t28_routesync_check.py`(EMQX trace cmd/ack/event).
+
+### T29 — 주행 중 UX 제한 (`adb logcat -s DongHaeng | grep uxr`)
+- MainActivity 에 `distractionOptimized=true` 메타데이터 → 속도 > 0 에서도 앱이 가려지지 않는다(이전엔 "주행 중에는 사용할 수 없습니다"). 앱이 `CarUxRestrictionsManager` 로 주행 중을 판정해 입력을 막는다: `uxr: listener registered` → `uxr: requiresDO=true restrictions=0x50`(주행) / `requiresDO=false`(정차).
+- 주행 중 비활성: 홈 '내 폰과 연결하기'·'같이 가기 시작'(그룹 보기 허용) + 안내 문구, 그룹 생성 입력/종료, 그룹 주행 초대·나가기·제안 버튼. 진단 **주행 제한 (T29)** 카드.
+- 확인: Virtual Console `gear=Drive`, `speed_kph=55` → 캡처 `docs/images/t29/`(진단 카드 '주행 중 — 입력 비활성', 홈 버튼 회색). 스크립트 `t29_uxr_check.py`.
 
 ### Virtual Console (차량 상태 조작, docs/09 §1)
 

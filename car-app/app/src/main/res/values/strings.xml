@@ -118,6 +118,11 @@
     <string name="diag_section_events">차량 이벤트 (T26)</string>
     <string name="diag_section_voice">음성 안내 (T27)</string>
     <string name="diag_section_routesync">경로 동기화 (T28)</string>
+    <string name="diag_section_uxr">주행 제한 (T29)</string>
+    <string name="diag_uxr_state">상태</string>
+    <string name="diag_uxr_source">판정</string>
+    <string name="home_driving_hint">주행 중이에요. 연결·그룹 만들기는 정차 후에 할 수 있어요. 그룹 보기는 가능해요.</string>
+    <string name="group_driving_hint">주행 중에는 입력할 수 없어요. 정차하면 다시 켜져요.</string>
     <string name="diag_rs_role">역할</string>
     <string name="diag_rs_sent">ROUTE_CHANGED 발행</string>
     <string name="diag_rs_pending">대기 중 제안</string>
