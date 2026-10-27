@@ -64,12 +64,13 @@ object ErrorCodes {
     const val CODE_NOT_FOUND = "CODE_NOT_FOUND"                 // 404: 없는 코드
     const val ALREADY_APPROVED = "ALREADY_APPROVED"             // 409: 이미 승인·소비됨
 
-    // 그룹 (§2.2)
-    const val INVITE_EXPIRED = "INVITE_EXPIRED"
-    const val GROUP_FULL = "GROUP_FULL"
-    const val NO_PAIRED_VEHICLE = "NO_PAIRED_VEHICLE"
-    const val ALREADY_MEMBER = "ALREADY_MEMBER"
-    const val INVALID_MESSAGE = "INVALID_MESSAGE"
+    // 그룹 (§2.2~§2.3)
+    const val INVITE_EXPIRED = "INVITE_EXPIRED"       // 410: 초대 토큰이 없음·만료·사용 횟수 초과·그룹 종료 (구분하지 않음)
+    const val GROUP_FULL = "GROUP_FULL"               // 409: maxMembers 도달
+    const val NO_PAIRED_VEHICLE = "NO_PAIRED_VEHICLE" // 404: 합류할 내 차가 없음(대표 차량 없음 또는 vehicleId 가 내 활성 차량이 아님)
+    const val ALREADY_MEMBER = "ALREADY_MEMBER"       // 409: 그 차량이 이미 이 그룹의 멤버
+    const val GROUP_ENDED = "GROUP_ENDED"             // 409: 이미 종료된 그룹에 대한 변경 요청(나가기·종료·위임·초대·메시지)
+    const val INVALID_MESSAGE = "INVALID_MESSAGE"     // 400: 동승자 메시지가 비었거나 60자 초과
 }
 
 /** 오류 응답 봉투 (클라이언트 파싱용). 서버는 같은 모양을 `common/api/ApiError` 로 만든다. */
@@ -269,14 +270,42 @@ data class GroupDetailResponse(
     val recentEvents: List<GroupEvent> = emptyList(),
 )
 
-/** `POST /groups/{groupId}/messages` (companion 동승자) → 그룹 이벤트 `PASSENGER_MESSAGE` */
+/** `GET /me/groups?active=` 항목 — 내 차량이 멤버인 그룹 요약 (docs/03 §2.3, T14 확정) */
+@Serializable
+data class MyGroupDto(
+    val groupId: String,
+    val name: String,
+    val leaderVehicleId: String,
+    /** ACTIVE | ENDED */
+    val status: String,
+    val destination: Place? = null,
+    /** 현재(나가지 않은) 멤버 수 */
+    val memberCount: Int,
+    /** 이 그룹에 들어가 있는 내 차량 ID 들 */
+    val myVehicleIds: List<String>,
+    /** epoch ms */
+    val createdAt: Long,
+    /** epoch ms. ACTIVE 면 null */
+    val endedAt: Long? = null,
+)
+
+/**
+ * `POST /groups/{groupId}/leave` 본문 (선택). 사용자 JWT 로 부를 때 어느 내 차를 뺄지 — 생략하면 이 그룹에 있는 내 차 전부.
+ * 차량 JWT 로 부를 때는 본문을 무시한다(자기 자신).
+ */
+@Serializable
+data class GroupLeaveRequest(
+    val vehicleId: String? = null,
+)
+
+/** `POST /groups/{groupId}/messages` (companion 동승자) → 201 + 그룹 이벤트 `PASSENGER_MESSAGE`(GroupEvent) */
 @Serializable
 data class PassengerMessageRequest(
     val text: String,
     val fromVehicleId: String? = null,
 )
 
-/** `POST /groups/{groupId}/leader` (방장 위임) */
+/** `POST /groups/{groupId}/leader` (방장 위임) → 200 GroupDetailResponse */
 @Serializable
 data class LeaderRequest(
     val vehicleId: String,

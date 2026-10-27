@@ -1,5 +1,6 @@
 package app.donghaeng.identity
 
+import app.donghaeng.common.security.SecureTokens
 import app.donghaeng.common.config.DhProperties
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Component

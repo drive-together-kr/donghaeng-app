@@ -240,6 +240,7 @@ private fun eventLabel(type: String): String = when (GroupEventType.entries.firs
     GroupEventType.PRESET_MESSAGE -> "프리셋"
     GroupEventType.MEMBER_JOINED -> "합류"
     GroupEventType.MEMBER_LEFT -> "이탈"
+    GroupEventType.LEADER_CHANGED -> "방장 변경"
     GroupEventType.MEMBER_OFFLINE -> "오프라인"
     GroupEventType.REST_STOP_PROPOSAL -> "휴게소 제안"
     GroupEventType.REST_STOP_VOTE_RESULT -> "투표 결과"

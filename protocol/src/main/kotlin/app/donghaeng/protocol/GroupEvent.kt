@@ -55,6 +55,9 @@ enum class GroupEventType {
     /** 멤버 이탈(나가기) */
     MEMBER_LEFT,
 
+    /** 방장 변경(위임 또는 방장 이탈 시 자동 승계). payload `{ leaderVehicleId, previousLeaderVehicleId }` */
+    LEADER_CHANGED,
+
     /** 위치 미수신 60초 이상 */
     MEMBER_OFFLINE,
 

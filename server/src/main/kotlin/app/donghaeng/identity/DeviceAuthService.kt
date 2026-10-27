@@ -1,5 +1,6 @@
 package app.donghaeng.identity
 
+import app.donghaeng.common.security.SecureTokens
 import app.donghaeng.common.config.DhProperties
 import app.donghaeng.identity.jwt.JwtIssuer
 import app.donghaeng.identity.repo.DeviceAuthStatus

@@ -47,6 +47,10 @@ class RestDtosTest {
         roundTrip(GroupJoinRequest("inv_x"))
         roundTrip(GroupJoinResponse("grp_01H", "추석 귀성길", listOf(MemberDto("veh_01H", "아빠 차", "#2E7DFF", "LEADER", 1793000000000, "KIA", "EV9"))))
         roundTrip(GroupDetailResponse("grp_01H", "추석 귀성길", "veh_01H", "ACTIVE"))
+        roundTrip(MyGroupDto("grp_01H", "추석 귀성길", "veh_01H", "ACTIVE", Place(35.1, 126.8, "광주"), 2, listOf("veh_02H"), 1793000000000))
+        roundTrip(MyGroupDto("grp_01H", "추석 귀성길", "veh_01H", "ENDED", null, 1, emptyList(), 1793000000000, 1793003600000))
+        roundTrip(GroupLeaveRequest())
+        roundTrip(GroupLeaveRequest("veh_02H"))
         roundTrip(PassengerMessageRequest("앞에 휴게소 들르자", "veh_01H"))
         roundTrip(LeaderRequest("veh_02H"))
         roundTrip(ErrorEnvelope(ErrorBody("INVITE_EXPIRED", "초대 코드가 만료됐어요.", "abc")))
@@ -98,6 +102,10 @@ class RestDtosTest {
         assertTrue("model" !in text, text)
         val join = json.decodeFromString<GroupJoinRequest>("""{"inviteToken":"inv_x","extra":1}""")
         assertNull(join.vehicleId)
+        // 나가기 본문은 비어 있어도 된다 (`{}`), 그룹 요약의 endedAt 은 ACTIVE 면 생략된다
+        assertNull(json.decodeFromString<GroupLeaveRequest>("{}").vehicleId)
+        val summary = json.encodeToString(MyGroupDto.serializer(), MyGroupDto("grp_1", "n", "veh_1", "ACTIVE", null, 1, listOf("veh_1"), 1L))
+        assertTrue("endedAt" !in summary && "destination" !in summary, summary)
     }
 
     @Test

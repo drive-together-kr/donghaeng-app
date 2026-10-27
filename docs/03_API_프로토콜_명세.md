@@ -122,25 +122,46 @@ refresh 토큰은 불투명 문자열(랜덤 32바이트 Base62, 30일, 서버�
   "mqttTopics": { "state": "dh/v1/group/grp_01H/state", "event": "dh/v1/group/grp_01H/event" }
 }
 ```
-`POST /groups/{groupId}/invites` → 초대 토큰 재발급 (만료 시)
+검증: `name` 1~30자(trim), `maxMembers` 2~10, `destination.name` 1~60자, `lat` -90~90, `lon` -180~180 (그 외 400 `VALIDATION_FAILED`). 토큰의 차량이 페어링 해제 상태면 403 `FORBIDDEN`.
+생성한 차량은 `LEADER`(색 `#2E7DFF`)가 된다. 이미 다른 활성 그룹에 있었으면 그 그룹에서 자동으로 나간다(§2.5).
+
+`POST /groups/{groupId}/invites` (방장 — 방장 차량 JWT 또는 그 차량 소유자의 사용자 JWT) → 200 `InviteDto` `{ token, url, expiresAt }`. **이전 초대는 즉시 만료**된다. 방장이 아니면 403, 종료된 그룹이면 409 `GROUP_ENDED`.
+초대 토큰: `inv_` + 랜덤 32바이트 Base62(≈47자). 10분 유효, 사용 횟수 `3 × (maxMembers - 1)`(정원은 `GROUP_FULL` 이 지키고 이 한도는 나가고 다시 들어오는 여유를 둔 재생 상한). 서버엔 SHA-256 해시만 저장(docs/06 §5).
 
 ### 2.2 그룹 합류 (공식 앱의 companion 모듈이 QR 스캔 후 — `joinGroup`)
 `POST /groups/join` (사용자 JWT)
 ```json
 // req
-{ "inviteToken": "inv_...", "vehicleId": "veh_01H..." }   // vehicleId 생략 시 대표 차량
+{ "inviteToken": "inv_...", "vehicleId": "veh_01H..." }   // vehicleId 생략 시 대표 차량(없으면 첫 활성 차량)
 // res 200
 { "groupId": "grp_01H...", "name": "추석 귀성길", "members": [ ...Member ] }
 ```
-오류: `INVITE_EXPIRED`, `GROUP_FULL`, `NO_PAIRED_VEHICLE`, `ALREADY_MEMBER`
+| 상태 | 조건 |
+|---|---|
+| 200 `GroupJoinResponse` | 합류. `MEMBER` 역할, 팔레트에서 비어 있는 첫 색. 그룹 이벤트 `MEMBER_JOINED`, 차량에 cmd `GROUP_JOINED`(T15) |
+| 401 / 403 | 사용자 토큰 없음·무효 / 차량 토큰으로 호출 |
+| 404 `NO_PAIRED_VEHICLE` | 계정에 활성 차량이 없음, 또는 `vehicleId` 가 내 활성 차량이 아님 |
+| 409 `ALREADY_MEMBER` | 그 차량이 이미 **이** 그룹의 멤버 (다른 그룹에 있었으면 거기서 자동으로 나간 뒤 합류 — §2.5) |
+| 409 `GROUP_FULL` | 현재 멤버 수 ≥ `maxMembers` |
+| 410 `INVITE_EXPIRED` | 토큰이 없음·형식 오류·만료·사용 횟수 초과·그룹 종료 (열거 방지를 위해 구분하지 않음) |
+
+검사 순서: 인증 → 차량 결정(404) → 토큰·그룹 존재(410) → 같은 그룹(409 ALREADY_MEMBER) → 만료·종료(410) → 정원(409 GROUP_FULL) → 사용 횟수 초과(410).
 
 ### 2.3 조회·관리
-- `GET /groups/{groupId}` → Group + members + 최신 스냅샷
-- `GET /me/groups?active=true`
-- `POST /groups/{groupId}/leave` (차량 또는 사용자)
-- `POST /groups/{groupId}/end` (방장) → 그룹 종료, 위치 데이터 삭제
-- `POST /groups/{groupId}/leader` `{ vehicleId }` (방장 위임)
-- `POST /groups/{groupId}/messages` (폰 동승자) `{ "text": "앞에 휴게소 들르자", "fromVehicleId": "veh_..." }` → 그룹 이벤트 `PASSENGER_MESSAGE`
+사용자 JWT 는 "현재 멤버 차량의 소유자", 차량 JWT 는 "현재 멤버 차량 자신"일 때만 그룹을 볼 수 있다. 그 외(나간 차량·남)는 404 `NOT_FOUND`(존재를 숨김). 종료된 그룹은 종료 시점의 멤버가 계속 볼 수 있다(멤버 행 유지).
+
+- `GET /groups/{groupId}` (사용자·차량) → 200 `GroupDetailResponse` `{ groupId, name, leaderVehicleId, status: ACTIVE|ENDED, destination, members: [Member], snapshot: GroupState|null, recentEvents: [GroupEvent 최신순 ≤20] }`. `snapshot` 은 presence(T24)가 채우기 전까지 null.
+- `GET /me/groups?active=` (사용자) → 200 `[MyGroupDto]` `{ groupId, name, leaderVehicleId, status, destination, memberCount, myVehicleIds, createdAt, endedAt? }` — 내 활성 차량이 멤버인 그룹. `active` 생략 → 전부(ACTIVE 먼저, 최근 생성순), `true` → 진행 중만, `false` → 종료된 것만.
+- `POST /groups/{groupId}/leave` (차량 또는 사용자) → 204. 본문 선택 `{ vehicleId? }`: 차량 JWT 는 자기 자신(본문 무시), 사용자 JWT 는 `vehicleId`(내 차) 또는 생략 시 이 그룹의 내 차 전부. 멤버가 아니면 404(`NOT_FOUND` / 사용자는 `NO_PAIRED_VEHICLE`), 종료된 그룹 409 `GROUP_ENDED`. 그룹 이벤트 `MEMBER_LEFT`(payload `reason: LEFT | SWITCHED_GROUP`, 방장 승계 시 `newLeaderVehicleId`). 방장이 나가면 가장 먼저 합류한 남은 멤버가 방장(`LEADER_CHANGED`), 마지막 멤버가 나가면 그룹 종료(reason `ALL_LEFT`).
+- `POST /groups/{groupId}/end` (방장) → 204. 그룹 `ENDED`, 초대 만료, Redis 소속·위치 키 삭제(docs/04 §2), 그룹 이벤트 `GROUP_ENDED`(reason `LEADER_ENDED`), 멤버 차량에 cmd `GROUP_ENDED`(T15). 방장 아니면 403, 이미 종료 409 `GROUP_ENDED`. 멤버 행·이벤트 로그는 남는다(이벤트는 24h 뒤 배치 삭제).
+- `POST /groups/{groupId}/leader` `{ vehicleId }` (방장) → 200 `GroupDetailResponse`. 대상이 현재 멤버가 아니면 404, 이미 방장이면 400. 그룹 이벤트 `LEADER_CHANGED` `{ leaderVehicleId, previousLeaderVehicleId }`.
+- `POST /groups/{groupId}/messages` (사용자 JWT — 멤버 차량 소유자) `{ "text": "앞에 휴게소 들르자", "fromVehicleId": "veh_..." }` → 201 `GroupEvent`(type `PASSENGER_MESSAGE`, `speech` = `{닉네임}에서 온 메시지. {text}`, payload `{ text }`). `fromVehicleId` 생략 시 이 그룹의 내 첫 차, 내 멤버 차가 아니면 404 `NO_PAIRED_VEHICLE`. `text` 는 공백 정리 후 1~60자(아니면 400 `INVALID_MESSAGE`). 멤버가 아니면 404, 종료된 그룹 409 `GROUP_ENDED`.
+
+### 2.5 소속 규칙 (T14 확정)
+- 차량 하나는 **활성 그룹 하나**에만 속한다(Redis `veh:{vid}:group` 이 문자열 하나인 이유). 다른 그룹을 만들거나(`POST /groups`) 다른 초대로 합류하면(`POST /groups/join`) 이전 그룹에서 자동으로 나간다(`MEMBER_LEFT` reason `SWITCHED_GROUP`, 방장 승계·그룹 종료 규칙 동일). 같은 그룹 재합류만 409 `ALREADY_MEMBER`.
+- 서버는 합류·생성·나가기를 차량 단위 advisory lock → 그룹 행 잠금(ID 순) → 초대 행 잠금 순서로 직렬화한다.
+- 멤버 색: 10색 팔레트(`#2E7DFF #FF6B2E #2EC27E #FFC42E #B22EFF #2EC9FF #FF2E7D #8A5A2E #0B8A8A #6B7280`)에서 그룹 안에 비어 있는 첫 색. 나간 차량의 색은 재사용된다.
+- Redis 소속 캐시(`grp:{gid}:members`, `veh:{vid}:group`)와 차량 cmd 는 DB 커밋 뒤에만 갱신·발행한다. 진실은 PostgreSQL.
 
 ### 2.4 Member 객체
 ```json
@@ -230,7 +251,16 @@ ACL: 차량 `{vid}`는 자신의 `telemetry/event/ack/presence`에만 publish, �
 ```
 그룹 이벤트 봉투의 `type`은 공통값 **`EVENT`**(`MessageTypes.EVENT`)이고, 구체 종류는 `data.type`(문자열, `GroupEventType` 이름)으로 구분한다. STATE 봉투의 `type`은 `STATE`, ACK는 `ACK`, 차량 EVENT·CMD 봉투의 `type`은 각 표의 type 값을 그대로 쓴다.
 
-서버 생성 그룹 이벤트 type: 위 차량 이벤트 전부 + `MEMBER_JOINED`, `MEMBER_LEFT`, `MEMBER_OFFLINE`, `REST_STOP_PROPOSAL`, `REST_STOP_VOTE_RESULT`, `DEVIATION`, `PASSENGER_MESSAGE`, `GROUP_ENDED`
+서버 생성 그룹 이벤트 type: 위 차량 이벤트 전부 + `MEMBER_JOINED`, `MEMBER_LEFT`, `LEADER_CHANGED`, `MEMBER_OFFLINE`, `REST_STOP_PROPOSAL`, `REST_STOP_VOTE_RESULT`, `DEVIATION`, `PASSENGER_MESSAGE`, `GROUP_ENDED`
+
+T14 가 만드는 수명주기 이벤트의 payload:
+| type | payload | speech |
+|---|---|---|
+| `MEMBER_JOINED` | `{ vehicleId, nickname, color, role }` | `{nickname}이 그룹에 들어왔어요.` |
+| `MEMBER_LEFT` | `{ vehicleId, nickname, reason: LEFT\|SWITCHED_GROUP, newLeaderVehicleId? }` | `{nickname}이 그룹에서 나갔어요.` (+ ` 이제 {new}이 선두예요.`) — 마지막 멤버면 null |
+| `LEADER_CHANGED` | `{ leaderVehicleId, previousLeaderVehicleId }` | 위임: `이제 {nickname}이 선두예요.` / 이탈 승계: null(MEMBER_LEFT 문구에 포함) |
+| `PASSENGER_MESSAGE` | `{ text }` (sourceVehicleId = 보낸 차) | `{nickname}에서 온 메시지. {text}` |
+| `GROUP_ENDED` | `{ groupId, reason: LEADER_ENDED\|ALL_LEFT\|ALL_ARRIVED }` (= cmd `GroupEnded`) | `방장이 그룹을 종료했어요.` / `그룹이 종료됐어요.` — 남은 멤버가 없으면 null |
 
 ### 5.5 CMD (서버 → 차량)
 | type | data |

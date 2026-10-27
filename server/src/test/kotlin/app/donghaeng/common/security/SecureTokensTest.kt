@@ -1,5 +1,6 @@
-package app.donghaeng.identity
+package app.donghaeng.common.security
 
+import app.donghaeng.identity.RefreshTokenService
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals

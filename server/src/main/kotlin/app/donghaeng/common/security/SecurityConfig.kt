@@ -31,7 +31,8 @@ import org.springframework.security.web.access.AccessDeniedHandler
  * - `Authorization: Bearer <JWT>` → identity 의 `JwtDecoder` 빈(RS256, iss=donghaeng)으로 검증.
  *   클레임 `typ` 이 `user` 면 ROLE_USER, `vehicle` 이면 ROLE_VEHICLE. principal 이름 = `sub`(usr_… / veh_…).
  * - 공개 경로: 헬스체크, JWKS, QR 웹 폴백(/pair, /j/{token}), 로그인·교환·갱신, 디바이스 코드 발급·폴링, /error
- * - `/v1/me/` 아래 전부와 `POST /v1/device/approve` 는 사용자 토큰만, `POST /v1/groups` 는 차량 토큰만(T14 자리). 그 외는 인증만 요구.
+ * - `/v1/me/` 아래 전부, `POST /v1/device/approve`, `POST /v1/groups/join` 은 사용자 토큰만, `POST /v1/groups` 는 차량 토큰만.
+ *   그 외 그룹 경로(조회·나가기·종료·위임·초대·메시지)는 인증만 요구하고 `group` 모듈이 멤버·방장·역할을 본다.
  * - 미인증 401 / 토큰 무효 401 `INVALID_TOKEN` / 권한 부족 403 — 모두 docs/03 오류 형식(JSON)
  */
 @Configuration
@@ -56,7 +57,7 @@ class SecurityConfig(private val objectMapper: ObjectMapper) {
             }
             .authorizeHttpRequests {
                 it.requestMatchers(*PUBLIC_PATHS).permitAll()
-                    .requestMatchers("/v1/me/**", "/v1/device/approve").hasRole(ROLE_USER)
+                    .requestMatchers("/v1/me/**", "/v1/device/approve", "/v1/groups/join").hasRole(ROLE_USER)
                     .requestMatchers(HttpMethod.POST, "/v1/groups").hasRole(ROLE_VEHICLE)
                     .anyRequest().authenticated()
             }

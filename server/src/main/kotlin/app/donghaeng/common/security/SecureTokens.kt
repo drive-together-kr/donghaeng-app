@@ -1,4 +1,4 @@
-package app.donghaeng.identity
+package app.donghaeng.common.security
 
 import java.math.BigInteger
 import java.security.MessageDigest

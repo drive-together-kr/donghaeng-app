@@ -1,4 +1,4 @@
-package app.donghaeng.identity.repo
+package app.donghaeng.common.jdbc
 
 import java.sql.ResultSet
 import java.time.Instant

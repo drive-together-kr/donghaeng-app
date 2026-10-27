@@ -69,9 +69,9 @@ curl localhost:8080/v1/me/vehicles -H "Authorization: Bearer <accessToken>"
 | 패키지 | 책임 | 상태 |
 |---|---|---|
 | `identity` | dev 로그인·`/auth/exchange`(`ExternalTokenVerifier`)·refresh 회전, RS256 JWT·JWKS, 디바이스 코드 페어링(`DeviceAuthService`), 차량 등록(`VehicleRegistry`)·내 차(`VehicleDirectory`) — 하위 `jwt/`, `web/`, `repo/` | T10 완료 |
-| `group` | 그룹·초대·멤버십·방장 | T14 |
+| `group` | 그룹 생성·초대(재발급)·합류·조회·내 그룹·나가기·종료·방장 위임·동승자 메시지(docs/03 §2). `GroupService`(잠금 순서: 차량 advisory → 그룹 행 → 초대 행), `GroupMembershipCache`(Redis 소속 키, 커밋 뒤), `VehicleCommandPort`(cmd 출구 — T15 가 MQTT 로 구현), identity 는 `IdentityApi` 로만 호출 — 하위 `web/`, `repo/` | T14 완료 |
+| `event` | 그룹 이벤트 저장·조회(`GroupEventSink`/`GroupEventReader` → `DbGroupEventStore`, 커밋 뒤 `GroupEventRecorded` Spring 이벤트), `SpeechComposer` + `Josa`(조사). 차량 이벤트 정규화·중복 억제·팬아웃은 T26 | T14 일부 |
 | `presence` | 텔레메트리 수신 → Redis 상태, 스냅샷 주기 발행 | — |
-| `event` | 차량 이벤트 정규화·중복 억제·음성 문구·팬아웃 | — |
 | `routesync` | 선두 경로 변경 → 멤버별 따라가기 제안, ACK 집계 | — |
 | `insight` | 규칙 엔진(휴게소 제안·이탈·오프라인·연속 주행) | — |
 | `poi` | 휴게소 시드·조회 | — |
@@ -79,7 +79,7 @@ curl localhost:8080/v1/me/vehicles -H "Authorization: Bearer <accessToken>"
 | `mqtt` | 브로커 연결·재연결·토픽 라우팅 | — |
 | `common` | 공용 코드 (아래) | T03 |
 
-`common/` 구성: `config/DhProperties`(`dh.*` 설정), `config/HttpJsonConfig`(kotlinx 컨버터), `config/ClockConfig`, `api/ApiError`(docs/03 오류 형식 + `ApiException` + 전역 예외 처리), `id/Ids`(접두사 ULID), `security/SecurityConfig`(무상태·JWT 리소스 서버·역할 규칙·JSON 401/403), `web/LandingController`(`/pair`, `/j/{token}` 웹 폴백). JWKS 는 `identity/web/JwksController` 로 옮겼다.
+`common/` 구성: `config/DhProperties`(`dh.*` 설정), `config/HttpJsonConfig`(kotlinx 컨버터), `config/ClockConfig`, `api/ApiError`(docs/03 오류 형식 + `ApiException` + 전역 예외 처리), `id/Ids`(접두사 ULID), `security/SecurityConfig`(무상태·JWT 리소스 서버·역할 규칙·JSON 401/403), `security/SecureTokens`(불투명 토큰 난수·SHA-256 — refresh·디바이스 코드·초대 토큰 공용), `jdbc/JdbcSupport`(timestamptz ↔ Instant), `tx/afterCommit`(커밋 뒤 부수 효과 — Redis·MQTT), `web/LandingController`(`/pair`, `/j/{token}` 웹 폴백). JWKS 는 `identity/web/JwksController` 로 옮겼다.
 
 패키지 간 호출은 `XxxApi` 인터페이스로만 한다. 메시지·REST 스키마는 `protocol/` 에만 정의한다 (합성 빌드로 의존).
 
@@ -101,6 +101,8 @@ curl localhost:8080/v1/me/vehicles -H "Authorization: Bearer <accessToken>"
 | `identity/UserCodesTest` · `CarIdHasherTest` · `SecureTokensTest` · `jwt/JwtIssuerTest` | 단위 | 사용자 코드 알파벳·정규화, CarInfo 해시 결정성, refresh 토큰 난수·SHA-256, JWT 클레임·kid·왕복 검증·PEM 로드 |
 | `HealthEndpointIT` | `@SpringBootTest` + Testcontainers | postgres:16 + redis:7 로 부팅, `/actuator/health` 200 "UP", Flyway 적용·`travel_group` 존재 확인. **Docker 가 없으면 자동으로 건너뜀**(`disabledWithoutDocker`) |
 | `identity/IdentityFlowIT` | `@SpringBootTest` + Testcontainers | docs/03 §1 전체 흐름: login → device/code → token 428 → 429 → approve 200 → token 200(JWKS 로 서명 검증) → me/vehicles → exchange(dev) → refresh 회전(이전 토큰 401) → approve 재시도 409; 소유권 이전·대표 차량 규칙; 만료/없는 코드 410/404; 미인증 401 JSON; kotlinx 컨버터 우선순위; V2 인덱스 |
+| `group/GroupFlowIT` | `@SpringBootTest` + Testcontainers | docs/03 §2 전체 흐름: 차량 토큰 생성 201(초대 URL·토픽·Redis 소속 키) → 사용자 합류(대표 차량·명시 차량·색·역할) → ALREADY_MEMBER/GROUP_FULL → 조회(멤버·소유자 200, 남 404, 이벤트 최신순) → 내 그룹 → 동승자 메시지 201/400/404 → 방장 위임 → 초대 재발급(이전 토큰 410) → 나가기(차량·사용자, 방장 승계, 마지막 멤버 → 종료) → 종료(Redis 삭제, 이후 409 GROUP_ENDED); 그룹 전환 자동 이탈·재합류; 초대 만료·사용 횟수·형식 오류 410; 생성 검증 400; 해제 차량 403; V3 컬럼·인덱스 |
+| `event/JosaTest` · `SpeechComposerTest` · `group/InviteTokensTest` · `MemberColorsTest` | 단위 | 받침 판별(한글·숫자·영문·꼬리 기호), docs/06 §4 문구, 초대 토큰 형식·해시, 팔레트 색 배정 |
 
 - Testcontainers 는 Spring Boot BOM 버전(1.19.x) 대신 `testcontainers.version=1.21.4` 로 올려 쓴다. 1.19.x 는 Docker API 1.32 를 고정 요청해 **Docker Engine 29(최소 API 1.40)** 에서 `400 Bad Request` 로 Docker 를 못 찾은 것으로 판단해 IT 를 건너뛴다.
 - Windows 에서는 Docker Desktop 의 `\\.\pipe\docker_engine` 파이프로 붙는다(별도 설정 불필요).

@@ -62,7 +62,7 @@ class RegistryTest {
             assertTrue(GroupEventType.valueOf(v.name).isVehicleEvent)
         }
         val serverOnly = setOf(
-            "MEMBER_JOINED", "MEMBER_LEFT", "MEMBER_OFFLINE", "REST_STOP_PROPOSAL",
+            "MEMBER_JOINED", "MEMBER_LEFT", "LEADER_CHANGED", "MEMBER_OFFLINE", "REST_STOP_PROPOSAL",
             "REST_STOP_VOTE_RESULT", "DEVIATION", "PASSENGER_MESSAGE", "GROUP_ENDED",
         )
         assertEquals(VehicleEventType.entries.map { it.name }.toSet() + serverOnly, groupNames)

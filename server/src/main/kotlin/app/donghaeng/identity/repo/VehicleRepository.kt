@@ -1,5 +1,8 @@
 package app.donghaeng.identity.repo
 
+import app.donghaeng.common.jdbc.instant
+import app.donghaeng.common.jdbc.requireInstant
+import app.donghaeng.common.jdbc.toDb
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
 import java.sql.ResultSet
@@ -90,6 +93,11 @@ class VehicleRepository(private val jdbc: NamedParameterJdbcTemplate) {
     fun findById(vehicleId: String): VehicleRecord? =
         jdbc.query("SELECT $COLUMNS FROM vehicle WHERE vehicle_id = :vehicleId", mapOf("vehicleId" to vehicleId), ::mapRow)
             .firstOrNull()
+
+    /** 여러 ID 를 한 번에 (해제 여부 무관). 빈 입력이면 빈 목록 */
+    fun findAllByIds(vehicleIds: Collection<String>): List<VehicleRecord> =
+        if (vehicleIds.isEmpty()) emptyList()
+        else jdbc.query("SELECT $COLUMNS FROM vehicle WHERE vehicle_id IN (:ids)", mapOf("ids" to vehicleIds.toSet()), ::mapRow)
 
     fun findActiveByIdAndOwner(vehicleId: String, ownerId: String): VehicleRecord? =
         jdbc.query(

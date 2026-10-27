@@ -1,5 +1,6 @@
 package app.donghaeng.identity
 
+import app.donghaeng.common.security.SecureTokens
 import app.donghaeng.identity.repo.RefreshTokenRepository
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
