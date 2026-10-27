@@ -39,11 +39,11 @@ sealed class NaviEvent {
     /** onWaypointChanged — 현재 경유지 목록 전체 */
     data class WaypointChanged(val waypoints: List<Place>) : NaviEvent()
 
-    /** onWayPointArrived */
-    data class WaypointArrived(val index: Int?, val waypoint: Place?) : NaviEvent()
+    /** onWayPointArrived — SDK 는 이름·주소만 주므로 [waypoint] 는 알고 있던 경유지 목록에서 찾아 채우고, 못 찾으면 null */
+    data class WaypointArrived(val index: Int?, val waypoint: Place?, val name: String? = null) : NaviEvent()
 
-    /** onDestinationArrived */
-    data class DestinationArrived(val destination: Place?) : NaviEvent()
+    /** onDestinationArrived — [destination] 은 마지막으로 알고 있던 목적지(없으면 null), [name] 은 SDK 가 준 이름 */
+    data class DestinationArrived(val destination: Place?, val name: String? = null) : NaviEvent()
 
     /** onCurrentRoadSpeedLimit — km/h, 모르면 null */
     data class SpeedLimit(val limitKph: Int?) : NaviEvent()

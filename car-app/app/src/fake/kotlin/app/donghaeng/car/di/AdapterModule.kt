@@ -34,7 +34,8 @@ object AdapterModule {
 
     @Provides
     @Singleton
-    fun provideNaviAdapter(): NaviAdapter = FakeNaviAdapter()
+    fun provideNaviAdapter(@ApplicationContext context: Context): NaviAdapter =
+        FakeNaviAdapter.fromAsset(context, FakeNaviAdapter.ASSET_LEAD)   // T30: 후속차 인스턴스는 ASSET_FOLLOW
 
     @Provides
     @Singleton

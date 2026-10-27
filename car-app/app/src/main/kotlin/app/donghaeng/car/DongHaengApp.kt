@@ -4,6 +4,7 @@ import android.app.Application
 import app.donghaeng.car.adapter.sdk.SdkProbe
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.capability.CapabilityReporter
+import app.donghaeng.car.domain.navi.NaviEventMonitor
 import app.donghaeng.car.domain.session.MqttSessionManager
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -15,6 +16,7 @@ import javax.inject.Inject
  * 이어서 SDK 존재 점검([SdkProbe])과 차량 ID·capability 실측([CapabilityReporter], 태그 `DH_CAP`)을 백그라운드로 한 번 돌린다.
  * MQTT 는 [MqttSessionManager] 가 페어링 상태를 보고 스스로 붙는다(T16) — 그룹 전에도 cmd `GROUP_JOINED` 를 받아야 하므로
  * 페어링만 돼 있으면 프로세스가 사는 동안 연결을 유지한다. 백그라운드 지속은 T23 의 DriveSessionService 가 맡는다(docs/05 §6).
+ * 내비 이벤트는 [NaviEventMonitor] 가 한 번만 구독해 진단 화면·후속 소비자에게 나눠 준다(T20).
  */
 @HiltAndroidApp
 class DongHaengApp : Application() {
@@ -28,6 +30,9 @@ class DongHaengApp : Application() {
     @Inject
     lateinit var mqttSessionManager: MqttSessionManager
 
+    @Inject
+    lateinit var naviEventMonitor: NaviEventMonitor
+
     override fun onCreate() {
         super.onCreate()
         // android.util.Log 는 DhLog 에서만 직접 호출한다(규칙 8 마스킹 단일 창구)
@@ -36,5 +41,6 @@ class DongHaengApp : Application() {
         sdkProbe.runOnce()
         capabilityReporter.runOnce()
         mqttSessionManager.start()
+        naviEventMonitor.start()
     }
 }

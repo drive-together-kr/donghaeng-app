@@ -58,6 +58,8 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 | `core.network` (T17) | `GroupApi`(Retrofit: `POST /v1/groups`, `/invites`, `GET /v1/groups/{id}`, `/leave`, `/end`), `VehicleAuthInterceptor`(차량 JWT Bearer) | T17 |
 | `domain.group` | `GroupRepository`(생성 → `GroupSession(isLeader, invite)` 저장 + 그룹 토픽 구독, 초대 재발급, 조회, 나가기/종료) | T17 |
 | `feature.creategroup` | `CreateGroupViewModel`(Form → Active, 멤버 5초 폴링 + 이벤트 갱신, 초대 남은 시간) · `CreateGroupScreen`(목적지 프리셋/내비, QR, 멤버, 종료/나가기) | T17 |
+| `adapter.navi` | `NaviAdapter` + `PleosNaviAdapter`(NaviHelper 3.0.5 콜백 → `NaviEvent`, 1Hz 위치 요청, 요청 API 매핑) + `FakeNaviAdapter`(`assets/gpx/*.gpx` 1Hz 재생, 도착·경유지 이벤트) + `GpxRoute`(파서·재표본화·거리/방위) | T20 |
+| `domain.navi` | `NaviEventMonitor`(앱에서 유일한 내비 구독자 — 콜백 종류별 수·마지막 값 `state`, 공유 `events`, 끊기면 10초 뒤 재구독) | T20 |
 | `domain.session` | `MqttSessionManager`(페어링 있으면 접속 + 자기 `cmd` 구독, cmd `GROUP_JOINED`→`GroupSessionStore` 저장 + 그룹 `state/event` 구독, `GROUP_ENDED`→정리, `TOKEN_REVOKED`→자격 증명 삭제; `groupEvents`/`groupState`/`lastCommand` 노출), `GroupSessionStore`(DataStore `group_session` / InMemory) | T16 |
 | `domain.model` | `Fix`, `Place`(= protocol `Place` typealias), `Gear`, `TurnSignalState`, `CapabilityDomain`/`CapabilityEntry`/`VehicleCapabilities`, `NaviEvent`, `RouteState`, `WaypointIndex`, `Priority` | T04/T11 |
 | `domain.capability` | `CapabilityReporter` — 앱 시작 시 `vehicleId()`·`capabilities()` 1회 → `DH_CAP` 로그 + 진단 화면 | T11 |
@@ -167,6 +169,14 @@ mqtt subscribed topic=dh/v1/group/grp_…**/state  /  …/event
 - QR 아래에 초대 URL 텍스트도 보인다 — 카메라 없는 폰 AVD 에서는 demo-host 스캔 화면의 디버그 "QR 문자열 붙여넣기"에 그 값을 넣는다.
 - 차량 토큰은 `VehicleAuthInterceptor` 가 `/v1/groups/…`·`/v1/me/…` 요청에만 `Authorization: Bearer` 로 붙인다. 생성 차량은 `GROUP_JOINED` 를 받지 않으므로 `MqttSessionManager.onGroupCreated` 가 그룹 토픽을 직접 구독한다.
 - 캡처: `docs/images/car-app/t17_group_qr.png`
+
+### T20 — 내비 어댑터 (`adb logcat -s DongHaeng | grep navi`)
+- 앱 시작 시 `navi monitor: subscribe` → pleos 는 `navi: NaviHelper initialized`, `navi: listener added`, 이후 콜백마다 `navi onXxx …` + `navi monitor: <이벤트> … total=N`(위치는 10개마다 한 줄, 좌표 마스킹).
+- 진단 화면 **내비 이벤트 (T20)** 카드: 구독 상태·콜백 종류별 수·마지막 위치(마스킹)·내비 상태·목적지·남은 거리. 버튼 **목적지 조회**(`currentDestination`, 2초 대기) · **경로 요청(확인용)**(대전역으로 `requestRoute`) · **내비 화면**(`requestNavigationScreen`) → "마지막 요청" 줄과 콜백 수 변화로 응답을 본다.
+- Pleos AVD 실측(2026-10-27): `onCurrentRoadSpeedLimit`(1Hz, 0) 과 `onNavigationStatus(INITIALIZING)` 만 온다 — 내비 앱이 "실행 지연" 상태(docs/10 R4). 위치·경로 콜백은 실차에서 같은 카드로 확인.
+- fake flavor: `FakeNavi asset=gpx/lead.gpx points=73 track=3424 lengthM=57142` → 1Hz `fix #N`, 10초마다 `TripInfo 57.1 km · 57분`, 종점에서 `DestinationArrived`. 후속차 인스턴스용 `gpx/follow.gpx` 는 T30 에서 선택.
+- 캡처: `docs/images/t20/carA_pleos_diag_navi.png`(Pleos AVD 내비 카드), `carB_fake_diag_navi.png`(fake — requestRoute 후 DestinationChanged/RouteStateInfo/TripInfo), `carA_navi_app_delayed.png`(AVD 내비 앱 '실행 지연' 화면).
+- 권한: `pleos.car.permission.NAVI_ROUTE`·`NAVI_ROUTE_SEARCH` 외에 `requestNavigationScreen` 은 `NAVI_CUSTOM_MAP` 이 필요하다(없으면 `SecurityException`, 실측) — pleos 매니페스트에 `NAVI_CUSTOM_MAP`·`NAVI_CUSTOM_ROUTE` 추가.
 
 ### Virtual Console (차량 상태 조작, docs/09 §1)
 

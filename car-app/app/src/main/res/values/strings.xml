@@ -80,6 +80,17 @@
     <string name="diag_mqtt_traffic">수신/발신</string>
     <string name="diag_mqtt_subscribed">구독 토픽</string>
     <string name="diag_mqtt_last_error">마지막 오류</string>
+    <string name="diag_section_navi">내비 이벤트 (T20)</string>
+    <string name="diag_navi_state">구독</string>
+    <string name="diag_navi_counts">콜백 수</string>
+    <string name="diag_navi_last_fix">마지막 위치</string>
+    <string name="diag_navi_status">내비 상태</string>
+    <string name="diag_navi_destination">목적지</string>
+    <string name="diag_navi_trip">남은 거리·시간</string>
+    <string name="diag_navi_action_route">경로 요청(확인용)</string>
+    <string name="diag_navi_action_dest">목적지 조회</string>
+    <string name="diag_navi_action_show">내비 화면</string>
+    <string name="diag_navi_last_action">마지막 요청</string>
     <string name="diag_group_session">활성 그룹</string>
     <string name="diag_group_none">없음 (GROUP_JOINED 대기)</string>
     <string name="diag_last_cmd">마지막 cmd</string>

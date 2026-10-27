@@ -44,7 +44,7 @@ fun DiagnosticsRoute(
     viewModel: DiagnosticsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    DiagnosticsScreen(state = state, onBack = onBack)
+    DiagnosticsScreen(state = state, onBack = onBack, onNaviAction = viewModel::onNaviAction)
 }
 
 /**
@@ -52,7 +52,7 @@ fun DiagnosticsRoute(
  * 사용자가 결과를 캡처해 붙여넣기만 하면 되게 만든 확인용 화면(CLAUDE.md 작업 방식).
  */
 @Composable
-fun DiagnosticsScreen(state: DiagnosticsUiState, onBack: () -> Unit) {
+fun DiagnosticsScreen(state: DiagnosticsUiState, onBack: () -> Unit, onNaviAction: (NaviDebugAction) -> Unit = {}) {
     Scaffold { innerPadding ->
         Column(
             modifier = Modifier
@@ -72,6 +72,7 @@ fun DiagnosticsScreen(state: DiagnosticsUiState, onBack: () -> Unit) {
             CapabilityCard(state.report?.capabilities)
             ProbeCard(state.probe)
             MqttCard(state)
+            NaviCard(state, onNaviAction)
             BuildCard(state)
         }
     }
@@ -221,6 +222,33 @@ private fun MqttCard(state: DiagnosticsUiState) {
             val session = state.groupSession
             LabelRow(stringResource(R.string.diag_group_session), session?.let { "${TextMasking.maskVehicleId(it.groupId)}  ${it.name}" } ?: stringResource(R.string.diag_group_none))
             LabelRow(stringResource(R.string.diag_last_cmd), state.lastCommand?.let { "${it.type} ${it.groupIdMasked ?: ""}".trim() } ?: "-")
+        }
+    }
+}
+
+/** T20 — 내비 콜백 종류별 수와 마지막 값. Pleos AVD 에서 내비 앱을 조작하면 어떤 콜백이 오는지 여기서 확인한다 */
+@Composable
+private fun NaviCard(state: DiagnosticsUiState, onNaviAction: (NaviDebugAction) -> Unit) {
+    Card {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(stringResource(R.string.diag_section_navi), style = MaterialTheme.typography.titleMedium)
+            HorizontalDivider()
+            val n = state.navi
+            LabelRow(stringResource(R.string.diag_navi_state), (if (n.running) "구독 중" else "중지") + "  restarts=${n.restarts}  total=${n.totalEvents}")
+            LabelRow(stringResource(R.string.diag_navi_counts), if (n.counts.isEmpty()) "-" else n.counts.entries.sortedByDescending { it.value }.joinToString("\n") { "${it.key} ${it.value}" })
+            val fixAge = n.lastFixTs?.let { ts -> "${(System.currentTimeMillis() - ts) / 1000}s 전" } ?: ""
+            val fixHeading = n.lastFixHeading?.let { h -> "heading=$h" } ?: "heading=?"
+            LabelRow(stringResource(R.string.diag_navi_last_fix), n.lastFixMasked?.let { f -> "$f  $fixHeading  $fixAge" } ?: "-")
+            LabelRow(stringResource(R.string.diag_navi_status), listOfNotNull(n.lastStatus, n.lastRouteState).joinToString(" / ").ifEmpty { "-" })
+            LabelRow(stringResource(R.string.diag_navi_destination), listOfNotNull(n.destinationName, n.waypointCount?.let { "경유지 $it" }).joinToString(" / ").ifEmpty { "-" })
+            LabelRow(stringResource(R.string.diag_navi_trip), listOfNotNull(n.lastTrip, n.speedLimitKph?.let { "제한 $it km/h" }, n.lastArrival).joinToString(" / ").ifEmpty { "-" })
+            LabelRow(stringResource(R.string.diag_mqtt_last_error), n.lastError ?: "-")
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = { onNaviAction(NaviDebugAction.REQUEST_ROUTE) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_navi_action_route)) }
+                OutlinedButton(onClick = { onNaviAction(NaviDebugAction.QUERY_DESTINATION) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_navi_action_dest)) }
+                OutlinedButton(onClick = { onNaviAction(NaviDebugAction.SHOW_NAVIGATION) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_navi_action_show)) }
+            }
+            LabelRow(stringResource(R.string.diag_navi_last_action), state.naviActionResult ?: "-")
         }
     }
 }
