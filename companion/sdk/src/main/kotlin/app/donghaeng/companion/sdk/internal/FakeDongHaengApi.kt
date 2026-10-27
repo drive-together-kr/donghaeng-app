@@ -30,8 +30,8 @@ import kotlin.math.atan2
 import kotlin.math.max
 
 /**
- * 서버 없이 동작하는 메모리 구현. 서버 identity 가 생기는 T13 전까지 [app.donghaeng.companion.sdk.AccountProvider.DEV] 가
- * 임시로 쓰고, T13 부터는 테스트·데모 전용(internal 훅)으로만 남는다(docs/07 §4.2).
+ * 서버 없이 동작하는 메모리 구현 — **단위 테스트 전용**. [app.donghaeng.companion.sdk.DongHaeng.initWithApi] 로만 끼울 수 있고
+ * 공개 [app.donghaeng.companion.sdk.DongHaeng.init] 은 어느 제공자든 [HttpDongHaengApi] 를 쓴다(docs/07 §4.2, T13).
  *
  * - 내 차 2대로 시작하고 [approvePairing] 때마다 한 대 늘어난다
  * - [joinGroup] 은 선두차·내 차·후속차 3대짜리 그룹을 만든다(같은 초대 토큰이면 같은 그룹)

@@ -6,7 +6,7 @@
     <uses-feature
         android:name="android.hardware.camera.any"
         android:required="false" />
-    <!-- T13 이후 HttpDongHaengApi 가 서버와 통신한다 -->
+    <!-- 동행 모듈(HttpDongHaengApi)과 호스트의 dev 로그인(DevAuthClient)이 서버와 통신한다 -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
@@ -17,7 +17,9 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.DemoHost"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="${usesCleartext}">
+        <!-- usesCleartextTraffic: demo-host/build.gradle.kts 의 placeholder — dhPublicBaseUrl 이 http:// 일 때(로컬 개발, 10.0.2.2)만
+             평문 허용. 클라우드(https) 빌드에서는 false 로 들어가 잘못된 http 주소가 평문으로 나가지 않게 막는다(car-app 과 같은 규칙). -->
 
         <activity
             android:name=".MainActivity"

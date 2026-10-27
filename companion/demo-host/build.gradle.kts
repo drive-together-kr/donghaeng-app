@@ -26,6 +26,10 @@ android {
         versionName = "0.1.0"
 
         buildConfigField("String", "DH_PUBLIC_BASE_URL", "\"$dhPublicBaseUrl\"")
+
+        // 평문 HTTP 허용 여부를 서버 주소 스킴에 묶는다(car-app 과 같은 규칙): http://(로컬 개발) → true, https://(클라우드) → false
+        //   AndroidManifest.xml 의 android:usesCleartextTraffic="${usesCleartext}" 로 들어간다
+        manifestPlaceholders["usesCleartext"] = dhPublicBaseUrl.startsWith("http://").toString()
     }
 
     buildTypes {
@@ -66,6 +70,9 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.kotlinx.coroutines.android)
+
+    // 호스트 앱 자신의 dev 로그인(POST /v1/auth/login) — 동행 모듈 밖의 일이라 호스트가 직접 호출한다 (DevAuthClient)
+    implementation(libs.okhttp)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

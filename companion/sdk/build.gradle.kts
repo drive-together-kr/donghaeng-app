@@ -54,4 +54,6 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    // HttpDongHaengApiTest — 실제 서버 없이 REST 교환·401 재교환·오류 봉투를 검증한다
+    testImplementation(libs.okhttp.mockwebserver)
 }

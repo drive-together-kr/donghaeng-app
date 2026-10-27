@@ -12,11 +12,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -34,7 +38,7 @@ import app.donghaeng.companion.demo.DemoSession
 import app.donghaeng.companion.sdk.GroupJoinResult
 import app.donghaeng.companion.sdk.MyVehicle
 
-/** (2) 홈 — 내 차 목록, 큰 "QR 스캔" 버튼, 참여 중인 그룹 */
+/** (2) 홈 — 내 차 목록(서버 `GET /v1/me/vehicles`), 새로고침, 큰 "QR 스캔" 버튼, 참여 중인 그룹 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
@@ -47,7 +51,7 @@ fun HomeScreen(
     val groups by DemoSession.groups.collectAsStateWithLifecycle()
     val account by DemoSession.account.collectAsStateWithLifecycle()
 
-    // 스캔 화면에서 차량을 등록하고 돌아오면 목록을 다시 읽는다
+    // 스캔 화면에서 차량을 등록하고 돌아오면(RESUMED) 목록을 서버에서 다시 읽는다
     LifecycleResumeEffect(Unit) {
         viewModel.refresh()
         onPauseOrDispose { }
@@ -57,7 +61,16 @@ fun HomeScreen(
         topBar = {
             TopAppBar(
                 title = { Text("동행 — 공식 앱 흉내 (데모용)", style = MaterialTheme.typography.titleMedium) },
-                actions = { TextButton(onClick = onLogout) { Text("로그아웃") } },
+                actions = {
+                    IconButton(onClick = viewModel::refresh, enabled = !state.loading && !state.refreshing) {
+                        if (state.refreshing) {
+                            CircularProgressIndicator(modifier = Modifier.height(18.dp).width(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.Refresh, contentDescription = "새로고침")
+                        }
+                    }
+                    TextButton(onClick = onLogout) { Text("로그아웃") }
+                },
             )
         },
     ) { padding ->
@@ -89,7 +102,7 @@ fun HomeScreen(
                     TextButton(onClick = viewModel::refresh) { Text("다시 시도") }
                 }
                 state.vehicles.isEmpty() -> item {
-                    Text("계정에 연결된 차가 없어요. 차 화면의 등록 QR을 스캔해 추가하세요.")
+                    Text("계정에 연결된 차가 없어요. 차 화면의 QR을 스캔해 등록하세요")
                 }
                 else -> items(state.vehicles, key = { it.vehicleId }) { VehicleCard(it) }
             }

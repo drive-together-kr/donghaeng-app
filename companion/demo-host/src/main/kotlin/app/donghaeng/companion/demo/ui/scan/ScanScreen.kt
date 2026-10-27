@@ -46,10 +46,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.donghaeng.companion.demo.BuildConfig
 import app.donghaeng.companion.sdk.GroupJoinResult
+import app.donghaeng.companion.sdk.PairResult
 
 /**
- * (3) 스캔 — 공식 앱의 QR 스캐너 자리. 카메라(CameraX+ML Kit)와 "테스트 QR 붙여넣기"(카메라 없는 에뮬레이터용) 둘 다
- * 같은 [ScanViewModel.onQrDetected] 로 들어가고, 경로에 따라 "그룹 합류 / 차량 등록" 확인 후 동행 모듈을 부른다.
+ * (3) 스캔 — 공식 앱의 QR 스캐너 자리. 카메라(CameraX+ML Kit)와 "QR 문자열 붙여넣기"(카메라 없는 에뮬레이터용 — 차 화면 QR 의
+ * 문자열을 그대로 넣는다) 둘 다 같은 [ScanViewModel.onQrDetected] 로 들어가고, 경로에 따라 "그룹 합류 / 차량 등록" 확인 후 동행 모듈을 부른다.
+ * 차량 등록이 끝나면 [PairResult] 를 보여 주고 홈으로 돌아간다(홈이 목록을 서버에서 다시 읽는다).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -131,7 +133,12 @@ fun ScanScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Text("테스트 QR 붙여넣기 (카메라 없는 에뮬레이터용)", style = MaterialTheme.typography.labelMedium)
+                Text("QR 문자열 붙여넣기", style = MaterialTheme.typography.labelMedium)
+                Text(
+                    "카메라 없는 에뮬레이터용 — 차 화면 QR 의 문자열(logcat 의 verifyUri / 초대 url)을 그대로 넣으세요",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 OutlinedTextField(
                     value = testQr,
                     onValueChange = { testQr = it },
@@ -218,7 +225,13 @@ fun ScanScreen(
         is ScanViewModel.UiState.Paired -> AlertDialog(
             onDismissRequest = {},
             title = { Text("등록 완료") },
-            text = { Text("'${s.result.nickname}'(${s.result.vehicleId})이(가) 내 차에 추가됐어요") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("'${s.result.nickname}'이(가) 내 차에 추가됐어요")
+                    Text("차량 ID ${s.result.vehicleId}", style = MaterialTheme.typography.labelSmall)
+                    Text("홈으로 돌아가면 내 차 목록을 서버에서 다시 읽어요", style = MaterialTheme.typography.bodySmall)
+                }
+            },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.dismiss()

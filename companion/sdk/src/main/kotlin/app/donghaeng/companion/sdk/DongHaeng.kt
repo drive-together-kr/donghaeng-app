@@ -2,7 +2,6 @@ package app.donghaeng.companion.sdk
 
 import android.util.Log
 import app.donghaeng.companion.sdk.internal.DongHaengApi
-import app.donghaeng.companion.sdk.internal.FakeDongHaengApi
 import app.donghaeng.companion.sdk.internal.HttpDongHaengApi
 import app.donghaeng.companion.sdk.internal.QrParser
 import kotlinx.coroutines.flow.Flow
@@ -36,29 +35,33 @@ public object DongHaeng {
     /**
      * 모듈을 초기화한다. 여러 번 호출하면 마지막 설정으로 교체된다(계정 전환 시 다시 호출).
      *
-     * [DongHaengConfig.provider] 가 [AccountProvider.DEV] 면 개발·시연용 dev 로그인 계정이다 — 토큰은 서버
-     * `DevTokenVerifier` 가 검증하는 `POST /v1/auth/login` 응답의 accessToken(docs/07 §4.2). 서버 identity 가 생기는
-     * T13 전까지는 임시로 메모리 Fake 로 동작하며, T13 에서 DEV 도 서버 REST 전송(`/v1/auth/exchange` → 동행 JWT)으로
-     * 전환한다. 그 외 제공자는 서버 REST 전송(T13)을 쓴다.
+     * 모든 제공자가 서버 REST 전송을 쓴다: 첫 호출 때 [TokenProvider.accessToken] 을 `POST /v1/auth/exchange { provider, accessToken }` 로
+     * 동행 JWT 와 교환해 캐시하고, 이후 요청에 `Authorization: Bearer` 로 싣는다(401 → 재교환 1회 → [DongHaengException.Unauthorized]).
+     * [AccountProvider.DEV] 도 같다 — 호스트 토큰은 서버 `DevTokenVerifier` 가 인정하는 `POST /v1/auth/login` 응답의 accessToken(docs/07 §4.2).
+     * 여기서는 네트워크를 쓰지 않는다(교환은 첫 API 호출 때).
      *
      * @param config 서버 주소·계정 제공자·앱 버전
      * @param tokenProvider 호스트 앱의 계정 액세스 토큰 제공자
      * @throws IllegalArgumentException publicBaseUrl 이 비어 있거나 `http://`·`https://` 로 시작하지 않을 때
      */
     public fun init(config: DongHaengConfig, tokenProvider: TokenProvider) {
+        initWithApi(config) { normalized -> HttpDongHaengApi(normalized, tokenProvider) }
+    }
+
+    /**
+     * 테스트 전용 훅 — 설정 검증은 [init] 과 같고, 전송 구현만 [apiFactory] 가 만든 것(예: 메모리 `FakeDongHaengApi`)을 끼운다.
+     * 공개 API 가 아니다. [apiFactory] 는 끝 `/` 를 제거한 publicBaseUrl 이 들어간 설정을 받는다.
+     */
+    internal fun initWithApi(config: DongHaengConfig, apiFactory: (DongHaengConfig) -> DongHaengApi) {
         val baseUrl = config.publicBaseUrl.trim().trimEnd('/')
         require(baseUrl.isNotBlank()) { "publicBaseUrl 이 비어 있습니다" }
         require(baseUrl.startsWith("http://", ignoreCase = true) || baseUrl.startsWith("https://", ignoreCase = true)) {
             "publicBaseUrl 은 http:// 또는 https:// 로 시작해야 합니다: $baseUrl"
         }
-        // T13: DEV 도 HttpDongHaengApi 로 전환하고, Fake 는 internal 테스트 훅으로만 고른다(docs/07 §4.2). 공개 API 는 바뀌지 않는다.
-        val api: DongHaengApi = when (config.provider) {
-            AccountProvider.DEV -> FakeDongHaengApi(tokenProvider)
-            else -> HttpDongHaengApi(config.copy(publicBaseUrl = baseUrl), tokenProvider)
-        }
+        val api = apiFactory(config.copy(publicBaseUrl = baseUrl))
         session = Session(config, baseUrl, api)
         // 토큰·닉네임은 남기지 않는다(CLAUDE.md 규칙 8). 서버 주소는 비밀이 아니다.
-        Log.i(TAG, "init provider=${config.provider} base=$baseUrl appVersion=${config.appVersion}")
+        Log.i(TAG, "init provider=${config.provider} base=$baseUrl appVersion=${config.appVersion} api=${api::class.simpleName}")
     }
 
     /**
@@ -126,8 +129,8 @@ public object DongHaeng {
     /**
      * 그룹 상태 스트림. 멤버 위치·ETA·잔량과 최근 이벤트가 담긴 [GroupSnapshot] 을 내보낸다.
      * 발행 주기는 서버 전송 방식이 정한다 — MVP 는 `GET /v1/groups/{id}` 15초 폴링, 이후 푸시로 바뀌면 이벤트 즉시(docs/07 §3).
-     * 약 2초 틱(이벤트 시 즉시)으로 움직이는 것은 T13 전 DEV 메모리 Fake 의 동작일 뿐 계약이 아니다.
-     * 구독을 취소하면 수신도 끝난다. 호출 시점에 [init] 이 안 되어 있으면 즉시 던진다.
+     * 구독을 취소하면 폴링도 끝난다. 호출 시점에 [init] 이 안 되어 있으면 즉시 던진다.
+     * 서버 오류(그룹 없음, 네트워크 등)는 흐름의 예외([DongHaengException.Api])로 전달된다.
      *
      * @throws DongHaengException.NotInitialized [init] 전 호출
      */

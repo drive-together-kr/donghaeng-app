@@ -21,8 +21,10 @@ kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serialization" }
 
-# --- 전송 (T13 HttpDongHaengApi 용, 지금은 스텁) ---
+# --- 전송 (sdk HttpDongHaengApi · demo-host DevAuthClient) ---
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+# 단위 테스트용 가짜 서버 (HttpDongHaengApiTest)
+okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
 
 # --- AndroidX 공통 ---
 androidx-annotation = { group = "androidx.annotation", name = "annotation", version.ref = "annotation" }

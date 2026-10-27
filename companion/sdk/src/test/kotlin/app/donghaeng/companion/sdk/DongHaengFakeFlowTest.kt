@@ -1,5 +1,6 @@
 package app.donghaeng.companion.sdk
 
+import app.donghaeng.companion.sdk.internal.FakeDongHaengApi
 import app.donghaeng.protocol.GroupEventType
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
@@ -16,7 +17,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
-/** DEV 제공자(FakeDongHaengApi)로 공개 API 흐름 전체를 돈다 */
+/**
+ * 메모리 Fake(`FakeDongHaengApi`)를 internal 훅 [DongHaeng.initWithApi] 로 끼워 공개 API 흐름 전체를 돈다.
+ * 공개 [DongHaeng.init] 은 DEV 도 HTTP 전송을 쓰므로(T13) 여기서는 Fake 를 직접 끼운다 — 서버 전송은 HttpDongHaengApiTest.
+ */
 class DongHaengFakeFlowTest {
 
     private val config = DongHaengConfig(
@@ -28,6 +32,10 @@ class DongHaengFakeFlowTest {
     private val joinQr = "http://10.0.2.2:8080/j/inv_test_0001"
     private val pairQr = "http://10.0.2.2:8080/pair?c=KQ74MZ"
 
+    /** Fake 를 끼운 초기화 — 설정 검증은 공개 init 과 같다 */
+    private fun initFake(cfg: DongHaengConfig = config, token: TokenProvider = devToken) =
+        DongHaeng.initWithApi(cfg) { FakeDongHaengApi(token) }
+
     @Before
     fun setUp() = DongHaeng.reset()
 
@@ -36,7 +44,7 @@ class DongHaengFakeFlowTest {
 
     @Test
     fun `init 후 listMyVehicles 는 개발용 차 2대`() = runTest {
-        DongHaeng.init(config, devToken)
+        initFake()
         val vehicles = DongHaeng.listMyVehicles()
         assertEquals(2, vehicles.size)
         assertEquals(1, vehicles.count { it.isPrimary })
@@ -44,7 +52,7 @@ class DongHaengFakeFlowTest {
 
     @Test
     fun `joinGroup 은 멤버가 있는 그룹을 돌려준다`() = runTest {
-        DongHaeng.init(config, devToken)
+        initFake()
         val result = DongHaeng.joinGroup(joinQr)
         assertTrue(result.groupId.isNotBlank())
         assertEquals(3, result.members.size)
@@ -56,7 +64,7 @@ class DongHaengFakeFlowTest {
 
     @Test
     fun `joinGroup 에 vehicleId 를 주면 그 차로 합류`() = runTest {
-        DongHaeng.init(config, devToken)
+        initFake()
         val second = DongHaeng.listMyVehicles().first { !it.isPrimary }
         val result = DongHaeng.joinGroup("http://10.0.2.2:8080/j/inv_second", vehicleId = second.vehicleId)
         assertTrue(result.members.any { it.vehicleId == second.vehicleId })
@@ -64,7 +72,7 @@ class DongHaengFakeFlowTest {
 
     @Test
     fun `observeGroup 첫 발행에 멤버 상태가 있다`() = runTest {
-        DongHaeng.init(config, devToken)
+        initFake()
         val joined = DongHaeng.joinGroup(joinQr)
         val snapshot = DongHaeng.observeGroup(joined.groupId).first()
         assertEquals(joined.groupId, snapshot.groupId)
@@ -81,7 +89,7 @@ class DongHaengFakeFlowTest {
 
     @Test
     fun `observeGroup 은 틱마다 멤버가 움직인다`() = runTest {
-        DongHaeng.init(config, devToken)
+        initFake()
         val joined = DongHaeng.joinGroup(joinQr)
         val snapshots = DongHaeng.observeGroup(joined.groupId).take(3).toList()
         assertEquals(3, snapshots.size)
@@ -93,7 +101,7 @@ class DongHaengFakeFlowTest {
     @OptIn(ExperimentalCoroutinesApi::class) // currentTime
     @Test
     fun `LOW_ENERGY 틱(10틱)을 지나도 틱당 한 번만 발행되고 시간이 흐른다 - 무한 루프 회귀`() = runTest {
-        DongHaeng.init(config, devToken)
+        initFake()
         val joined = DongHaeng.joinGroup(joinQr)
         // 틱 0..13 → 14번 발행. 버그가 있으면 10틱에서 같은 틱이 즉시 반복 발행되어 가상 시간이 멈춘 채 끝난다
         val snapshots = DongHaeng.observeGroup(joined.groupId).take(14).toList()
@@ -108,7 +116,7 @@ class DongHaengFakeFlowTest {
 
     @Test
     fun `sendPassengerMessage 는 PASSENGER_MESSAGE 이벤트로 나타난다`() = runTest {
-        DongHaeng.init(config, devToken)
+        initFake()
         val joined = DongHaeng.joinGroup(joinQr)
         DongHaeng.sendPassengerMessage(joined.groupId, "앞에 휴게소 들르자")
         val snapshot = DongHaeng.observeGroup(joined.groupId).first()
@@ -121,15 +129,27 @@ class DongHaengFakeFlowTest {
     @Test
     fun `init 에 스킴 없는 publicBaseUrl 을 주면 IllegalArgumentException`() = runTest {
         listOf("10.0.2.2:8080", "ftp://10.0.2.2:8080", "   ").forEach { bad ->
-            val error = runCatching { DongHaeng.init(config.copy(publicBaseUrl = bad), devToken) }.exceptionOrNull()
+            val error = runCatching { initFake(config.copy(publicBaseUrl = bad)) }.exceptionOrNull()
             assertTrue("publicBaseUrl='$bad' → $error", error is IllegalArgumentException)
         }
         // 잘못된 init 은 세션을 만들지 않는다
         val afterError = runCatching { DongHaeng.listMyVehicles() }.exceptionOrNull()
         assertTrue(afterError is DongHaengException.NotInitialized)
         // 대소문자가 섞인 스킴과 끝 슬래시는 허용
-        DongHaeng.init(config.copy(publicBaseUrl = "HTTPS://1-2-3-4.sslip.io/"), devToken)
+        initFake(config.copy(publicBaseUrl = "HTTPS://1-2-3-4.sslip.io/"))
         assertEquals(2, DongHaeng.listMyVehicles().size)
+    }
+
+    @Test
+    fun `공개 init 도 같은 설정 검증을 한다 - 네트워크 없이`() = runTest {
+        listOf("10.0.2.2:8080", "ftp://10.0.2.2:8080", "   ").forEach { bad ->
+            val error = runCatching { DongHaeng.init(config.copy(publicBaseUrl = bad), devToken) }.exceptionOrNull()
+            assertTrue("publicBaseUrl='$bad' → $error", error is IllegalArgumentException)
+        }
+        // 올바른 주소면 세션이 만들어진다(교환은 첫 API 호출 때라 여기서는 네트워크를 쓰지 않는다)
+        DongHaeng.init(config, devToken)
+        val error = runCatching { DongHaeng.joinGroup(pairQr) }.exceptionOrNull()
+        assertTrue(error is DongHaengException.InvalidQr) // QR 해석은 전송 전에 끝난다
     }
 
     @Test
@@ -144,14 +164,14 @@ class DongHaengFakeFlowTest {
 
     @Test
     fun `joinGroup 에 차량 등록 QR 을 주면 InvalidQr`() = runTest {
-        DongHaeng.init(config, devToken)
+        initFake()
         val error = runCatching { DongHaeng.joinGroup(pairQr) }.exceptionOrNull()
         assertTrue(error is DongHaengException.InvalidQr)
     }
 
     @Test
     fun `다른 서버 QR 은 OtherServer`() = runTest {
-        DongHaeng.init(config, devToken)
+        initFake()
         val error = runCatching { DongHaeng.joinGroup("https://9-9-9-9.sslip.io/j/inv_1") }.exceptionOrNull()
         assertTrue(error is DongHaengException.OtherServer)
         assertEquals("9-9-9-9.sslip.io", (error as DongHaengException.OtherServer).host)
@@ -159,7 +179,7 @@ class DongHaengFakeFlowTest {
 
     @Test
     fun `pairVehicle 은 내 차를 한 대 늘린다`() = runTest {
-        DongHaeng.init(config, devToken)
+        initFake()
         val result = DongHaeng.pairVehicle(pairQr, "시승차")
         assertEquals("시승차", result.nickname)
         val vehicles = DongHaeng.listMyVehicles()
@@ -169,14 +189,14 @@ class DongHaengFakeFlowTest {
 
     @Test
     fun `빈 토큰이면 Unauthorized`() = runTest {
-        DongHaeng.init(config, TokenProvider { "" })
+        initFake(token = TokenProvider { "" })
         val error = runCatching { DongHaeng.listMyVehicles() }.exceptionOrNull()
         assertTrue(error is DongHaengException.Unauthorized)
     }
 
     @Test
     fun `모르는 그룹을 observe 하면 Api(GROUP_NOT_FOUND)`() = runTest {
-        DongHaeng.init(config, devToken)
+        initFake()
         val error = runCatching { DongHaeng.observeGroup("grp_nope").first() }.exceptionOrNull()
         assertTrue(error is DongHaengException.Api)
         assertEquals("GROUP_NOT_FOUND", (error as DongHaengException.Api).code)

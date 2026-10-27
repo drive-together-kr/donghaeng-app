@@ -7,7 +7,7 @@ package app.donghaeng.companion.sdk
  *   (로컬 `http://10.0.2.2:8080`, 클라우드 `https://<VM-IP>.sslip.io`). 끝의 `/` 는 모듈 안에서 제거해 다룬다.
  *   QR 의 호스트가 이 주소의 호스트와 다르면 [DongHaengException.OtherServer] 가 난다.
  * @param provider 모듈을 내장한 공식 앱(계정 제공자). [AccountProvider.DEV] 는 개발·시연용 dev 로그인 계정이다
- *   (서버 `DevTokenVerifier` 가 검증, docs/07 §4.2; T13 전까지는 임시로 메모리 Fake 로 동작).
+ *   (서버 `DevTokenVerifier` 가 검증, docs/07 §4.2). 어느 제공자든 전송은 같은 서버 REST(`/v1/auth/exchange` → 동행 JWT)다.
  * @param appVersion 호스트 앱 버전 문자열. 서버 요청의 User-Agent·진단 로그에 쓴다.
  */
 public data class DongHaengConfig(
@@ -34,8 +34,8 @@ public enum class AccountProvider {
 
     /**
      * 개발·시연용 dev 로그인 계정. 토큰은 호스트 앱이 `POST /v1/auth/login` 으로 받은 accessToken 이며 서버
-     * `DevTokenVerifier` 가 검증한다(docs/07 §4.2). 모듈은 토큰 형식을 해석하지 않고 Bearer 로만 싣는다.
-     * 서버 identity 가 생기는 T13 전까지는 [DongHaeng] 이 임시로 메모리 Fake 로 동작한다(T13 에서 DEV 도 HTTP 전송으로 전환).
+     * `DevTokenVerifier` 가 검증한다(docs/07 §4.2). 모듈은 토큰 형식을 해석하지 않고 다른 제공자와 똑같이
+     * `POST /v1/auth/exchange { provider: "dev", accessToken }` 으로 동행 JWT 와 교환한다. 와이어 표기는 `dev`.
      */
     DEV,
 }
