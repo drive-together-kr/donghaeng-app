@@ -83,6 +83,7 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 | `feature.settings` | `SettingsScreen`(연결 상태·**연결 해제**·진단 진입), `DiagnosticsScreen`(capability 표 · SDK 점검 · 빌드 정보 · 차량 ID 마스킹) | T11/T12 |
 | `feature.groupdrive` | `GroupDriveViewModel`(STATE 스냅샷·이벤트·내 위치·연결 → `GroupDriveUiState`) · `GroupDriveScreen`(가로/세로 반응형, 멤버 리스트·이벤트 스트립·초대 QR/나가기·종료) · `GroupMapCanvas` + `GroupMapProjection`(Canvas 경량 지도) | T25 |
 | `adapter.uxr` (pleos) | `CarUxDrivingStateMonitor`(CarUxRestrictionsManager → `DrivingStateMonitor.isDriving()`/`status`) · fake 는 `AlwaysParkedDrivingStateMonitor` | T29 |
+| `domain.time` / `domain.latency` | `ClockSync`(GET /v1/time 3회 → 왕복 최소 표본 오프셋, 5분) · `LatencyMeter`(그룹 EVENT/STATE 봉투 ts → 수신 지연, 60 s 창 통계, 오버레이 on/off) | T31 |
 | `domain.routesync` | `RouteSyncEngine`(선두: 내비 목적지/경유지 변경 → ROUTE_CHANGED 발행 · 멤버: ROUTE_FOLLOW_PROPOSAL → 음성·제안 카드 → 수락 시 내비 재요청 + ACK, 30초 자동 거절, 자동 따라가기 · 합류 직후 로컬 제안 "선두차 목적지까지 안내할까요?" ACK 없음) | T28/T30 |
 | `debug` (debug 빌드만, `src/debug`) | `DemoControlReceiver` — adb broadcast 로 시연 조작(route_test/accept/decline/auto_follow/speak/voice/navi_route/gpx/status), `tools/demo/demo.py` 가 사용. `core.common.DemoPrefs`(fake GPX 역할) | T30 |
 | `domain.voice` | `VoiceAnnouncer`(그룹 이벤트 → 음성 큐: 신선도 5s·내 차 생략·우선순위·중복 10s·큐 대기 30s) | T27 |
@@ -235,6 +236,10 @@ mqtt subscribed topic=dh/v1/group/grp_…**/state  /  …/event
 - MainActivity 에 `distractionOptimized=true` 메타데이터 → 속도 > 0 에서도 앱이 가려지지 않는다(이전엔 "주행 중에는 사용할 수 없습니다"). 앱이 `CarUxRestrictionsManager` 로 주행 중을 판정해 입력을 막는다: `uxr: listener registered` → `uxr: requiresDO=true restrictions=0x50`(주행) / `requiresDO=false`(정차).
 - 주행 중 비활성: 홈 '내 폰과 연결하기'·'같이 가기 시작'(그룹 보기 허용) + 안내 문구, 그룹 생성 입력/종료, 그룹 주행 초대·나가기·제안 버튼. 진단 **주행 제한 (T29)** 카드.
 - 확인: Virtual Console `gear=Drive`, `speed_kph=55` → 캡처 `docs/images/t29/`(진단 카드 '주행 중 — 입력 비활성', 홈 버튼 회색). 스크립트 `t29_uxr_check.py`.
+
+### T31 — 지연 측정 오버레이 (`adb logcat -s DongHaeng | grep -E "clock:|latency:"`)
+- 시작 직후 `clock: offset=<ms> rtt=<ms> samples=3`(서버 `GET /v1/time`, 5분마다). 그룹 EVENT/STATE 수신마다 `latency: event 123ms (avg … max … n=…)` / `latency: state …`(15건마다). 그룹 주행 화면 연결 칩 아래 "지연 이벤트 N ms · 상태 N ms", 설정 '지연 표시 (ms)' 로 끈다. 진단 **지연 측정 (T31)** 카드에 오프셋·왕복·통계·'지금 동기화'.
+- 차량 시계가 서버와 다르면 오프셋이 그만큼 잡히고(실측: Pleos AVD +1196 ms, Pleos_B +1911 ms) 지연은 로컬에서 STATE 10~25 ms 로 나와야 정상이다. 음성 신선도(5 s)도 같은 오프셋으로 판정한다. AVD `date` 표시의 시간대 차이(16시간)는 epoch 오차가 아니다.
 
 ### T30 — 시연 스크립트 (`tools/demo`, docs/09 §4)
 - 차 B 는 `Pleos_B` AVD 에 **fake** flavor 를 설치하고 GPX 역할을 후속차로 둔다: `adb -s emulator-5558 shell am broadcast -n app.donghaeng.car/.debug.DemoControlReceiver --es action gpx --es role follow` → 앱 재시작 → 로그 `FakeNavi asset=gpx/follow.gpx … hold=true`. 합류 제안("선두차 목적지 … 안내할까요?")을 수락하면 출발한다(`routesync: accepted … local=true`, `FakeNavi requestRoute`).

@@ -17,6 +17,7 @@ cd server
 ./gradlew bootRun                 # Windows: .\gradlew.bat bootRun
 curl http://localhost:8080/actuator/health          # {"status":"UP",...}
 curl http://localhost:8080/.well-known/jwks.json    # {"keys":[{"kty":"RSA","use":"sig","alg":"RS256","kid":"…","n":"…","e":"AQAB"}]}
+curl http://localhost:8080/v1/time                  # {"serverTimeMs":1730000000000}  — 차량 앱 시계 동기화(T31), 인증 없음
 
 # identity 흐름 맛보기 (docs/03 §1)
 curl -X POST localhost:8080/v1/auth/login -H 'Content-Type: application/json' -d '{"provider":"dev","email":"demo@example.com","displayName":"데모"}'
@@ -81,7 +82,7 @@ curl localhost:8080/v1/me/vehicles -H "Authorization: Bearer <accessToken>"
 | `mqtt` | EMQX 연결(`ServerMqttClient`, 서버 토큰 `srv_…`)·공유 구독·`TopicRouter`·cmd 발행(`MqttVehicleCommandPort`)·그룹 이벤트 팬아웃(`GroupEventMqttFanout`)·ACL 훅(`POST /internal/mqtt/acl`, `MqttAclService`) — docs/03 §4 | T15 완료 |
 | `common` | 공용 코드 (아래) | T03 |
 
-`common/` 구성: `config/DhProperties`(`dh.*` 설정), `config/HttpJsonConfig`(kotlinx 컨버터), `config/ClockConfig`, `api/ApiError`(docs/03 오류 형식 + `ApiException` + 전역 예외 처리), `id/Ids`(접두사 ULID), `security/SecurityConfig`(무상태·JWT 리소스 서버·역할 규칙·JSON 401/403), `security/SecureTokens`(불투명 토큰 난수·SHA-256 — refresh·디바이스 코드·초대 토큰 공용), `jdbc/JdbcSupport`(timestamptz ↔ Instant), `tx/afterCommit`(커밋 뒤 부수 효과 — Redis·MQTT), `web/LandingController`(`/pair`, `/j/{token}` 웹 폴백). JWKS 는 `identity/web/JwksController` 로 옮겼다.
+`common/` 구성: `config/DhProperties`(`dh.*` 설정), `config/HttpJsonConfig`(kotlinx 컨버터), `config/ClockConfig`, `api/ApiError`(docs/03 오류 형식 + `ApiException` + 전역 예외 처리), `id/Ids`(접두사 ULID), `security/SecurityConfig`(무상태·JWT 리소스 서버·역할 규칙·JSON 401/403), `security/SecureTokens`(불투명 토큰 난수·SHA-256 — refresh·디바이스 코드·초대 토큰 공용), `jdbc/JdbcSupport`(timestamptz ↔ Instant), `tx/afterCommit`(커밋 뒤 부수 효과 — Redis·MQTT), `web/LandingController`(`/pair`, `/j/{token}` 웹 폴백), `web/TimeController`(`GET /v1/time` 서버 시각 — T31). JWKS 는 `identity/web/JwksController` 로 옮겼다.
 
 패키지 간 호출은 `XxxApi` 인터페이스로만 한다. 메시지·REST 스키마는 `protocol/` 에만 정의한다 (합성 빌드로 의존).
 

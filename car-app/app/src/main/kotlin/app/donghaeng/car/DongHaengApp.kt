@@ -60,6 +60,10 @@ class DongHaengApp : Application() {
 
     @Inject
     lateinit var routeSyncEngine: RouteSyncEngine
+    @Inject
+    lateinit var clockSync: app.donghaeng.car.domain.time.ClockSync
+    @Inject
+    lateinit var latencyMeter: app.donghaeng.car.domain.latency.LatencyMeter
 
     override fun onCreate() {
         super.onCreate()
@@ -77,5 +81,7 @@ class DongHaengApp : Application() {
         vehicleEventEngine.start()        // T26: 활성 그룹 동안 차량 이벤트 판정·발행
         voiceAnnouncer.start()            // T27: 그룹 이벤트 음성 안내
         routeSyncEngine.start()           // T28: 선두 경로 동기화
+        clockSync.start()                 // T31: 서버 시각 동기화(5분)
+        latencyMeter.start()              // T31: 그룹 EVENT/STATE 지연 측정
     }
 }

@@ -117,6 +117,7 @@ class SecurityConfig(private val objectMapper: ObjectMapper) {
             "/actuator/info",
             "/.well-known/jwks.json",
             "/pair",
+            "/v1/time",
             "/j/**",
             "/v1/auth/login",
             "/v1/auth/exchange",

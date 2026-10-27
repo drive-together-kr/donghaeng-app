@@ -28,6 +28,9 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
+import app.donghaeng.car.core.network.TimeApi
+import app.donghaeng.car.domain.time.ClockSync
+import app.donghaeng.car.domain.latency.LatencyMeter
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
@@ -90,8 +93,20 @@ object SignalsModule {
     /** T27: 그룹 이벤트 → 음성 큐(우선순위·신선도 5s·내 이벤트 생략) */
     @Provides
     @Singleton
-    fun provideVoiceAnnouncer(sessionManager: MqttSessionManager, voice: VoiceAdapter): VoiceAnnouncer =
-        VoiceAnnouncer(events = sessionManager.groupEventsReceived, myVehicleId = { sessionManager.myVehicleId }, voice = voice)
+    fun provideVoiceAnnouncer(sessionManager: MqttSessionManager, voice: VoiceAdapter, clockSync: ClockSync): VoiceAnnouncer =
+        // 신선도(5s) 판정은 서버 시계 기준(T31 ClockSync) — 차량 시계가 틀려도 옛 이벤트만 생략한다
+        VoiceAnnouncer(events = sessionManager.groupEventsReceived, myVehicleId = { sessionManager.myVehicleId }, voice = voice, clock = { clockSync.serverNow() })
+
+    /** T31: 서버 시각 동기화 — 시작 직후·5분마다 `GET /v1/time` 3회, 왕복 최소 표본 */
+    @Provides
+    @Singleton
+    fun provideClockSync(timeApi: TimeApi): ClockSync = ClockSync(fetchServerTimeMs = { timeApi.time().serverTimeMs })
+
+    /** T31: 그룹 EVENT·STATE 지연(ms) — 봉투 ts → 수신(시계 오프셋 보정) */
+    @Provides
+    @Singleton
+    fun provideLatencyMeter(sessionManager: MqttSessionManager, clockSync: ClockSync): LatencyMeter =
+        LatencyMeter(events = sessionManager.groupEventsReceived, states = sessionManager.groupStatesReceived, clockState = clockSync.state)
 
     /** T26: 활성 그룹 동안 1Hz 판정 → `dh/v1/vehicle/{vid}/event` QoS 1 */
     @Provides

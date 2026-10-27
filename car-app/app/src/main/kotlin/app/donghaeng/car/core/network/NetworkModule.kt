@@ -63,4 +63,9 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideGroupApi(retrofit: Retrofit): GroupApi = retrofit.create()
+
+    /** T31 서버 시각 (`GET /v1/time`, 인증 없음) */
+    @Provides
+    @Singleton
+    fun provideTimeApi(retrofit: Retrofit): TimeApi = retrofit.create()
 }

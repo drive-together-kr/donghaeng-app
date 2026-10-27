@@ -22,6 +22,8 @@ data class SettingsUiState(
     val voiceEnabled: Boolean = true,
     /** T28 선두 경로 자동 따라가기 */
     val autoFollow: Boolean = false,
+    /** T31 그룹 주행 화면 지연(ms) 오버레이 */
+    val latencyOverlay: Boolean = true,
 )
 
 /** 설정 — 연결 해제(반복 시연용), 진단 화면 진입, 음성 안내 on/off(T27). */
@@ -31,6 +33,7 @@ class SettingsViewModel @Inject constructor(
     tokenStore: TokenStore,
     private val voiceAnnouncer: app.donghaeng.car.domain.voice.VoiceAnnouncer,
     private val routeSync: app.donghaeng.car.domain.routesync.RouteSyncEngine,
+    private val latency: app.donghaeng.car.domain.latency.LatencyMeter,
 ) : ViewModel() {
 
     private val justDisconnected = MutableStateFlow(false)
@@ -39,13 +42,15 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { tokenStore.load() }
     }
 
-    val uiState: StateFlow<SettingsUiState> = combine(tokenStore.state, justDisconnected, voiceAnnouncer.state, routeSync.state) { tokens, disconnected, voice, rs ->
-        SettingsUiState(tokens = tokens, justDisconnected = disconnected, voiceEnabled = voice.enabled, autoFollow = rs.autoFollow)
+    val uiState: StateFlow<SettingsUiState> = combine(tokenStore.state, justDisconnected, voiceAnnouncer.state, routeSync.state, latency.state) { tokens, disconnected, voice, rs, lat ->
+        SettingsUiState(tokens = tokens, justDisconnected = disconnected, voiceEnabled = voice.enabled, autoFollow = rs.autoFollow, latencyOverlay = lat.overlayEnabled)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState(tokens = tokenStore.state.value))
 
     fun setVoiceEnabled(enabled: Boolean) = voiceAnnouncer.setEnabled(enabled)
 
     fun setAutoFollow(enabled: Boolean) = routeSync.setAutoFollow(enabled)
+
+    fun setLatencyOverlay(enabled: Boolean) = latency.setOverlayEnabled(enabled)
 
     /** TokenStore 를 비운다 → 홈이 '연결 안 됨' 으로 돌아간다. */
     fun disconnect() {

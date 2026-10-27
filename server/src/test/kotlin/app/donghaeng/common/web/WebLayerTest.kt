@@ -23,7 +23,7 @@ import org.springframework.test.web.servlet.get
 import org.springframework.test.web.servlet.post
 
 /** 웹 계층 슬라이스 테스트: JWKS, JWT 리소스 서버 보안 동작, QR 웹 폴백 페이지. DB·Redis 불필요 (키는 기동 시 생성). */
-@WebMvcTest(controllers = [JwksController::class, LandingController::class])
+@WebMvcTest(controllers = [JwksController::class, LandingController::class, TimeController::class])
 @Import(SecurityConfig::class, HttpJsonConfig::class, JwtDecoderConfig::class, JwtKeyProvider::class, JwtIssuer::class, ClockConfig::class)
 @EnableConfigurationProperties(DhProperties::class)
 class WebLayerTest {
@@ -51,6 +51,16 @@ class WebLayerTest {
             jsonPath("$.keys[0].e") { value("AQAB") }
             jsonPath("$.keys[0].d") { doesNotExist() }
             jsonPath("$.keys[0].p") { doesNotExist() }
+        }
+    }
+
+    @Test
+    fun `GET v1 time is public and returns the server clock in epoch ms`() {
+        val before = System.currentTimeMillis() - 5_000
+        mvc.get("/v1/time").andExpect {
+            status { isOk() }
+            content { contentTypeCompatibleWith(MediaType.APPLICATION_JSON) }
+            jsonPath("$.serverTimeMs") { value(org.hamcrest.Matchers.greaterThan(before)) }
         }
     }
 

@@ -93,6 +93,9 @@ data class DiagnosticsUiState(
     /** T29 주행 제한 */
     val driving: DrivingStatus = DrivingStatus(),
     val isDriving: Boolean = false,
+    /** T31 지연 측정·시계 동기화 */
+    val latency: app.donghaeng.car.domain.latency.LatencyState = app.donghaeng.car.domain.latency.LatencyState(),
+    val clockSync: app.donghaeng.car.domain.time.ClockSyncState = app.donghaeng.car.domain.time.ClockSyncState(),
 )
 
 /** 진단 화면의 경로 동기화 확인용 동작(T28) */
@@ -107,7 +110,7 @@ enum class NaviDebugAction { REQUEST_ROUTE, SHOW_NAVIGATION, QUERY_DESTINATION }
 /** 진단 화면의 위치 확인용 동작(T21) — 권한 요청은 Route 의 런처가, 재탐색은 ViewModel 이 처리 */
 enum class LocationDebugAction { REQUEST_PERMISSION, RESTART }
 
-private data class SessionSide(val session: GroupSession?, val lastCommand: LastCommand?, val groupState: GroupState?, val groupStateAt: Long?)
+private data class SessionSide(val session: GroupSession?, val lastCommand: LastCommand?, val groupState: GroupState?, val groupStateAt: Long?, val latency: app.donghaeng.car.domain.latency.LatencyState = app.donghaeng.car.domain.latency.LatencyState(), val clock: app.donghaeng.car.domain.time.ClockSyncState = app.donghaeng.car.domain.time.ClockSyncState())
 
 private data class SideState(val mqtt: MqttStatus, val navi: NaviMonitorState, val naviAction: String?, val location: LocationFeedState, val vehicle: VehicleSignalState, val telemetry: TelemetryState, val serviceRunning: Boolean, val events: EventEngineState = EventEngineState(), val voice: VoiceAnnouncerState = VoiceAnnouncerState(), val tts: VoiceAdapterStatus = VoiceAdapterStatus(), val routeSync: RouteSyncState = RouteSyncState(), val driving: DrivingStatus = DrivingStatus(), val isDriving: Boolean = false)
 
@@ -130,6 +133,8 @@ class DiagnosticsViewModel @Inject constructor(
     voiceAdapter: VoiceAdapter,
     private val routeSync: RouteSyncEngine,
     drivingMonitor: DrivingStateMonitor,
+    private val clockSync: app.donghaeng.car.domain.time.ClockSync,
+    latency: app.donghaeng.car.domain.latency.LatencyMeter,
 ) : ViewModel() {
 
     private val naviActionResult = MutableStateFlow<String?>(null)
@@ -138,7 +143,7 @@ class DiagnosticsViewModel @Inject constructor(
         viewModelScope.launch { tokenStore.load() }
     }
 
-    val uiState: StateFlow<DiagnosticsUiState> = combine(reporter.report, sdkProbe.report, tokenStore.state, combine(combine(mqtt.status, naviMonitor.state, naviActionResult, voiceAnnouncer.state, voiceAdapter.status) { m, n, a, vo, tt -> SideState(m, n, a, LocationFeedState(), VehicleSignalState(), TelemetryState(), false, EventEngineState(), vo, tt) }, combine(locationFeed.state, vehicleSignals.state, telemetryCollector.state, driveSessionController.serviceRunning, eventEngine.state) { l, v, t, r, ev -> SideState(MqttStatus(), NaviMonitorState(), null, l, v, t, r, ev) }, routeSync.state, drivingMonitor.status, drivingMonitor.isDriving().onStart { emit(false) }) { head, side, rs, ds, isDriving -> side.copy(mqtt = head.mqtt, navi = head.navi, naviAction = head.naviAction, voice = head.voice, tts = head.tts, routeSync = rs, driving = ds, isDriving = isDriving) }, combine(sessionManager.session, sessionManager.lastCommand, sessionManager.groupState, sessionManager.groupStateAt) { s, c, g, t -> SessionSide(s, c, g, t) }) { report, probe, tokens, side, sess ->
+    val uiState: StateFlow<DiagnosticsUiState> = combine(reporter.report, sdkProbe.report, tokenStore.state, combine(combine(mqtt.status, naviMonitor.state, naviActionResult, voiceAnnouncer.state, voiceAdapter.status) { m, n, a, vo, tt -> SideState(m, n, a, LocationFeedState(), VehicleSignalState(), TelemetryState(), false, EventEngineState(), vo, tt) }, combine(locationFeed.state, vehicleSignals.state, telemetryCollector.state, driveSessionController.serviceRunning, eventEngine.state) { l, v, t, r, ev -> SideState(MqttStatus(), NaviMonitorState(), null, l, v, t, r, ev) }, routeSync.state, drivingMonitor.status, drivingMonitor.isDriving().onStart { emit(false) }) { head, side, rs, ds, isDriving -> side.copy(mqtt = head.mqtt, navi = head.navi, naviAction = head.naviAction, voice = head.voice, tts = head.tts, routeSync = rs, driving = ds, isDriving = isDriving) }, combine(sessionManager.session, sessionManager.lastCommand, sessionManager.groupState, sessionManager.groupStateAt, combine(latency.state, clockSync.state) { l, cs -> l to cs }) { s, c, g, t, lc -> SessionSide(s, c, g, t, lc.first, lc.second) }) { report, probe, tokens, side, sess ->
         DiagnosticsUiState(
             report = report,
             probe = probe,
@@ -160,6 +165,8 @@ class DiagnosticsViewModel @Inject constructor(
             routeSync = side.routeSync,
             driving = side.driving,
             isDriving = side.isDriving,
+            latency = sess.latency,
+            clockSync = sess.clock,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DiagnosticsUiState(report = reporter.report.value, probe = sdkProbe.report.value))
 
@@ -198,6 +205,9 @@ class DiagnosticsViewModel @Inject constructor(
     }
 
     fun restartVehicleSignals() = vehicleSignals.restart()
+
+    /** T31 진단 '지금 동기화' */
+    fun resyncClock() = clockSync.resync()
 
     fun onRouteSyncAction(action: RouteSyncDebugAction) {
         when (action) {

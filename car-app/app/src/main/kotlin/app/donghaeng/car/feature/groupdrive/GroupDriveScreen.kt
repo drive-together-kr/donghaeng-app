@@ -176,6 +176,8 @@ private fun ConnectionChip(state: GroupDriveUiState) {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // T31 지연 오버레이: 서버 발행 ts → 수신(시계 오프셋 보정) — 설정에서 끌 수 있다
+        state.latencyText?.let { Text(stringResource(R.string.drive_latency, it), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.tertiary) }
     }
 }
 

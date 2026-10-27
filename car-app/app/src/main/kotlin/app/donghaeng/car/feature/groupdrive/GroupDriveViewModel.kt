@@ -83,6 +83,8 @@ data class GroupDriveUiState(
     /** T28 대기 중인 선두 경로 제안 */
     val proposal: RouteProposal? = null,
     val autoFollow: Boolean = false,
+    /** T31 지연 오버레이 문구("이벤트 123 ms · 상태 85 ms"), 꺼져 있거나 표본 없으면 null */
+    val latencyText: String? = null,
 ) {
     val hasSnapshot: Boolean get() = members.isNotEmpty()
     val proposalRemainingS: Long? get() = proposal?.let { ((it.expiresAtMs - nowMs) / 1_000).coerceAtLeast(0) }
@@ -101,6 +103,7 @@ class GroupDriveViewModel @Inject constructor(
     fixes: MyFixSource,
     driving: DrivingStateMonitor,
     private val routeSync: RouteSyncEngine,
+    latency: app.donghaeng.car.domain.latency.LatencyMeter,
 ) : ViewModel() {
 
     private var tickMs: Long = 1_000L
@@ -126,14 +129,14 @@ class GroupDriveViewModel @Inject constructor(
 
     private data class Core(val session: GroupSession?, val state: GroupState?, val stateAt: Long?, val myVehicleId: String?)
     private data class Side(val mqtt: MqttState, val fix: Fix?, val driving: Boolean, val events: List<EventUi>, val now: Long)
-    private data class Extra(val busy: Boolean, val error: String?, val proposal: RouteProposal?, val autoFollow: Boolean)
+    private data class Extra(val busy: Boolean, val error: String?, val proposal: RouteProposal?, val autoFollow: Boolean, val latencyText: String? = null)
 
     val uiState: StateFlow<GroupDriveUiState> = combine(
         combine(sessionManager.session, sessionManager.groupState, sessionManager.groupStateAt, tokenStore.state) { s, g, t, tok ->
             Core(s, g, t, (tok as? TokenStoreState.Present)?.credentials?.vehicleId)
         },
         combine(mqtt.status, fixes.fixes.map<Fix, Fix?> { it }.onStart { emit(null) }, driving.isDriving(), events, ticker) { m, f, d, e, n -> Side(m.state, f, d, e, n) },
-        combine(busy, error, routeSync.state) { b, err, rs -> Extra(b, err, rs.pending, rs.autoFollow) },
+        combine(busy, error, routeSync.state, latency.state) { b, err, rs, lat -> Extra(b, err, rs.pending, rs.autoFollow, lat.overlayText) },
     ) { core, side, extra ->
         val members = core.state?.members?.map { it.toUi(core.state.leaderVehicleId, core.myVehicleId) }.orEmpty()
         GroupDriveUiState(
@@ -157,6 +160,7 @@ class GroupDriveViewModel @Inject constructor(
             nowMs = side.now,
             proposal = extra.proposal,
             autoFollow = extra.autoFollow,
+            latencyText = extra.latencyText,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), GroupDriveUiState())
 

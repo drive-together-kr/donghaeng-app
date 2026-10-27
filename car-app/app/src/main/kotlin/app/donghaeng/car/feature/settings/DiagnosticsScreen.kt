@@ -60,7 +60,7 @@ fun DiagnosticsRoute(
         },
         onRestartVehicleSignals = viewModel::restartVehicleSignals,
         onVoiceAction = viewModel::onVoiceAction,
-        onRouteSyncAction = viewModel::onRouteSyncAction,
+        onRouteSyncAction = viewModel::onRouteSyncAction, onResyncClock = viewModel::resyncClock,
     )
 }
 
@@ -77,6 +77,7 @@ fun DiagnosticsScreen(
     onRestartVehicleSignals: () -> Unit = {},
     onVoiceAction: (VoiceDebugAction) -> Unit = {},
     onRouteSyncAction: (RouteSyncDebugAction) -> Unit = {},
+    onResyncClock: () -> Unit = {},
 ) {
     Scaffold { innerPadding ->
         Column(
@@ -105,6 +106,7 @@ fun DiagnosticsScreen(
             VoiceCard(state, onVoiceAction)
             RouteSyncCard(state, onRouteSyncAction)
             DrivingCard(state)
+            LatencyCard(state, onResyncClock)
             BuildCard(state)
         }
     }
@@ -498,5 +500,25 @@ private fun DiagnosticsPreview() {
             ),
             onBack = {},
         )
+    }
+}
+
+/** T31 — 지연 측정: 시계 오프셋(서버-차량)·왕복, 그룹 EVENT/STATE 의 봉투 ts → 수신 지연(최근 60초 마지막/평균/최대). '지금 동기화' */
+@Composable
+private fun LatencyCard(state: DiagnosticsUiState, onResync: () -> Unit) {
+    Card {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(stringResource(R.string.diag_section_latency), style = MaterialTheme.typography.titleMedium)
+            HorizontalDivider()
+            val c = state.clockSync
+            val l = state.latency
+            val age = c.lastSyncAtMs?.let { ts -> "${(System.currentTimeMillis() - ts) / 1000}s 전" } ?: "-"
+            LabelRow(stringResource(R.string.diag_lat_clock), if (c.synced) "오프셋 ${c.offsetMs} ms (서버 − 차량)   왕복 ${c.rttMs} ms   표본 ${c.samples}   동기화 ${c.syncs}회 · $age" else "동기화 전" + (c.lastError?.let { e -> "  ($e)" } ?: ""))
+            fun stat(st: app.donghaeng.car.domain.latency.LatencyStat?) = st?.let { "마지막 ${it.lastMs} ms · 평균 ${it.avgMs} ms · 최대 ${it.maxMs} ms · ${it.count}건/60s" } ?: "-"
+            LabelRow(stringResource(R.string.diag_lat_event), stat(l.event))
+            LabelRow(stringResource(R.string.diag_lat_state), stat(l.state))
+            LabelRow(stringResource(R.string.diag_mqtt_last_error), "오버레이 ${if (l.overlayEnabled) "켜짐" else "꺼짐"}   동기화 전 수신 ${l.unsynced}   음수 보정 ${l.clamped}")
+            OutlinedButton(onClick = onResync, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_lat_action_resync)) }
+        }
     }
 }

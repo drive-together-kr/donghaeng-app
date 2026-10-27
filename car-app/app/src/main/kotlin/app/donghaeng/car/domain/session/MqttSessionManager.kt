@@ -42,6 +42,9 @@ data class ReceivedProposal(val cmd: RouteFollowProposal, val receivedAtMs: Long
 /** 봉투 ts(서버 발행 시각)·수신 시각이 붙은 그룹 이벤트 */
 data class ReceivedGroupEvent(val event: GroupEvent, val envelopeTsMs: Long, val receivedAtMs: Long)
 
+/** 그룹 STATE 스냅샷의 봉투 ts(서버 발행)·수신 시각 — T31 지연 측정용 */
+data class ReceivedGroupState(val envelopeTsMs: Long, val receivedAtMs: Long, val members: Int)
+
 /**
  * 페어링 상태 ↔ MQTT 연결 ↔ 그룹 세션을 잇는다 (T16; 호출 순서는 docs/03 §4·§5.5).
  *
@@ -83,6 +86,10 @@ class MqttSessionManager @Inject constructor(
     /** 마지막 STATE 수신 시각(epoch ms)·누적 수 — 진단용 (T24) */
     private val _groupStateAt = MutableStateFlow<Long?>(null)
     val groupStateAt: StateFlow<Long?> = _groupStateAt.asStateFlow()
+
+    /** STATE 수신 봉투 ts·수신 시각 (T31 LatencyMeter 가 구독) */
+    private val _groupStatesReceived = MutableSharedFlow<ReceivedGroupState>(extraBufferCapacity = 16, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    val groupStatesReceived: SharedFlow<ReceivedGroupState> = _groupStatesReceived.asSharedFlow()
     private var stateCount = 0
 
     private val _lastCommand = MutableStateFlow<LastCommand?>(null)
@@ -157,6 +164,7 @@ class MqttSessionManager @Inject constructor(
                         _groupState.value = state
                         _groupStateAt.value = message.receivedAtMs
                         stateCount++
+                        _groupStatesReceived.emit(ReceivedGroupState(envelopeTsMs = message.envelope.ts, receivedAtMs = message.receivedAtMs, members = state.members.size))
                         if (stateCount == 1 || stateCount % 15 == 0) {
                             DhLog.i("group state #$stateCount members=${state.members.size} online=${state.members.count { it.online }} status=${state.members.joinToString(",") { it.status.name }}")
                         }

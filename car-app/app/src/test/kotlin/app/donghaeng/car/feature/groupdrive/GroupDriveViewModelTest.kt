@@ -101,7 +101,12 @@ class GroupDriveViewModelTest {
         publishRouteChanged = { true }, publishAck = { true }, speak = { _, _ -> }, dispatcher = dispatcher,
     )
 
-    private fun viewModel() = GroupDriveViewModel(manager, GroupRepository(api, sessions, manager), tokens, gateway, fixes, AlwaysParkedDrivingStateMonitor(), routeSync())
+    private fun latencyMeter() = app.donghaeng.car.domain.latency.LatencyMeter(
+        events = manager.groupEventsReceived, states = manager.groupStatesReceived,
+        clockState = kotlinx.coroutines.flow.MutableStateFlow(app.donghaeng.car.domain.time.ClockSyncState()), dispatcher = dispatcher,
+    )
+
+    private fun viewModel() = GroupDriveViewModel(manager, GroupRepository(api, sessions, manager), tokens, gateway, fixes, AlwaysParkedDrivingStateMonitor(), routeSync(), latencyMeter())
         .also { it.configureForTest(tickMs = 1_000, clock = { now }) }
 
     private fun member(vid: String, nick: String, status: MemberStatus, online: Boolean = true, lat: Double? = 36.35, lon: Double? = 127.38, speed: Float? = 80f, dist: Int? = 500) = MemberState(
