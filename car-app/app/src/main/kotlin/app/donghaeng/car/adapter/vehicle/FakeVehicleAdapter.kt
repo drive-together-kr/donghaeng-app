@@ -1,5 +1,8 @@
 package app.donghaeng.car.adapter.vehicle
 
+import app.donghaeng.car.domain.model.CapabilityDomain
+import app.donghaeng.car.domain.model.CapabilityEntry
+import app.donghaeng.car.domain.model.CapabilitySource
 import app.donghaeng.car.domain.model.Gear
 import app.donghaeng.car.domain.model.TurnSignalState
 import app.donghaeng.car.domain.model.VehicleCapabilities
@@ -56,18 +59,27 @@ class FakeVehicleAdapter(
 
     override fun gear(): Flow<Gear?> = ticking { Gear.D }
 
+    /**
+     * Fake 가 실제로 값을 내는 항목만 true. EV SoC(내연기관 흉내 → null)·비상등(동시 표시 값 없음)은 false 로 두어
+     * fake flavor 에서도 "미지원 → 숨김" 경로가 한 번은 실행되게 한다. 출처는 모두 FAKE.
+     */
     override suspend fun capabilities(): VehicleCapabilities = VehicleCapabilities(
-        vehicleId = true,
-        fuelPercent = true,
-        evStateOfCharge = false,
-        brakePedal = true,
-        turnSignal = true,
-        hazard = false,
-        airbag = true,
-        speed = true,
-        gear = true,
+        entries = listOf(
+            fake(CapabilityDomain.CAR_INFO, true, "고정 ID(len=${fakeVehicleId.length})"),
+            fake(CapabilityDomain.FUEL, true, "${initialFuelPercent}% 에서 ${fuelDropEveryTicks}틱마다 1%p 감소"),
+            fake(CapabilityDomain.EV_BATTERY, false, "내연기관 흉내 — SoC 항상 null"),
+            fake(CapabilityDomain.BRAKE, true, "20틱 주기로 3틱 ON"),
+            fake(CapabilityDomain.TURN_SIGNAL, true, "OFF→LEFT→OFF→RIGHT 10틱 순환"),
+            fake(CapabilityDomain.HAZARD, false, "좌·우 동시 표시 값 없음"),
+            fake(CapabilityDomain.AIRBAG, true, "항상 false(미전개)"),
+            fake(CapabilityDomain.SPEED, true, "0~80 km/h 사인파(60틱 주기)"),
+            fake(CapabilityDomain.GEAR, true, "항상 D"),
+        ),
         raw = mapOf("adapter" to "fake"),
     )
+
+    private fun fake(domain: CapabilityDomain, supported: Boolean, detail: String) =
+        CapabilityEntry(domain, supported, detail, CapabilitySource.FAKE)
 
     /** 첫 값은 즉시, 이후 [tickMillis] 간격으로 끝없이 흘린다. 수집이 취소되면 멈춘다. */
     private fun <T> ticking(valueAt: (tick: Int) -> T): Flow<T> = flow {

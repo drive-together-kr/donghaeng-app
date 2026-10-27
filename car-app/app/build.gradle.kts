@@ -111,6 +111,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.security.crypto)   // T12 EncryptedTokenStore
 
     implementation(libs.hilt.android)
     implementation(libs.hilt.navigation.compose)

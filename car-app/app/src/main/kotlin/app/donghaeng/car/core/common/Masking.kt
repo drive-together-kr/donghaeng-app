@@ -64,4 +64,14 @@ object TextMasking {
         if (token.isNullOrEmpty()) return "?"
         return token.take(4) + "…(len=" + token.length + ")"
     }
+
+    /**
+     * 차량 ID(VIN·CRN·서버 veh_ ID): 앞 4자리 + 뒤 2자리만 남긴다. "KMHXX00XXXX000001" → "KMHX…01".
+     * 6자리 이하는 전부 가린다("ABC123" → "******") — 짧은 ID 는 앞뒤만 남겨도 원문이 드러난다.
+     */
+    fun maskVehicleId(vehicleId: String?): String {
+        if (vehicleId.isNullOrEmpty()) return "?"
+        if (vehicleId.length <= 6) return "*".repeat(vehicleId.length)
+        return vehicleId.take(4) + "…" + vehicleId.takeLast(2)
+    }
 }

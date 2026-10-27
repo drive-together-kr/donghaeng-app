@@ -10,8 +10,8 @@ import app.donghaeng.car.BuildConfig
  *
  * 차량 앱은 QR·딥링크 URL 을 직접 만들지 않는다(서버 응답을 그대로 표시, CLAUDE.md 규칙 12).
  *
- * TODO(T12): RestApi(Retrofit) 생성 시 `publicBaseUrl` 사용. 토큰 저장은 DataStore(T12).
- * TODO(T16): MqttGateway(HiveMQ) 생성 시 `mqttPublicUri` 파싱(scheme tcp/ssl, host, port).
+ * - T12: `NetworkModule` 이 Retrofit base URL 로 `publicBaseUrl + "/"` 를 쓴다. 토큰 저장은 `EncryptedTokenStore`(security-crypto).
+ * TODO(T16): MqttGateway(HiveMQ) 생성 시 `mqttPublicUri` 파싱(scheme tcp/ssl, host, port). 실제 접속 URI 는 서버 응답 `mqtt.uri` 우선.
  */
 object ServerConfig {
     val publicBaseUrl: String = BuildConfig.DH_PUBLIC_BASE_URL.trimEnd('/')

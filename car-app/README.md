@@ -37,7 +37,7 @@ AGP 9 로 올리지 않는다(Android Studio 가 권해도 거절). 툴체인 �
 
 | flavor | 어댑터 | Pleos SDK 의존성 | 실행 대상 |
 |---|---|---|---|
-| `pleos` | T04: 전부 Fake + `PleosSdkProbe`(SDK 존재 점검) → T11/T20/T21/T22 에서 Pleos 구현으로 교체 | Vehicle 2.3.2, NaviHelper 3.0.5, FusedLocation 1.1.3 (`pleosImplementation`) | Pleos Connect AVD (`Pleos_Connect_v2.1.0`, API 34 automotive) |
+| `pleos` | T11: `PleosVehicleAdapter`(CarInfo 차량 ID + `checkXxxCapabilities`; 나머지 Flow 는 T22 까지 내부에서 Fake 위임) + Navi/Location 은 Fake(T20/T21) + `PleosSdkProbe` | Vehicle 2.3.2, NaviHelper 3.0.5, FusedLocation 1.1.3 (`pleosImplementation`) | Pleos Connect AVD (`Pleos_Connect_v2.1.0`, API 34 automotive) |
 | `fake` | 전부 Fake (`FakeVehicleAdapter`, `FakeNaviAdapter`, `FakeLocationAdapter`) + Android TTS | 없음 | 아무 AVD / 폰 / 태블릿 |
 
 두 flavor 는 applicationId 가 같다(`app.donghaeng.car`) — 한 기기에 둘을 동시에 설치할 수 없다.
@@ -50,20 +50,24 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 
 | 패키지 | 내용 | 상태 |
 |---|---|---|
-| `DongHaengApp`, `MainActivity` | `@HiltAndroidApp`(시작 로그 `car app started …`), 단일 액티비티 Compose | T04 |
-| `ui.theme`, `ui.navigation`, `ui.components` | Material3 테마(동적 색 끔), `DhNavHost`/`DhRoutes`, 자리표시자 화면 | T04 |
-| `core.common` | `DhLog`(태그 `DongHaeng`), `CoordinateMasking`/`TextMasking`(규칙 8), `DrivingStateMonitor`(T29 자리) | T04 |
-| `core.network` | `ServerConfig`(BuildConfig 주소) → RestApi(T12), MqttGateway(T16), 토큰 저장(DataStore) | 일부 |
-| `domain.model` | `Fix`, `Place`(= protocol `Place` typealias), `Gear`, `TurnSignalState`, `VehicleCapabilities`, `NaviEvent`, `RouteState`, `WaypointIndex`, `Priority` | T04 |
+| `DongHaengApp`, `MainActivity` | `@HiltAndroidApp`(시작 로그 `car app started …`, `SdkProbe` + `CapabilityReporter` 1회 실행), 단일 액티비티 Compose | T04/T11 |
+| `ui.theme`, `ui.navigation`, `ui.components` | Material3 테마(동적 색 끔), `DhNavHost`/`DhRoutes`(home·pairing·settings·diagnostics …), 자리표시자 화면 | T04 |
+| `core.common` | `DhLog`(태그 `DongHaeng`, capability 전용 `DH_CAP`), `CoordinateMasking`/`TextMasking`(규칙 8, `maskVehicleId`), `TokenStore`/`EncryptedTokenStore`(security-crypto)/`InMemoryTokenStore`, `VehicleIdFallback`(설치별 ID), `DrivingStateMonitor`(T29 자리) | T04/T12 |
+| `core.network` | `ServerConfig`(BuildConfig 주소), `IdentityApi`(Retrofit 2.11 + kotlinx-serialization, `/v1/device/code`·`/token`), `ApiResult`/`safeApiCall`(428/429/410/404 분기), `NetworkModule`(OkHttp BASIC 로그는 debug 만, Authorization 가림) → MqttGateway(T16) | T12 |
+| `domain.model` | `Fix`, `Place`(= protocol `Place` typealias), `Gear`, `TurnSignalState`, `CapabilityDomain`/`CapabilityEntry`/`VehicleCapabilities`, `NaviEvent`, `RouteState`, `WaypointIndex`, `Priority` | T04/T11 |
+| `domain.capability` | `CapabilityReporter` — 앱 시작 시 `vehicleId()`·`capabilities()` 1회 → `DH_CAP` 로그 + 진단 화면 | T11 |
+| `domain.pairing` | `PairingRepository` — device/code·token 호출, TokenStore 저장, 차량 ID 출처(CAR_INFO / INSTALL_ID) | T12 |
 | `domain` | TelemetryCollector(T23), EventDetector(T26), VoiceAnnouncer(T27), RouteFollower(T28) | 예정 |
-| `adapter.vehicle` | `VehicleAdapter`, `FakeVehicleAdapter`; pleos: `PleosVehicleAdapter`(골격) | T04 → T11/T22 |
+| `adapter.vehicle` | `VehicleAdapter`, `FakeVehicleAdapter`, `VehicleIdNormalizer`; pleos: `PleosVehicleAdapter`(CarInfo VIN→CRN, 6개 도메인 capability; Flow 는 T22) | T11 → T22 |
 | `adapter.navi` | `NaviAdapter`, `FakeNaviAdapter`; pleos: `PleosNaviAdapter`(골격) | T04 → T20 |
 | `adapter.location` | `LocationAdapter`, `FakeLocationAdapter`(1 Hz 고정점); pleos: `PleosFusedLocationAdapter`(골격) | T04 → T21 |
 | `adapter.voice` | `VoiceAdapter`, `AndroidTtsVoiceAdapter`(TTS 미준비 시 로그 폴백) | T04 → T27 |
 | `adapter.sdk` | `SdkProbe` — pleos: `PleosSdkProbe`(Class.forName + 서비스 패키지 확인), fake: `NoSdkProbe` | T04 |
-| `di` (flavor 별) | `AdapterModule` — fake/pleos 각각 어댑터 바인딩 | T04 |
-| `feature.home` | 홈: 앱 이름·연결 상태·버튼 2개(비활성)·빌드 정보·SDK 점검 카드, 세로/가로 | T04 |
-| `feature.pairing` / `creategroup` / `groupdrive` / `events` / `presets` / `settings` | 자리표시자 | T12 / T17 / T25 / T26 / T53 / 이후 |
+| `di` | flavor 별 `AdapterModule`(어댑터 바인딩, pleos 는 `PleosVehicleAdapter`), main `CoreModule`(TokenStore·VehicleIdFallback), `core.network.NetworkModule` | T04/T11/T12 |
+| `feature.home` | 홈: 연결 상태(`TokenStore` 구독 — 확인 중/연결 안 됨/연결됨 · 별명 + 차량 ID 마스킹), `내 폰과 연결하기`(활성), `같이 가기 시작`(T17 까지 비활성), 설정·진단 버튼, 빌드 정보·SDK 점검 카드 | T04/T12 |
+| `feature.pairing` | `PairingViewModel`(상태 기계) + `PairingScreen`(ZXing QR·`KQ7-4MZ` 코드·남은 시간·오류/재시도), `PairingFormat`, `QrCodes` | T12 |
+| `feature.settings` | `SettingsScreen`(연결 상태·**연결 해제**·진단 진입), `DiagnosticsScreen`(capability 표 · SDK 점검 · 빌드 정보 · 차량 ID 마스킹) | T11/T12 |
+| `feature.creategroup` / `groupdrive` / `events` / `presets` | 자리표시자 | T17 / T25 / T26 / T53 |
 
 규칙: Pleos SDK 타입은 `adapter.*` 밖으로 내보내지 않는다. 밖에서는 `domain.model` 타입만 쓴다.
 
@@ -91,6 +95,49 @@ I DongHaeng: sdk probe: FusedLocation Service OK — ai.pleos.playground.service
 ```
 같은 내용이 홈 화면 "Pleos SDK 점검" 카드에도 나온다(pleos flavor 만). fake flavor 는 시작 2줄 뒤에 `sdk probe: fake flavor (Pleos SDK 미포함)` 한 줄만 나온다.
 
+### T11 — 차량 ID · capability 실측 (`adb logcat -s DongHaeng DH_CAP`)
+
+앱 시작 직후 `CapabilityReporter` 가 `vehicleId()` 와 `capabilities()` 를 한 번 부르고 결과를 태그 `DH_CAP` 으로 한 줄씩 남긴다
+(형식 `도메인 supported=true|false|unknown detail=… source=PLEOS_SDK|FAKE|UNCHECKED`). 같은 표가 홈 → **진단** 화면에 나온다.
+`Pleos_Connect_v2.1.0` 실측(2026-10):
+```
+I DongHaeng: PleosVehicleAdapter initialize OK (attempt=1)
+I DongHaeng: CarInfo VIN=placeholder(len=9) CRN=placeholder(len=9) → 사용 불가(폴백 ID 사용)
+I DongHaeng: vehicle id: null adapter=pleos
+I DH_CAP  : CarInfo supported=false detail=VIN accessType=READ, CRN accessType=READ; value VIN=placeholder(len=9) CRN=placeholder(len=9) source=PLEOS_SDK
+I DH_CAP  : Fuel supported=false detail=onFailed a: ERROR_NOT_SUPPORTED_PROPERTY source=PLEOS_SDK
+I DH_CAP  : EvBattery supported=true detail=accessType=READ source=PLEOS_SDK
+I DH_CAP  : Brake supported=true detail=accessType=READ source=PLEOS_SDK
+I DH_CAP  : TurnSignal supported=true detail=accessType=READ source=PLEOS_SDK
+I DH_CAP  : Hazard supported=false detail=TurnSignalValue=OFF/LEFT/RIGHT 뿐(동시 표시 값 없음) → 비상등 기능 숨김; turnSignal=true source=PLEOS_SDK
+I DH_CAP  : Airbag supported=false detail=onFailed a: ERROR_NOT_SUPPORTED_PROPERTY source=PLEOS_SDK
+I DH_CAP  : Speed supported=unknown detail=T22: Car API PERF_VEHICLE_SPEED(CAR_SPEED 런타임 권한) 확인 예정 source=UNCHECKED
+I DH_CAP  : Gear supported=unknown detail=T22: vehicle.getGear() 는 check 메서드 없음 → … source=UNCHECKED
+```
+- 이 AVD 의 CarInfo VIN/CRN 은 Gson 직렬화된 `"invalid"`(따옴표 포함 9자)다 → `VehicleIdNormalizer` 가 자리표시자로 판정하고
+  페어링은 설치별 고정 ID(`VehicleIdFallback`, `DHAVD-…`, 일반 SharedPreferences)를 쓴다. 실차에서는 VIN 이 그대로 쓰인다.
+- Fuel·Airbag 은 이 AVD(EV)에서 `ERROR_NOT_SUPPORTED_PROPERTY` → supported=false 로 UI 에서 숨길 항목(T22). 비상등은 SDK 2.3.2 에 동시 표시 값이 없어 항상 false(docs/10 R3).
+- Speed/Gear 는 T22(Car API) 전까지 `unknown`. `supported=null`(unknown) 과 `false` 는 구분해 기록한다.
+- fake flavor 는 전부 `source=FAKE`(EvBattery·Hazard 만 false).
+
+### T12 — 페어링 (`adb logcat -s DongHaeng`)
+
+홈 → **내 폰과 연결하기**: `POST /v1/device/code` → QR(verifyUri 그대로) + `KQ7-4MZ` 코드 + 남은 시간 → `interval` 초마다 `POST /v1/device/token`
+(428 계속 / 429 간격 +2초 / 410·404·로컬 만료 → 새 코드 최대 3회 / 200 → `EncryptedTokenStore` 저장 → 홈으로 자동 복귀, "연결됨 · 별명").
+로그는 상태 전이만 남고 userCode·deviceCode·토큰은 찍히지 않는다:
+```
+I DongHaeng: pairing state=CHECKING
+I DongHaeng: pairing state=REQUESTING_CODE
+I DongHaeng: pairing vehicleId source=INSTALL_ID len=18          # pleos AVD (실차·fake 는 CAR_INFO)
+D DongHaeng: http --> POST http://10.0.2.2:8080/v1/device/code (77-byte body)   # debug 빌드만, BASIC
+I DongHaeng: pairing state=CODE_ISSUED expiresIn=600 interval=3 attempt=1
+I DongHaeng: pairing state=CONNECTED vehicleId=veh_…
+I DongHaeng: token store: saved vehicleId=veh_… token=eyJh…(len=…)
+```
+서버가 아직 `/v1/device/code` 를 제공하지 않으면 `pairing state=ERROR reason=SERVER retryable=true detail=HTTP 404 NOT_FOUND` 와 함께
+오류 화면("다시 시도")이 뜬다. 설정 → **연결 해제** 가 TokenStore 를 비워 홈이 '연결 안 됨' 으로 돌아간다(반복 시연용).
+토큰 저장소: `androidx.security:security-crypto:1.0.0` EncryptedSharedPreferences(`dh_tokens`), Keystore 실패 시 메모리 전용 폴백.
+
 ### Virtual Console (차량 상태 조작, docs/09 §1)
 
 에뮬레이터마다 포트를 다르게 포워딩한다. 두 번째 포워딩이 안 되면 B 차량은 `fake` flavor 로 시연한다.
@@ -101,6 +148,8 @@ adb -s emulator-5556 forward tcp:8089 tcp:8088   # B → http://127.0.0.1:8089
 위치 이동은 Extended Controls → Location → Routes 에 GPX 를 불러와 재생한다(T30 에서 GPX 2개 제공).
 
 ## 서버 연결
+
+> **Pleos AVD 에서 `SocketTimeoutException`(서버 연결 불가)이 나면** Wi-Fi 를 끈다: `adb -s <pleos-serial> shell svc wifi disable`. 이 AVD 는 Wi-Fi(wlan0)가 기본 네트워크일 때 호스트 10.0.2.2 에 닿지 않고 유선(eth0)으로만 닿는다. 확인 `adb -s <serial> shell ping -c 1 10.0.2.2`, 되돌리기 `svc wifi enable`. (docs/09 §1)
 
 - 에뮬레이터 → 호스트 서버: `http://10.0.2.2:8080`, MQTT `tcp://10.0.2.2:1883` (기본값, `infra/` docker compose)
 - 클라우드: `https://<VM-IP>.sslip.io`, `ssl://<VM-IP>.sslip.io:8883` (`-P` 로 빌드 시 지정, 고정 도메인 없음)

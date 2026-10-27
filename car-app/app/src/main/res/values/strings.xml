@@ -3,19 +3,80 @@
     <string name="app_name">동행</string>
     <string name="app_tagline">전화 없이, 한 대처럼.</string>
 
+    <!-- 홈 -->
     <string name="home_vehicle_connection">차량 연결 상태</string>
+    <string name="home_connection_checking">확인 중…</string>
     <string name="home_connection_disconnected">연결 안 됨</string>
-    <string name="home_connection_pairing">연결 중</string>
     <string name="home_connection_connected">연결됨</string>
+    <string name="home_connection_connected_nick">연결됨 · %1$s</string>
+    <string name="home_vehicle_id">차량 ID</string>
     <string name="home_btn_pair_phone">내 폰과 연결하기</string>
     <string name="home_btn_start_group">같이 가기 시작</string>
+    <string name="home_btn_settings">설정</string>
+    <string name="home_btn_diagnostics">진단</string>
     <string name="home_label_flavor">빌드 변형</string>
     <string name="home_label_base_url">서버 주소</string>
     <string name="home_label_mqtt_uri">MQTT 주소</string>
     <string name="home_label_version">버전</string>
     <string name="home_sdk_probe_title">Pleos SDK 점검</string>
     <string name="home_sdk_probe_pending">점검 중…</string>
-    <string name="home_buttons_hint">페어링(T12)·그룹 생성(T17) 구현 후 활성화됩니다.</string>
+    <string name="home_buttons_hint">\'같이 가기 시작\'은 그룹 생성(T17) 구현 후 활성화됩니다.</string>
+
+    <!-- 페어링 (T12) -->
+    <string name="pairing_title">내 폰과 연결하기</string>
+    <string name="pairing_back">홈으로</string>
+    <string name="pairing_checking">저장된 연결을 확인하는 중…</string>
+    <string name="pairing_requesting">연결 코드를 요청하는 중…</string>
+    <string name="pairing_scan_hint">폰의 공식 앱 동행 메뉴에서 이 QR을 스캔하세요</string>
+    <string name="pairing_or_code">또는 공식 앱에 이 코드를 입력하세요</string>
+    <string name="pairing_remaining">남은 시간 %1$s</string>
+    <string name="pairing_attempt">코드 %1$d/%2$d · %3$d초마다 승인 확인</string>
+    <string name="pairing_connected">연결됨 · %1$s</string>
+    <string name="pairing_connected_hint">이제 이 차량은 내 폰 계정에 등록됐어요. 그룹 만들기는 다음 단계(T17)에서 열립니다.</string>
+    <string name="pairing_btn_retry">다시 시도</string>
+    <string name="pairing_btn_repair">연결 해제 후 다시 연결</string>
+    <string name="pairing_error_network">서버에 연결할 수 없어요. 네트워크와 서버 주소를 확인하세요.</string>
+    <string name="pairing_error_server">서버가 요청을 처리하지 못했어요. 잠시 후 다시 시도하세요.</string>
+    <string name="pairing_error_vehicle_id">차량 ID를 읽지 못했어요. 차량 서비스(CarInfo) 상태를 진단 화면에서 확인하세요.</string>
+    <string name="pairing_error_too_many">코드가 여러 번 만료됐어요. 폰에서 승인한 뒤 다시 시도하세요.</string>
+    <string name="pairing_error_detail">상세: %1$s</string>
+
+    <!-- 설정 -->
+    <string name="settings_title">설정</string>
+    <string name="settings_back">홈으로</string>
+    <string name="settings_section_connection">차량 연결</string>
+    <string name="settings_btn_disconnect">연결 해제</string>
+    <string name="settings_disconnected_notice">연결을 해제했어요. 홈에서 \'내 폰과 연결하기\'로 다시 연결할 수 있어요.</string>
+    <string name="settings_section_diagnostics">진단</string>
+    <string name="settings_diagnostics_hint">차량 SDK capability 실측값·SDK 점검·빌드 정보를 표로 봅니다.</string>
+    <string name="settings_btn_diagnostics">진단 화면 열기</string>
+    <string name="settings_section_voice">음성 안내</string>
+    <string name="settings_voice_placeholder">음성 안내 on/off 는 T27 에서 추가됩니다.</string>
+
+    <!-- 진단 (T11) -->
+    <string name="diag_title">진단</string>
+    <string name="diag_back">뒤로</string>
+    <string name="diag_section_vehicle">차량</string>
+    <string name="diag_vehicle_id_masked">CarInfo 차량 ID(마스킹)</string>
+    <string name="diag_vehicle_id_none">읽지 못함</string>
+    <string name="diag_vehicle_id_length">길이 %1$d</string>
+    <string name="diag_paired">페어링된 차량</string>
+    <string name="diag_paired_none">없음</string>
+    <string name="diag_section_capabilities">차량 SDK capability (DH_CAP)</string>
+    <string name="diag_col_domain">항목</string>
+    <string name="diag_col_supported">지원</string>
+    <string name="diag_col_detail">상세</string>
+    <string name="diag_col_source">출처</string>
+    <string name="diag_supported_true">지원</string>
+    <string name="diag_supported_false">미지원</string>
+    <string name="diag_supported_unknown">미확인</string>
+    <string name="diag_pending">점검 중…</string>
+    <string name="diag_section_probe">Pleos SDK 점검</string>
+    <string name="diag_section_build">빌드 정보</string>
+    <string name="diag_label_adapter">어댑터</string>
+    <string name="diag_label_debug">디버그</string>
+    <string name="diag_label_android">Android API</string>
+    <string name="diag_label_device">기기</string>
 
     <string name="placeholder_in_progress">준비 중 — %1$s 에서 구현</string>
 </resources>

@@ -40,16 +40,24 @@ fun HomeRoute(
     onPairPhone: () -> Unit,
     onStartGroup: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    HomeScreen(state = state, onPairPhone = onPairPhone, onStartGroup = onStartGroup, onOpenSettings = onOpenSettings)
+    HomeScreen(
+        state = state,
+        onPairPhone = onPairPhone,
+        onStartGroup = onStartGroup,
+        onOpenSettings = onOpenSettings,
+        onOpenDiagnostics = onOpenDiagnostics,
+    )
 }
 
 /**
- * 홈 화면 (T04 빈 홈). 세로·가로 모두 지원:
+ * 홈 화면. 세로·가로 모두 지원:
  * - 넓은 화면(가로, Pleos 2560x1440)에서는 좌 = 상태·버튼, 우 = 빌드 정보·SDK 점검 두 단
  * - 좁은 화면(세로)에서는 한 단으로 쌓고 스크롤
+ * 연결 상태(T12)는 TokenStore 에서, 진단(T11)·설정 버튼은 보조 행에 둔다.
  */
 @Composable
 fun HomeScreen(
@@ -57,6 +65,7 @@ fun HomeScreen(
     onPairPhone: () -> Unit,
     onStartGroup: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
 ) {
     Scaffold { innerPadding ->
         BoxWithConstraints(
@@ -75,7 +84,7 @@ fun HomeScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         HeaderSection(state)
                         Spacer(Modifier.height(24.dp))
-                        ActionSection(state, onPairPhone, onStartGroup)
+                        ActionSection(state, onPairPhone, onStartGroup, onOpenSettings, onOpenDiagnostics)
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         BuildInfoCard(state)
@@ -89,7 +98,7 @@ fun HomeScreen(
                 Column(modifier = contentModifier) {
                     HeaderSection(state)
                     Spacer(Modifier.height(24.dp))
-                    ActionSection(state, onPairPhone, onStartGroup)
+                    ActionSection(state, onPairPhone, onStartGroup, onOpenSettings, onOpenDiagnostics)
                     Spacer(Modifier.height(24.dp))
                     BuildInfoCard(state)
                     if (state.showSdkProbe) {
@@ -112,18 +121,34 @@ private fun HeaderSection(state: HomeUiState) {
     )
     Spacer(Modifier.height(16.dp))
     val connectionText = when (state.connection) {
+        VehicleConnection.CHECKING -> stringResource(R.string.home_connection_checking)
         VehicleConnection.DISCONNECTED -> stringResource(R.string.home_connection_disconnected)
-        VehicleConnection.PAIRING -> stringResource(R.string.home_connection_pairing)
-        VehicleConnection.CONNECTED -> stringResource(R.string.home_connection_connected)
+        VehicleConnection.CONNECTED ->
+            if (state.nickname.isNullOrBlank()) stringResource(R.string.home_connection_connected)
+            else stringResource(R.string.home_connection_connected_nick, state.nickname)
     }
     Text(
         "${stringResource(R.string.home_vehicle_connection)}: $connectionText",
         style = MaterialTheme.typography.titleLarge,
+        color = if (state.connection == VehicleConnection.CONNECTED) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface,
     )
+    if (state.connection == VehicleConnection.CONNECTED && state.vehicleIdMasked != null) {
+        Text(
+            "${stringResource(R.string.home_vehicle_id)} ${state.vehicleIdMasked}",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 @Composable
-private fun ActionSection(state: HomeUiState, onPairPhone: () -> Unit, onStartGroup: () -> Unit) {
+private fun ActionSection(
+    state: HomeUiState,
+    onPairPhone: () -> Unit,
+    onStartGroup: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
+) {
     Button(
         onClick = onPairPhone,
         enabled = state.canPairPhone,
@@ -149,6 +174,15 @@ private fun ActionSection(state: HomeUiState, onPairPhone: () -> Unit, onStartGr
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+    Spacer(Modifier.height(16.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = onOpenSettings, modifier = Modifier.weight(1f).heightIn(min = 56.dp)) {
+            Text(stringResource(R.string.home_btn_settings))
+        }
+        OutlinedButton(onClick = onOpenDiagnostics, modifier = Modifier.weight(1f).heightIn(min = 56.dp)) {
+            Text(stringResource(R.string.home_btn_diagnostics))
+        }
+    }
 }
 
 @Composable
@@ -216,6 +250,9 @@ private fun HomeScreenPreview() {
         HomeScreen(
             state = HomeUiState(
                 flavor = "pleos",
+                connection = VehicleConnection.CONNECTED,
+                nickname = "아빠차",
+                vehicleIdMasked = "veh_…7Q",
                 sdkProbe = listOf(
                     ProbeLine("Vehicle 2.3.2", true, "ai.pleos.playground.vehicle.Vehicle"),
                     ProbeLine("NaviHelper 3.0.5", false, "ClassNotFoundException"),
@@ -224,6 +261,7 @@ private fun HomeScreenPreview() {
             onPairPhone = {},
             onStartGroup = {},
             onOpenSettings = {},
+            onOpenDiagnostics = {},
         )
     }
 }
