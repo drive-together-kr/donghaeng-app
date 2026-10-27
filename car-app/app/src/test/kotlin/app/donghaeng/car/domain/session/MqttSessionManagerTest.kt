@@ -93,6 +93,31 @@ class MqttSessionManagerTest {
     }
 
     @Test
+    fun `my own MEMBER_LEFT clears the session, another car leaving does not (T30)`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val tokens = InMemoryTokenStore(creds)
+        val gateway = InMemoryMqttGateway()
+        val sessions = InMemoryGroupSessionStore()
+        val manager = MqttSessionManager(tokens, gateway, sessions)
+        manager.start(dispatcher)
+        runCurrent()
+        gateway.emitInbound(Topics.vehicleCmd("veh_B"), CmdType.GROUP_JOINED.name, "srv_1", joined, GroupJoined.serializer())
+        runCurrent()
+        assertEquals("grp_1", sessions.session.value?.groupId)
+
+        val otherLeft = GroupEvent("evt_l1", "MEMBER_LEFT", "veh_C", Severity.INFO, "삼촌 차가 그룹에서 나갔어요.", buildJsonObject { put("reason", "LEFT") })
+        gateway.emitInbound("dh/v1/group/grp_1/event", MessageTypes.EVENT, "srv_1", otherLeft, GroupEvent.serializer(), seq = 2)
+        runCurrent()
+        assertEquals("other car leaving keeps my session", "grp_1", sessions.session.value?.groupId)
+
+        val meLeft = GroupEvent("evt_l2", "MEMBER_LEFT", "veh_B", Severity.INFO, null, buildJsonObject { put("reason", "LEFT") })
+        gateway.emitInbound("dh/v1/group/grp_1/event", MessageTypes.EVENT, "srv_1", meLeft, GroupEvent.serializer(), seq = 3)
+        runCurrent()
+        assertNull(sessions.session.value)
+        assertEquals(setOf(Topics.vehicleCmd("veh_B")), gateway.subscriptions)
+    }
+
+    @Test
     fun `restart with a stored session resubscribes group topics, TOKEN_REVOKED clears credentials`() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         val tokens = InMemoryTokenStore(creds)

@@ -39,12 +39,58 @@ class RouteSyncEngineTest {
     private val acks = mutableListOf<Ack>()
     private val spoken = mutableListOf<Pair<String, Priority>>()
 
-    private fun engine(scheduler: kotlinx.coroutines.test.TestCoroutineScheduler) = RouteSyncEngine(
+    private fun engine(scheduler: kotlinx.coroutines.test.TestCoroutineScheduler, joinProposal: Boolean = false) = RouteSyncEngine(
         session = session, proposals = proposals, naviEvents = naviEvents, navi = navi,
         publishRouteChanged = { routeChanges += it; true }, publishAck = { acks += it; true },
         speak = { t, p -> spoken += t to p },
+        proposeDestinationOnJoin = joinProposal,
         dispatcher = StandardTestDispatcher(scheduler), clock = { scheduler.currentTime },
     )
+
+    @Test
+    fun `a member that just joined is asked to navigate to the leader destination and accepting sends no ack`() = runTest {
+        val e = engine(testScheduler, joinProposal = true); e.start(); runCurrent()
+        try {
+            session.value = memberSession.copy(joinedAtMs = testScheduler.currentTime); runCurrent()
+            val pending = e.state.value.pending
+            assertNotNull(pending)
+            assertTrue(pending!!.local)
+            assertEquals(dest, pending.destination)
+            assertEquals(listOf("선두차 목적지 광주송정역까지 안내할까요?" to Priority.NORMAL), spoken)
+
+            e.accept(); runCurrent()
+            assertNull(e.state.value.pending)
+            assertEquals(dest, navi.currentDestination())
+            assertTrue("local proposal never acks", acks.isEmpty())
+            assertEquals(1, e.state.value.accepted)
+
+            // 같은 그룹의 세션 갱신(초대 갱신 등)에는 다시 묻지 않는다
+            session.value = memberSession.copy(joinedAtMs = testScheduler.currentTime, name = "renamed"); runCurrent()
+            assertNull(e.state.value.pending)
+
+            // 새 그룹에 합류하면 다시 제안, 30초 무응답 → 자동 거절(ACK 없음)
+            session.value = memberSession.copy(groupId = "grp_2", joinedAtMs = testScheduler.currentTime); runCurrent()
+            assertNotNull(e.state.value.pending)
+            advanceTimeBy(30_001); runCurrent()
+            assertNull(e.state.value.pending)
+            assertEquals(1, e.state.value.autoDeclined)
+            assertTrue(acks.isEmpty())
+        } finally { e.stop() }
+    }
+
+    @Test
+    fun `restored sessions and leaders get no join proposal`() = runTest {
+        val e = engine(testScheduler, joinProposal = true); e.start(); runCurrent()
+        try {
+            advanceTimeBy(120_000); runCurrent()
+            session.value = memberSession   // joinedAtMs = 0 → 120초 전 합류 = 앱 재시작 복원
+            runCurrent()
+            assertNull(e.state.value.pending)
+            session.value = leaderSession.copy(groupId = "grp_lead", joinedAtMs = testScheduler.currentTime); runCurrent()
+            assertNull(e.state.value.pending)
+            assertTrue(spoken.isEmpty())
+        } finally { e.stop() }
+    }
 
     private fun proposal(id: String = "prp_1", wps: List<Place> = listOf(waypoint)) =
         ReceivedProposal(RouteFollowProposal(id, dest, wps, "선두차가 덕평휴게소를 경유지로 추가했어요. 따라갈까요?"), receivedAtMs = 0L)

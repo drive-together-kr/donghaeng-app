@@ -1,6 +1,9 @@
 package app.donghaeng.car.ui.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -28,8 +31,20 @@ object DhRoutes {
 }
 
 @Composable
-fun DhNavHost(navController: NavHostController = rememberNavController()) {
+fun DhNavHost(
+    navController: NavHostController = rememberNavController(),
+    /** MainActivity 인텐트 extra `screen` 으로 요청된 화면(T30 시연·알림). 소비 후 [onRouteConsumed] */
+    requestedRoute: kotlinx.coroutines.flow.StateFlow<String?> = kotlinx.coroutines.flow.MutableStateFlow(null),
+    onRouteConsumed: () -> Unit = {},
+) {
     LocationPermissionGate()   // T21: 활성 그룹 + 정차 시 위치·알림 권한 1회 요청
+    val requested by requestedRoute.collectAsState()
+    LaunchedEffect(requested) {
+        val route = requested ?: return@LaunchedEffect
+        if (route == DhRoutes.HOME) navController.popBackStack(DhRoutes.HOME, inclusive = false)
+        else navController.navigate(route) { launchSingleTop = true; popUpTo(DhRoutes.HOME) }
+        onRouteConsumed()
+    }
     NavHost(navController = navController, startDestination = DhRoutes.HOME) {
         composable(DhRoutes.HOME) {
             HomeRoute(

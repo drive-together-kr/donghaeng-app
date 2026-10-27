@@ -299,7 +299,7 @@ private fun EventsStrip(state: GroupDriveUiState, onOpenEvents: () -> Unit) {
                     Severity.WARN -> MaterialTheme.colorScheme.tertiary
                     else -> MaterialTheme.colorScheme.onSurface
                 }
-                Text("• ${e.speech ?: e.type}", style = MaterialTheme.typography.bodyLarge, color = color)
+                Text("• ${e.speech ?: app.donghaeng.car.feature.events.EventsViewModel.labelOf(e.type)}", style = MaterialTheme.typography.bodyLarge, color = color)   // 문구 없는 이벤트(ROUTE_CHANGED 등)는 한국어 라벨
             }
         }
     }

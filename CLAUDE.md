@@ -17,6 +17,7 @@ server/      Kotlin + Spring Boot 3.3 모듈러 모놀리스        ── packa
 companion/   공식 앱(블루링크·마이현대·기아 커넥트·제네시스) 내장 모듈 ── sdk/(Android AAR, 공개 API 6개) + demo-host/(시연용 호스트 앱)
 protocol/    Kotlin 공용 메시지 스키마 (car-app·server·companion/sdk 가 의존 — sdk 는 MemberState·GroupEvent 를 공개 API 에 재노출)
 infra/       docker-compose(postgres, redis, emqx, server), Caddy(T32 예정)
+tools/demo/  시연 보조 스크립트(GPX 재생·Virtual Console·REST·장면 타임라인, 표준 라이브러리 Python) — out/ 은 git 제외
 docs/        설계 문서
 apk/         제출용 release APK
 ```
@@ -34,6 +35,9 @@ cd car-app && ./gradlew test
 
 # companion (sdk + 시연용 호스트 앱)
 cd companion && ./gradlew :sdk:testDebugUnitTest :sdk:assembleDebug :demo-host:assembleDebug
+
+# 시연(docs/09 §4): 차 A=Pleos AVD(pleos) + 차 B=Pleos_B AVD(fake) + 서버 → 장면 4~9 자동 실행·로그 확인표
+python tools/demo/demo.py --dry-run && python tools/demo/demo.py --email <dev 이메일>
 ```
 
 ## 핵심 규칙

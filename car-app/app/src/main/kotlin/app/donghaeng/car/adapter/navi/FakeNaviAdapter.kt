@@ -27,6 +27,7 @@ import kotlin.math.roundToInt
  *   경로 끝에 닿으면 `DestinationArrived` + `RouteStateInfo(ENDED)` 를 한 번 보내고 마지막 점에 머문다.
  * - `requestRoute` / `requestRouteWithWaypoints` / `addWaypoint` 는 실제 내비처럼 해당 이벤트(DestinationChanged, WaypointChanged, RouteStateInfo)를 즉시 발행한다.
  * - 경로가 없으면(점 2개 미만) 예전처럼 기준점 주변을 조금씩 이동하는 드리프트 시나리오로 동작한다.
+ * - [holdUntilRouted] 면 목적지가 설정될 때까지(`requestRoute*`) 첫 점에 머문다 — 후속차(T30 시연: 합류 → "선두 목적지까지 안내" 수락 → 출발).
  *
  * GPX 는 `assets/gpx/lead.gpx`(선두) · `assets/gpx/follow.gpx`(후속) — 직선 보간한 **가상 경로**이며 실제 도로·주소와 무관하다.
  *
@@ -34,6 +35,7 @@ import kotlin.math.roundToInt
  * @param route        재생할 경로(위경도). 비어 있으면 드리프트 시나리오
  * @param speedMps     재생 속도(m/s). 기본 60 km/h
  * @param destination  처음부터 설정돼 있는 목적지(`currentDestination()` 응답). 시연에서 "내비에서 불러오기" 용
+ * @param holdUntilRouted 목적지가 생길 때까지 출발하지 않는다(후속차 역할)
  */
 class FakeNaviAdapter(
     private val tickMillis: Long = 1_000L,
@@ -42,6 +44,7 @@ class FakeNaviAdapter(
     destination: Place? = null,
     private val startLat: Double = DEMO_START_LAT,
     private val startLon: Double = DEMO_START_LON,
+    private val holdUntilRouted: Boolean = false,
 ) : NaviAdapter {
 
     /** 틱당 이동 거리로 재표본화한 경로. 2점 미만이면 빈 목록 */
@@ -120,7 +123,8 @@ class FakeNaviAdapter(
             } else {
                 arrivedSent = false
             }
-            if (i < track.lastIndex) i++
+            val holding = holdUntilRouted && destination == null
+            if (i < track.lastIndex && !holding) i++
             delay(tickMillis)
         }
     }
@@ -197,11 +201,20 @@ class FakeNaviAdapter(
         const val ASSET_LEAD = "gpx/lead.gpx"
         const val ASSET_FOLLOW = "gpx/follow.gpx"
 
-        /** 시연용 GPX 의 종점(공공장소 근방 좌표, 시연 전용) */
-        val DEMO_DESTINATION = Place(lat = 37.2963, lon = 127.4120, name = "덕평휴게소(시연)", poiId = null, address = null)
+        /** 시연용 GPX(lead/follow) 의 공통 종점 — 가상 경로의 끝, 실제 장소·주소와 무관 */
+        val DEMO_DESTINATION = Place(lat = 37.2800, lon = 127.5400, name = "여주 방면(시연)", poiId = null, address = null)
 
-        /** assets 의 GPX 로 만든다. 파일이 없거나 깨지면 드리프트 시나리오로 폴백(크래시 없음) */
-        fun fromAsset(context: Context, asset: String, tickMillis: Long = 1_000L, destination: Place? = DEMO_DESTINATION): FakeNaviAdapter {
+        /**
+         * assets 의 GPX 로 만든다. 파일이 없거나 깨지면 드리프트 시나리오로 폴백(크래시 없음).
+         * 후속차는 `destination = null, holdUntilRouted = true` — 합류 뒤 선두 목적지 안내를 수락하면 출발한다(T30).
+         */
+        fun fromAsset(
+            context: Context,
+            asset: String,
+            tickMillis: Long = 1_000L,
+            destination: Place? = DEMO_DESTINATION,
+            holdUntilRouted: Boolean = false,
+        ): FakeNaviAdapter {
             val points = GpxRoute.loadAsset(context, asset)
             val first = points.firstOrNull()
             return FakeNaviAdapter(
@@ -210,7 +223,8 @@ class FakeNaviAdapter(
                 destination = destination,
                 startLat = first?.lat ?: DEMO_START_LAT,
                 startLon = first?.lon ?: DEMO_START_LON,
-            ).also { DhLog.i("FakeNavi asset=$asset points=${points.size} track=${it.track.size} lengthM=${it.routeLengthM}") }
+                holdUntilRouted = holdUntilRouted,
+            ).also { DhLog.i("FakeNavi asset=$asset points=${points.size} track=${it.track.size} lengthM=${it.routeLengthM} hold=$holdUntilRouted") }
         }
     }
 }

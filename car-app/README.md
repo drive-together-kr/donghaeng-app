@@ -38,7 +38,7 @@ AGP 9 로 올리지 않는다(Android Studio 가 권해도 거절). 툴체인 �
 | flavor | 어댑터 | Pleos SDK 의존성 | 실행 대상 |
 |---|---|---|---|
 | `pleos` | T11: `PleosVehicleAdapter`(CarInfo 차량 ID + `checkXxxCapabilities`; 나머지 Flow 는 T22 까지 내부에서 Fake 위임) + Navi/Location 은 Fake(T20/T21) + `PleosSdkProbe` | Vehicle 2.3.2, NaviHelper 3.0.5, FusedLocation 1.1.3 (`pleosImplementation`) | Pleos Connect AVD (`Pleos_Connect_v2.1.0`, API 34 automotive) |
-| `fake` | 전부 Fake (`FakeVehicleAdapter`, `FakeNaviAdapter`, `FakeLocationAdapter`) + Android TTS | 없음 | 아무 AVD / 폰 / 태블릿 |
+| `fake` | 전부 Fake (`FakeVehicleAdapter`, `FakeNaviAdapter`(GPX 재생 — 역할 `DemoPrefs.gpxRole` lead/follow, T30), `FakeLocationAdapter`) + Android TTS | 없음 | 아무 AVD / 폰 / 태블릿 (시연: `Pleos_B` AVD = 차 B) |
 
 두 flavor 는 applicationId 가 같다(`app.donghaeng.car`) — 한 기기에 둘을 동시에 설치할 수 없다.
 Pleos 차량 권한(`pleos.car.permission.*`, `android.car.permission.*`)은 `src/pleos/AndroidManifest.xml` 에만 있다.
@@ -83,7 +83,8 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 | `feature.settings` | `SettingsScreen`(연결 상태·**연결 해제**·진단 진입), `DiagnosticsScreen`(capability 표 · SDK 점검 · 빌드 정보 · 차량 ID 마스킹) | T11/T12 |
 | `feature.groupdrive` | `GroupDriveViewModel`(STATE 스냅샷·이벤트·내 위치·연결 → `GroupDriveUiState`) · `GroupDriveScreen`(가로/세로 반응형, 멤버 리스트·이벤트 스트립·초대 QR/나가기·종료) · `GroupMapCanvas` + `GroupMapProjection`(Canvas 경량 지도) | T25 |
 | `adapter.uxr` (pleos) | `CarUxDrivingStateMonitor`(CarUxRestrictionsManager → `DrivingStateMonitor.isDriving()`/`status`) · fake 는 `AlwaysParkedDrivingStateMonitor` | T29 |
-| `domain.routesync` | `RouteSyncEngine`(선두: 내비 목적지/경유지 변경 → ROUTE_CHANGED 발행 · 멤버: ROUTE_FOLLOW_PROPOSAL → 음성·제안 카드 → 수락 시 내비 재요청 + ACK, 30초 자동 거절, 자동 따라가기) | T28 |
+| `domain.routesync` | `RouteSyncEngine`(선두: 내비 목적지/경유지 변경 → ROUTE_CHANGED 발행 · 멤버: ROUTE_FOLLOW_PROPOSAL → 음성·제안 카드 → 수락 시 내비 재요청 + ACK, 30초 자동 거절, 자동 따라가기 · 합류 직후 로컬 제안 "선두차 목적지까지 안내할까요?" ACK 없음) | T28/T30 |
+| `debug` (debug 빌드만, `src/debug`) | `DemoControlReceiver` — adb broadcast 로 시연 조작(route_test/accept/decline/auto_follow/speak/voice/navi_route/gpx/status), `tools/demo/demo.py` 가 사용. `core.common.DemoPrefs`(fake GPX 역할) | T30 |
 | `domain.voice` | `VoiceAnnouncer`(그룹 이벤트 → 음성 큐: 신선도 5s·내 차 생략·우선순위·중복 10s·큐 대기 30s) | T27 |
 | `adapter.voice` | `VoiceAdapter` + `AndroidTtsVoiceAdapter`(오디오 포커스·선행 묵음 200 ms·완료 콜백·엔진 없으면 로그 폴백, `status`) | T04/T27 |
 | `domain.event` | `EventDetector`(저잔량·급제동·정차/재출발·에어백·도착 판정, 순수 로직) + `VehicleEventEngine`(활성 그룹 동안 1Hz 판정 → `…/event` QoS 1, 진단 상태) | T26 |
@@ -235,14 +236,19 @@ mqtt subscribed topic=dh/v1/group/grp_…**/state  /  …/event
 - 주행 중 비활성: 홈 '내 폰과 연결하기'·'같이 가기 시작'(그룹 보기 허용) + 안내 문구, 그룹 생성 입력/종료, 그룹 주행 초대·나가기·제안 버튼. 진단 **주행 제한 (T29)** 카드.
 - 확인: Virtual Console `gear=Drive`, `speed_kph=55` → 캡처 `docs/images/t29/`(진단 카드 '주행 중 — 입력 비활성', 홈 버튼 회색). 스크립트 `t29_uxr_check.py`.
 
+### T30 — 시연 스크립트 (`tools/demo`, docs/09 §4)
+- 차 B 는 `Pleos_B` AVD 에 **fake** flavor 를 설치하고 GPX 역할을 후속차로 둔다: `adb -s emulator-5558 shell am broadcast -n app.donghaeng.car/.debug.DemoControlReceiver --es action gpx --es role follow` → 앱 재시작 → 로그 `FakeNavi asset=gpx/follow.gpx … hold=true`. 합류 제안("선두차 목적지 … 안내할까요?")을 수락하면 출발한다(`routesync: accepted … local=true`, `FakeNavi requestRoute`).
+- 장면 4~9 자동 실행: `python tools/demo/demo.py --email <dev 이메일>` — preflight → 합류 감지·자동 수락 → GPS 재생(차 A) + Virtual Console(저잔량·급제동) + ROUTE_CHANGED → 두 차 logcat 수집과 확인 표. 세부는 `tools/demo/README.md`.
+- 디버그 리시버는 `android.permission.DUMP` 를 요구한다(adb shell 은 보유). release 빌드에는 없다.
+- 함께 고친 것: 그룹 생성 화면 진입 크래시(pleos, `CreateGroupViewModel` init 순서) · 내 차의 `MEMBER_LEFT` 수신 시 세션 정리(`MqttSessionManager`). 리허설에서 차 B 를 다시 합류시키려면 `api.py join` 전에 B 를 내보내면 된다(`POST /groups/{id}/leave`).
+
 ### Virtual Console (차량 상태 조작, docs/09 §1)
 
-에뮬레이터마다 포트를 다르게 포워딩한다. 두 번째 포워딩이 안 되면 B 차량은 `fake` flavor 로 시연한다.
+차 A(Pleos AVD, 실 SDK)만 쓴다 — 차 B 는 `fake` flavor 라 Virtual Console 이 필요 없다.
 ```powershell
-adb -s emulator-5554 forward tcp:8088 tcp:8088   # A → http://127.0.0.1:8088
-adb -s emulator-5556 forward tcp:8089 tcp:8088   # B → http://127.0.0.1:8089
+adb -s emulator-5556 forward tcp:8089 tcp:8088   # A → http://127.0.0.1:8089 (tools/demo/vc.py --port 8089)
 ```
-위치 이동은 Extended Controls → Location → Routes 에 GPX 를 불러와 재생한다(T30 에서 GPX 2개 제공). 스크립트에서는 `adb emu geo fix <lon> <lat>` 1Hz(T21) 로 대신한다.
+위치 이동은 `python tools/demo/replay_gpx.py --serial emulator-5556`(assets 의 lead.gpx → `adb emu geo fix` 1 Hz, T21 Android LocationManager 소스)로 한다. 차 B 는 `FakeNaviAdapter` 가 follow.gpx 를 스스로 재생한다.
 Virtual Console 은 웹 UI 외에 HTTP API 도 있다(위 T22 절 참고: `/vehicle/state`, `/vehicle/catalog`, `PUT /vehicle/...`, 세션 keepalive 필요).
 
 ## 서버 연결

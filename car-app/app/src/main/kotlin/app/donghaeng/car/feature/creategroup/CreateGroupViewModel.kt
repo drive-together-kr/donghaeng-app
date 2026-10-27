@@ -87,12 +87,13 @@ class CreateGroupViewModel @Inject constructor(
     driving: app.donghaeng.car.core.common.DrivingStateMonitor? = null,
 ) : ViewModel() {
 
+    private val _state = MutableStateFlow<CreateGroupState>(CreateGroupState.Loading)
+    val state: StateFlow<CreateGroupState> = _state.asStateFlow()
+
+    // _state 선언 뒤에 둔다 — isDriving() 이 replay 값을 즉시 내면(Main.immediate) 생성 중에 update 가 불려 _state 가 null 이면 크래시(T30 실측)
     init {
         driving?.let { d -> viewModelScope.launch { d.isDriving().collect { v -> update<CreateGroupState.Form> { it.copy(isDriving = v) }; update<CreateGroupState.Active> { it.copy(isDriving = v) } } } }
     }
-
-    private val _state = MutableStateFlow<CreateGroupState>(CreateGroupState.Loading)
-    val state: StateFlow<CreateGroupState> = _state.asStateFlow()
 
     private var pollJob: Job? = null
     private var clock: () -> Long = { System.currentTimeMillis() }

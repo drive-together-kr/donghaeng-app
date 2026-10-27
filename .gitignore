@@ -73,3 +73,10 @@ desktop.ini
 # ---------- Firebase 클라이언트 설정 (프로젝트 ID·API 키 포함) ----------
 google-services.json
 GoogleService-Info.plist
+
+# ---------- 시연 스크립트 산출물(로그·토큰 캐시) ----------
+tools/demo/out/
+
+# ---------- Python 보조 스크립트(tools/) ----------
+__pycache__/
+*.pyc

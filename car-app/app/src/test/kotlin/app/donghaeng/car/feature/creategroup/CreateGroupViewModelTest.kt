@@ -91,6 +91,16 @@ class CreateGroupViewModelTest {
     }
 
     @Test
+    fun `an immediately emitting driving monitor does not crash construction (T29 regression, T30)`() {
+        // Main.immediate 에서 isDriving() 이 replay 값을 바로 내면 생성 중 update 가 불린다 — _state 가 먼저 초기화돼 있어야 한다
+        Dispatchers.resetMain()
+        Dispatchers.setMain(kotlinx.coroutines.test.UnconfinedTestDispatcher())
+        val repo = GroupRepository(api, sessions, manager)
+        val vm = CreateGroupViewModel(repo, FakeNaviAdapter(), tokens, manager, driving = app.donghaeng.car.core.common.AlwaysParkedDrivingStateMonitor())
+        assertTrue(vm.state.value is CreateGroupState.Loading || vm.state.value is CreateGroupState.Form)
+    }
+
+    @Test
     fun `form offers a preset when navi has no destination, create shows the invite QR and polls members`() = runTest(dispatcher) {
         val vm = viewModel()
         runCurrent()

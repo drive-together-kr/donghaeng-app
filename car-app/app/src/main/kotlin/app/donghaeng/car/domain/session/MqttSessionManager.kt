@@ -10,6 +10,7 @@ import app.donghaeng.protocol.CmdType
 import app.donghaeng.protocol.DhJson
 import app.donghaeng.protocol.GroupEnded
 import app.donghaeng.protocol.GroupEvent
+import app.donghaeng.protocol.GroupEventType
 import app.donghaeng.protocol.GroupJoined
 import app.donghaeng.protocol.GroupState
 import app.donghaeng.protocol.MessageTypes
@@ -45,7 +46,7 @@ data class ReceivedGroupEvent(val event: GroupEvent, val envelopeTsMs: Long, val
  * 페어링 상태 ↔ MQTT 연결 ↔ 그룹 세션을 잇는다 (T16; 호출 순서는 docs/03 §4·§5.5).
  *
  * - [TokenStore] 에 자격 증명이 있으면 [MqttGateway.connect] + 자기 `cmd` 토픽(+ 저장된 그룹 토픽) 구독. 없어지면(연결 해제) 끊고 그룹 세션도 지운다.
- * - cmd `GROUP_JOINED` → [GroupSessionStore] 에 저장하고 그룹 `state/event` 구독. `GROUP_ENDED` → 세션 삭제·구독 해제. `TOKEN_REVOKED` → 자격 증명 삭제.
+ * - cmd `GROUP_JOINED` → [GroupSessionStore] 에 저장하고 그룹 `state/event` 구독. `GROUP_ENDED` 또는 내 차의 그룹 이벤트 `MEMBER_LEFT`(폰이 내보냄) → 세션 삭제·구독 해제. `TOKEN_REVOKED` → 자격 증명 삭제.
  * - 그룹 토픽 수신은 [groupEvents]/[groupState] 로 내보낸다(T25 주행 화면·T27 음성이 구독).
  *
  * 앱 프로세스가 살아 있는 동안 페어링만 돼 있으면 연결을 유지한다 — 폰이 이 차를 그룹에 넣는 순간(`GROUP_JOINED`)을 받으려면
@@ -140,6 +141,13 @@ class MqttSessionManager @Inject constructor(
                     .onSuccess { event ->
                         _groupEvents.emit(event)
                         _groupEventsReceived.emit(ReceivedGroupEvent(event, envelopeTsMs = message.envelope.ts, receivedAtMs = message.receivedAtMs))
+                        // T30: 폰(공식 앱)·REST 가 이 차를 그룹에서 내보내면(MEMBER_LEFT, 내 차) 세션을 지운다 — GROUP_ENDED 와 같은 정리
+                        if (event.type == GroupEventType.MEMBER_LEFT.name && event.sourceVehicleId == vid) {
+                            gateway.unsubscribe(current.subscribeTopics)
+                            sessionStore.clear()
+                            _groupState.value = null
+                            DhLog.i("MEMBER_LEFT (me) groupId=${TextMasking.maskVehicleId(current.groupId)} → session cleared")
+                        }
                     }
                     .onFailure { DhLog.w("group event decode failed cause=${it.javaClass.simpleName}") }
             }

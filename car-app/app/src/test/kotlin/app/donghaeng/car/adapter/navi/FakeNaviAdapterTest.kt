@@ -88,6 +88,26 @@ class FakeNaviAdapterTest {
     }
 
     @Test
+    fun `holdUntilRouted keeps the car at the start until a route is requested`() = runTest {
+        val navi = FakeNaviAdapter(tickMillis = 1_000, route = route, speedMps = 100.0, destination = null, holdUntilRouted = true)
+        val events = mutableListOf<NaviEvent>()
+        val job = navi.events().onEach { events += it }.launchIn(this)
+        runCurrent()
+        advanceTimeBy(5_000); runCurrent()
+        val held = events.filterIsInstance<NaviEvent.CurrentLocation>()
+        assertEquals(6, held.size)
+        assertTrue("still at the first point", held.all { it.fix.lat == 37.0 })
+        assertEquals(0, navi.position)
+
+        navi.requestRoute(dest); runCurrent()
+        advanceTimeBy(5_000); runCurrent()
+        val moving = events.filterIsInstance<NaviEvent.CurrentLocation>()
+        assertTrue(moving.last().fix.lat > 37.003)
+        assertTrue(navi.position >= 4)
+        job.cancel()
+    }
+
+    @Test
     fun `without a route it drifts from the start point`() = runTest {
         val navi = FakeNaviAdapter(tickMillis = 1_000, route = emptyList(), startLat = 36.35, startLon = 127.38)
         val events = mutableListOf<NaviEvent>()

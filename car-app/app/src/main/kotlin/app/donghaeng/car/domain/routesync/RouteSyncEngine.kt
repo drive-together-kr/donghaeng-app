@@ -31,6 +31,8 @@ data class RouteProposal(
     val speech: String,
     val receivedAtMs: Long,
     val expiresAtMs: Long,
+    /** 서버 제안이 아닌 이 차 안에서 만든 제안(합류 직후 선두 목적지 안내, T30) — ACK 를 보내지 않는다 */
+    val local: Boolean = false,
 )
 
 data class RouteSyncState(
@@ -58,6 +60,9 @@ data class RouteSyncState(
  * - 수락: 경유지가 있으면 `requestRouteWithWaypoints`, 없으면 `requestRoute` (docs/10 R5: `addWaypoint` 대신 전체 재요청이 확실하다) → ACK accepted=true.
  * - 거절 또는 [autoDeclineMs](30초) 무응답 → ACK accepted=false (주행 중 입력 없이도 안전한 기본값, docs/05 §4).
  * - 설정 "자동 따라가기" 가 켜져 있으면 묻지 않고 바로 수락한다.
+ *
+ * 합류 직후(T30, docs/09 §4 장면 3): 멤버로 그룹에 막 들어오면 같은 카드·음성으로 "선두차 목적지 OO까지 안내할까요?" 를 묻고,
+ * 수락 시 `requestRoute(그룹 목적지)`. 서버 제안이 아니므로 ACK 는 없다. 앱 재시작으로 복원된 세션([joinWindowMs] 이 지난 것)에는 다시 묻지 않는다.
  */
 class RouteSyncEngine(
     private val session: StateFlow<GroupSession?>,
@@ -69,6 +74,9 @@ class RouteSyncEngine(
     private val speak: (text: String, priority: Priority) -> Unit,
     private val autoDeclineMs: Long = AUTO_DECLINE_MS,
     private val debounceMs: Long = DEBOUNCE_MS,
+    /** 합류 직후 선두 목적지 안내 제안(T30). 테스트에서 끈다 */
+    private val proposeDestinationOnJoin: Boolean = true,
+    private val joinWindowMs: Long = JOIN_WINDOW_MS,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
@@ -99,13 +107,21 @@ class RouteSyncEngine(
             launch { proposals.collect { onProposal(it) } }
             launch { naviEvents.collect { onNavi(it) } }
             launch {
+                var lastGroupId: String? = null
                 session.collect { s ->
                     if (s == null) {
                         // 그룹이 끝나면 대기 중 제안은 의미 없다
                         expiryJob?.cancel()
                         _state.update { it.copy(pending = null) }
                         lastSent = null
+                        lastGroupId = null
+                        return@collect
                     }
+                    if (s.groupId == lastGroupId) return@collect
+                    lastGroupId = s.groupId
+                    // T30: 멤버로 막 합류했으면(복원된 세션 제외) 선두 목적지 안내를 제안한다
+                    val justJoined = (clock() - s.joinedAtMs) in 0..joinWindowMs
+                    if (proposeDestinationOnJoin && !s.isLeader && justJoined) proposeLeaderDestination(s)
                 }
             }
         }
@@ -135,9 +151,14 @@ class RouteSyncEngine(
             receivedAtMs = now,
             expiresAtMs = now + autoDeclineMs,
         )
+        DhLog.i("routesync: proposal ${TextMasking.maskVehicleId(proposal.proposalId)} dest=${proposal.destination.toLogString()} waypoints=${proposal.waypoints.size} autoFollow=${_state.value.autoFollow}")
+        offer(proposal)
+    }
+
+    /** 제안을 대기 상태로 올리고(이전 제안 대체) 읽어 준다. 자동 따라가기면 바로 수락, 아니면 [autoDeclineMs] 뒤 자동 거절 */
+    private suspend fun offer(proposal: RouteProposal) {
         expiryJob?.cancel()
         _state.update { it.copy(pending = proposal) }
-        DhLog.i("routesync: proposal ${TextMasking.maskVehicleId(proposal.proposalId)} dest=${proposal.destination.toLogString()} waypoints=${proposal.waypoints.size} autoFollow=${_state.value.autoFollow}")
         if (_state.value.autoFollow) {
             accept()
             return
@@ -149,6 +170,25 @@ class RouteSyncEngine(
         }
     }
 
+    /** T30: 합류 직후 "선두차 목적지까지 안내할까요?" — 서버 제안이 아니므로 ACK 없이 내비만 요청한다 */
+    private suspend fun proposeLeaderDestination(s: GroupSession) {
+        val now = clock()
+        val proposal = RouteProposal(
+            proposalId = "local-join-${s.groupId}",
+            destination = s.destination,
+            waypoints = emptyList(),
+            speech = joinSpeech(s.destination.name),
+            receivedAtMs = now,
+            expiresAtMs = now + autoDeclineMs,
+            local = true,
+        )
+        DhLog.i("routesync: join proposal dest=${s.destination.toLogString()} autoFollow=${_state.value.autoFollow}")
+        offer(proposal)
+    }
+
+    private fun joinSpeech(name: String): String =
+        if (name.isBlank()) "선두차 목적지까지 안내할까요?" else "선두차 목적지 ${name}까지 안내할까요?"
+
     suspend fun accept() {
         val p = _state.value.pending ?: return
         expiryJob?.cancel()
@@ -156,21 +196,23 @@ class RouteSyncEngine(
         val ok = runCatching {
             if (p.waypoints.isEmpty()) navi.requestRoute(p.destination) else navi.requestRouteWithWaypoints(p.destination, p.waypoints)
         }.onFailure { DhLog.w("routesync: 내비 경로 요청 실패 ${it.javaClass.simpleName}") }.isSuccess
-        val sent = publishAck(Ack(proposalId = p.proposalId, accepted = true))
-        _state.update { it.copy(accepted = it.accepted + 1, lastResult = "수락 ${TextMasking.maskVehicleId(p.proposalId)} navi=${if (ok) "요청" else "실패"} ack=$sent") }
-        DhLog.i("routesync: accepted ${TextMasking.maskVehicleId(p.proposalId)} navi=$ok ack=$sent")
+        val sent = if (p.local) false else publishAck(Ack(proposalId = p.proposalId, accepted = true))
+        val label = if (p.local) "수락(선두 목적지 안내)" else "수락 ${TextMasking.maskVehicleId(p.proposalId)}"
+        _state.update { it.copy(accepted = it.accepted + 1, lastResult = "$label navi=${if (ok) "요청" else "실패"}${if (p.local) "" else " ack=$sent"}") }
+        DhLog.i("routesync: accepted ${TextMasking.maskVehicleId(p.proposalId)} local=${p.local} navi=$ok ack=$sent")
     }
 
     fun decline(auto: Boolean = false) {
         val p = _state.value.pending ?: return
         expiryJob?.cancel()
         _state.update { it.copy(pending = null) }
-        val sent = publishAck(Ack(proposalId = p.proposalId, accepted = false))
+        val sent = if (p.local) false else publishAck(Ack(proposalId = p.proposalId, accepted = false))
+        val ackText = if (p.local) "" else " ack=$sent"
         _state.update {
-            if (auto) it.copy(autoDeclined = it.autoDeclined + 1, lastResult = "자동 거절(30초 무응답) ${TextMasking.maskVehicleId(p.proposalId)} ack=$sent")
-            else it.copy(declined = it.declined + 1, lastResult = "거절 ${TextMasking.maskVehicleId(p.proposalId)} ack=$sent")
+            if (auto) it.copy(autoDeclined = it.autoDeclined + 1, lastResult = "자동 거절(30초 무응답) ${TextMasking.maskVehicleId(p.proposalId)}$ackText")
+            else it.copy(declined = it.declined + 1, lastResult = "거절 ${TextMasking.maskVehicleId(p.proposalId)}$ackText")
         }
-        DhLog.i("routesync: declined auto=$auto ${TextMasking.maskVehicleId(p.proposalId)} ack=$sent")
+        DhLog.i("routesync: declined auto=$auto ${TextMasking.maskVehicleId(p.proposalId)} local=${p.local} ack=$sent")
     }
 
     // ---------------------------------------------------------------- 선두차 역할
@@ -221,6 +263,8 @@ class RouteSyncEngine(
     companion object {
         const val AUTO_DECLINE_MS = 30_000L
         const val DEBOUNCE_MS = 2_000L
+        /** 합류 뒤 이 시간 안의 세션만 "막 합류"로 본다(앱 재시작 복원 세션 제외) */
+        const val JOIN_WINDOW_MS = 60_000L
 
         /** 시연용 경유지(공공장소 근방 좌표) */
         val DEMO_WAYPOINT = Place(lat = 37.2963, lon = 127.4120, name = "덕평휴게소", poiId = null, address = null)

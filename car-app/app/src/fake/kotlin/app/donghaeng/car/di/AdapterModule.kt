@@ -15,6 +15,7 @@ import app.donghaeng.car.adapter.vehicle.VehicleAdapter
 import app.donghaeng.car.adapter.voice.AndroidTtsVoiceAdapter
 import app.donghaeng.car.adapter.voice.VoiceAdapter
 import app.donghaeng.car.core.common.AlwaysParkedDrivingStateMonitor
+import app.donghaeng.car.core.common.DemoPrefs
 import app.donghaeng.car.core.common.DrivingStateMonitor
 import app.donghaeng.car.domain.navi.NaviEventMonitor
 import dagger.Module
@@ -38,8 +39,12 @@ object AdapterModule {
 
     @Provides
     @Singleton
-    fun provideNaviAdapter(@ApplicationContext context: Context): NaviAdapter =
-        FakeNaviAdapter.fromAsset(context, FakeNaviAdapter.ASSET_LEAD)   // T30: 후속차 인스턴스는 ASSET_FOLLOW
+    fun provideNaviAdapter(@ApplicationContext context: Context): NaviAdapter {
+        // T30: 시연 역할(DemoPrefs, 디버그 리시버 `gpx follow|lead` 로 바꾸고 재시작). 후속차는 목적지가 생길 때까지 출발하지 않는다.
+        val follow = DemoPrefs.gpxRole(context) == DemoPrefs.ROLE_FOLLOW
+        return if (follow) FakeNaviAdapter.fromAsset(context, FakeNaviAdapter.ASSET_FOLLOW, destination = null, holdUntilRouted = true)
+        else FakeNaviAdapter.fromAsset(context, FakeNaviAdapter.ASSET_LEAD)
+    }
 
     @Provides
     @Singleton
