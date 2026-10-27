@@ -62,6 +62,8 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 | `adapter.location` | `LocationSource` + `CompositeLocationAdapter`(Fused→Navi→Android→Fake 폴백·상위 병렬 재탐색) + `NaviLocationSource`·`AndroidLocationSource`·`FakeLocationAdapter` (+pleos `PleosFusedLocationAdapter`) | T21 |
 | `adapter.vehicle` (T22) | `PleosVehicleAdapter` 신호 Flow(Fuel·EvBattery·Brake·TurnSignal·Airbag register/unregister, 미지원은 null/빈 스트림) + `CarApiSignals`(AAOS Car API 속도 `PERF_VEHICLE_SPEED`·기어 `GEAR_SELECTION` 폴백) | T22 |
 | `domain.vehicle` | `VehicleSignals`(앱 유일 신호 구독자 — 최신값·수신 수·스트림 상태, 끝난 스트림 30s 재구독, 값 변경 시만 로그) | T22 |
+| `domain.telemetry` | `TelemetryCollector`(활성 그룹 동안 1Hz `TELEMETRY` QoS 0: LocationFeed 최신 Fix + 차량 속도/기어 + ETA 30s/변화 시 + 에너지 1%p 변화 시·60s) | T23 |
+| `service` | `DriveSessionService`(포그라운드 알림, location/dataSync 타입 자동 선택) + `DriveSessionController`(그룹 세션 ↔ 서비스) | T23 |
 | `domain.location` | `LocationFeed`(앱 유일 위치 구독자 — `fixes`/`speedKph`/`state`, 권한 변경 시 restart) + `SpeedEstimator`(Haversine 3샘플) | T21 |
 | `feature.permissions` | `LocationPermissionGate`(활성 그룹 + 정차 시 위치·알림 권한 1회 요청) | T21 |
 | `domain.navi` | `NaviEventMonitor`(앱에서 유일한 내비 구독자 — 콜백 종류별 수·마지막 값 `state`, 공유 `events`, 끊기면 10초 뒤 재구독) | T20 |
@@ -194,6 +196,12 @@ mqtt subscribed topic=dh/v1/group/grp_…**/state  /  …/event
 - 진단 화면 **차량 신호 (T22)** 카드: 에너지(연료·SoC) / 주행(속도·기어·브레이크) / 차체(방향지시등·에어백) / 신호별 수신 수(마지막 수신 n초 전) / 끝난·실패 스트림. 버튼 **신호 다시 구독**.
 - Virtual Console 로 바꾸기(스크립트 `t22_vehicle_check.py`): `adb -s emulator-5556 forward tcp:8089 tcp:8088` → `POST /browser/session` 을 1초마다(세션 timeout 3초, 없으면 PUT 503) → `PUT /vehicle/gear?gear=Reverse`, `PUT /vehicle/controls?speed_kph=55&brake_pct=70`, `PUT /vehicle/turn-signal?mode=BlinkLeft`, `PUT /vehicle/ev-battery?field=soc&value=23`.
 - Pleos AVD 실측(2026-10-27): 위 조작 → `vehicle signal gear=R`, `brake=true`, `turn=LEFT`, `soc=23`, `speed=55.0`; 원복 → `gear=P`, `brake=false`, `speed=0.0`, `turn=OFF`. Fuel 은 AVD 미지원(`property ID is not in carPropertyConfig list`), Airbag check 실패 → 빈 스트림. DH_CAP: `Speed supported=true … CAR_API`, `Gear supported=true … PLEOS_SDK`.
+
+### T23 — 텔레메트리 (`adb logcat -s DongHaeng | grep telemetry`)
+- 활성 그룹이 있으면 `telemetry: 그룹 활성 → 1Hz 발행 시작 (<그룹명>)` → `telemetry #1 (37.5**, 126.9**) src=ANDROID speed=0.0 heading=0 gear=P energy=fuel:- soc:23` … (10개마다 한 줄, 좌표 마스킹). 자격 증명이 없으면 `자격 증명 없음 → 건너뜀`, 위치가 없거나 10초보다 오래되면 그 틱은 건너뛴다(진단 카드 "건너뜀" 수).
+- 포그라운드 서비스: `drive session service: start 요청 (group=…)` → `foreground type=location`(위치 권한 없으면 `dataSync`). 그룹이 끝나면 `stop 요청`.
+- 진단 화면 **텔레메트리 (T23)** 카드: 상태(발행 중/대기), 발행/실패/건너뜀 수, 마지막 발행 요약, ETA/에너지 포함 횟수, 토픽(마스킹), 서비스 실행 여부.
+- 브로커에서 확인(스크립트 `t23_telemetry_check.py`): EMQX 대시보드 API 로 로그인(`POST /api/v5/login`, admin/public) → `POST /api/v5/trace {name, type:"topic", topic:"dh/v1/vehicle/+/telemetry", start_at, end_at}` → `GET /api/v5/trace/{name}/log?bytes=…` 에 발행 페이로드가 그대로 남는다. 2026-10-27 실측: 1초 간격 seq 연속, `authorization_matched_allow … emqx_authz_http`, Virtual Console 속도 30 → `"speedKph":30.0`, SoC 23→61 → `"energy":{"socPct":61}` 2회(변화 시만), ETA 는 내비 미동작으로 없음.
 
 ### Virtual Console (차량 상태 조작, docs/09 §1)
 

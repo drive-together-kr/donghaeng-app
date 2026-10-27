@@ -96,6 +96,7 @@ fun DiagnosticsScreen(
             NaviCard(state, onNaviAction)
             LocationCard(state, onLocationAction)
             VehicleSignalCard(state, onRestartVehicleSignals)
+            TelemetryCard(state)
             BuildCard(state)
         }
     }
@@ -272,6 +273,30 @@ private fun NaviCard(state: DiagnosticsUiState, onNaviAction: (NaviDebugAction) 
                 OutlinedButton(onClick = { onNaviAction(NaviDebugAction.SHOW_NAVIGATION) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_navi_action_show)) }
             }
             LabelRow(stringResource(R.string.diag_navi_last_action), state.naviActionResult ?: "-")
+        }
+    }
+}
+
+/** T23 — 텔레메트리 발행 상태. 활성 그룹이 있으면 1초마다 발행 수가 늘어야 한다 */
+@Composable
+private fun TelemetryCard(state: DiagnosticsUiState) {
+    Card {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(stringResource(R.string.diag_section_telemetry), style = MaterialTheme.typography.titleMedium)
+            HorizontalDivider()
+            val t = state.telemetry
+            val status = when {
+                !t.running -> "중지"
+                t.active -> "발행 중 (${t.groupName ?: ""})"
+                else -> "대기 (활성 그룹 없음)"
+            }
+            LabelRow(stringResource(R.string.diag_tm_state), status)
+            LabelRow(stringResource(R.string.diag_tm_counts), "${t.sentCount} / ${t.failedCount} / ${t.skippedNoFix}")
+            val age = t.lastSentTs?.let { ts -> "${(System.currentTimeMillis() - ts) / 1000}s 전" } ?: "-"
+            LabelRow(stringResource(R.string.diag_tm_last), age + (t.lastSummary?.let { s -> "  $s" } ?: ""))
+            LabelRow(stringResource(R.string.diag_tm_extras), "eta ${t.etaSentCount} / energy ${t.energySentCount}")
+            LabelRow(stringResource(R.string.diag_tm_topic), t.topicMasked ?: "-")
+            LabelRow(stringResource(R.string.diag_tm_service), if (state.driveServiceRunning) "실행 중" else "없음")
         }
     }
 }

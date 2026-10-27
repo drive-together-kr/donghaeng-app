@@ -21,7 +21,10 @@ import app.donghaeng.car.domain.capability.CapabilityReport
 import app.donghaeng.car.domain.capability.CapabilityReporter
 import app.donghaeng.car.domain.location.LocationFeed
 import app.donghaeng.car.domain.location.LocationFeedState
+import app.donghaeng.car.domain.telemetry.TelemetryCollector
+import app.donghaeng.car.domain.telemetry.TelemetryState
 import app.donghaeng.car.domain.vehicle.VehicleSignalState
+import app.donghaeng.car.service.DriveSessionController
 import app.donghaeng.car.domain.vehicle.VehicleSignals
 import app.donghaeng.car.domain.model.Place
 import app.donghaeng.car.domain.navi.NaviEventMonitor
@@ -62,6 +65,9 @@ data class DiagnosticsUiState(
     val location: LocationFeedState = LocationFeedState(),
     /** T22 차량 신호 최신값 */
     val vehicle: VehicleSignalState = VehicleSignalState(),
+    /** T23 텔레메트리 발행 상태 */
+    val telemetry: TelemetryState = TelemetryState(),
+    val driveServiceRunning: Boolean = false,
 )
 
 /** 진단 화면의 내비 확인용 요청(T20) — 실제 기능 UI 가 아니라 콜백이 오는지 보는 버튼 */
@@ -70,7 +76,7 @@ enum class NaviDebugAction { REQUEST_ROUTE, SHOW_NAVIGATION, QUERY_DESTINATION }
 /** 진단 화면의 위치 확인용 동작(T21) — 권한 요청은 Route 의 런처가, 재탐색은 ViewModel 이 처리 */
 enum class LocationDebugAction { REQUEST_PERMISSION, RESTART }
 
-private data class SideState(val mqtt: MqttStatus, val navi: NaviMonitorState, val naviAction: String?, val location: LocationFeedState, val vehicle: VehicleSignalState)
+private data class SideState(val mqtt: MqttStatus, val navi: NaviMonitorState, val naviAction: String?, val location: LocationFeedState, val vehicle: VehicleSignalState, val telemetry: TelemetryState, val serviceRunning: Boolean)
 
 /** 진단 화면 — capability 표(T11) + SDK 점검 + 빌드 정보. 확인용 화면이라 사용자 입력이 없다. */
 @HiltViewModel
@@ -84,6 +90,8 @@ class DiagnosticsViewModel @Inject constructor(
     private val navi: NaviAdapter,
     private val locationFeed: LocationFeed,
     private val vehicleSignals: VehicleSignals,
+    telemetryCollector: TelemetryCollector,
+    driveSessionController: DriveSessionController,
 ) : ViewModel() {
 
     private val naviActionResult = MutableStateFlow<String?>(null)
@@ -92,18 +100,20 @@ class DiagnosticsViewModel @Inject constructor(
         viewModelScope.launch { tokenStore.load() }
     }
 
-    val uiState: StateFlow<DiagnosticsUiState> = combine(reporter.report, sdkProbe.report, tokenStore.state, combine(mqtt.status, naviMonitor.state, naviActionResult, locationFeed.state, vehicleSignals.state) { m, n, a, l, v -> SideState(m, n, a, l, v) }, combine(sessionManager.session, sessionManager.lastCommand) { s, c -> s to c }) { report, probe, tokens, (mqttStatus, naviState, actionResult, locationState, vehicleState), (session, lastCmd) ->
+    val uiState: StateFlow<DiagnosticsUiState> = combine(reporter.report, sdkProbe.report, tokenStore.state, combine(combine(mqtt.status, naviMonitor.state, naviActionResult) { m, n, a -> Triple(m, n, a) }, combine(locationFeed.state, vehicleSignals.state, telemetryCollector.state, driveSessionController.serviceRunning) { l, v, t, r -> SideState(MqttStatus(), NaviMonitorState(), null, l, v, t, r) }) { (m, n, a), side -> side.copy(mqtt = m, navi = n, naviAction = a) }, combine(sessionManager.session, sessionManager.lastCommand) { s, c -> s to c }) { report, probe, tokens, side, (session, lastCmd) ->
         DiagnosticsUiState(
             report = report,
             probe = probe,
             pairedVehicleIdMasked = (tokens as? TokenStoreState.Present)?.let { TextMasking.maskVehicleId(it.credentials.vehicleId) },
-            mqtt = mqttStatus,
+            mqtt = side.mqtt,
             groupSession = session,
             lastCommand = lastCmd,
-            navi = naviState,
-            naviActionResult = actionResult,
-            location = locationState,
-            vehicle = vehicleState,
+            navi = side.navi,
+            naviActionResult = side.naviAction,
+            location = side.location,
+            vehicle = side.vehicle,
+            telemetry = side.telemetry,
+            driveServiceRunning = side.serviceRunning,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DiagnosticsUiState(report = reporter.report.value, probe = sdkProbe.report.value))
 

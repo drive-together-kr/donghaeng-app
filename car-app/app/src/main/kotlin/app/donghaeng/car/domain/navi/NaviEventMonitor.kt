@@ -29,6 +29,10 @@ data class NaviMonitorState(
     val lastFixHeading: Float? = null,
     val lastFixTs: Long? = null,
     val lastTrip: String? = null,
+    /** 마지막 TripInfo 원값(T23 텔레메트리 ETA 용) */
+    val lastRemainDistanceM: Int? = null,
+    val lastRemainTimeS: Int? = null,
+    val lastTripTs: Long? = null,
     val lastStatus: String? = null,
     val lastRouteState: String? = null,
     val destinationName: String? = null,
@@ -112,7 +116,7 @@ class NaviEventMonitor @Inject constructor(
             val counts = s.counts + (key to (s.counts[key] ?: 0) + 1)
             when (e) {
                 is NaviEvent.CurrentLocation -> s.copy(counts = counts, lastFixMasked = CoordinateMasking.mask(e.fix.lat, e.fix.lon), lastFixHeading = e.fix.heading, lastFixTs = e.fix.ts)
-                is NaviEvent.TripInfo -> s.copy(counts = counts, lastTrip = formatTrip(e))
+                is NaviEvent.TripInfo -> s.copy(counts = counts, lastTrip = formatTrip(e), lastRemainDistanceM = e.remainDistanceM, lastRemainTimeS = e.remainTimeS, lastTripTs = System.currentTimeMillis())
                 is NaviEvent.DrivingInfo -> s.copy(counts = counts)
                 is NaviEvent.RouteStateInfo -> s.copy(counts = counts, lastRouteState = e.state.name + (e.detail?.let { " ($it)" } ?: ""))
                 is NaviEvent.DestinationChanged -> s.copy(counts = counts, destinationName = e.destination?.name ?: "(없음)")
