@@ -1,5 +1,7 @@
 package app.donghaeng.car.feature.settings
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -30,6 +32,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.donghaeng.car.R
 import app.donghaeng.car.adapter.sdk.ProbeLine
+import app.donghaeng.car.core.common.LocationPermissions
 import app.donghaeng.car.core.common.TextMasking
 import app.donghaeng.car.domain.capability.CapabilityReport
 import app.donghaeng.car.domain.model.CapabilityDomain
@@ -44,7 +47,16 @@ fun DiagnosticsRoute(
     viewModel: DiagnosticsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    DiagnosticsScreen(state = state, onBack = onBack, onNaviAction = viewModel::onNaviAction)
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { viewModel.onPermissionResult(it) }
+    DiagnosticsScreen(
+        state = state,
+        onBack = onBack,
+        onNaviAction = viewModel::onNaviAction,
+        onLocationAction = { action ->
+            viewModel.onLocationAction(action)
+            if (action == LocationDebugAction.REQUEST_PERMISSION) permissionLauncher.launch(LocationPermissions.runtimePermissions())
+        },
+    )
 }
 
 /**
@@ -52,7 +64,12 @@ fun DiagnosticsRoute(
  * 사용자가 결과를 캡처해 붙여넣기만 하면 되게 만든 확인용 화면(CLAUDE.md 작업 방식).
  */
 @Composable
-fun DiagnosticsScreen(state: DiagnosticsUiState, onBack: () -> Unit, onNaviAction: (NaviDebugAction) -> Unit = {}) {
+fun DiagnosticsScreen(
+    state: DiagnosticsUiState,
+    onBack: () -> Unit,
+    onNaviAction: (NaviDebugAction) -> Unit = {},
+    onLocationAction: (LocationDebugAction) -> Unit = {},
+) {
     Scaffold { innerPadding ->
         Column(
             modifier = Modifier
@@ -73,6 +90,7 @@ fun DiagnosticsScreen(state: DiagnosticsUiState, onBack: () -> Unit, onNaviActio
             ProbeCard(state.probe)
             MqttCard(state)
             NaviCard(state, onNaviAction)
+            LocationCard(state, onLocationAction)
             BuildCard(state)
         }
     }
@@ -249,6 +267,38 @@ private fun NaviCard(state: DiagnosticsUiState, onNaviAction: (NaviDebugAction) 
                 OutlinedButton(onClick = { onNaviAction(NaviDebugAction.SHOW_NAVIGATION) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_navi_action_show)) }
             }
             LabelRow(stringResource(R.string.diag_navi_last_action), state.naviActionResult ?: "-")
+        }
+    }
+}
+
+/** T21 — 위치 체인(활성 소스·가용성·전환)·마지막 위치(마스킹)·위치 계산 속도·권한. 버튼으로 권한 요청·재탐색 */
+@Composable
+private fun LocationCard(state: DiagnosticsUiState, onAction: (LocationDebugAction) -> Unit) {
+    Card {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(stringResource(R.string.diag_section_location), style = MaterialTheme.typography.titleMedium)
+            HorizontalDivider()
+            val l = state.location
+            val c = l.chain
+            val order = l.sourceOrder.joinToString(" → ") { it.name }
+            val running = if (l.running) "" else "  (중지)"
+            LabelRow(stringResource(R.string.diag_loc_active), (c.active?.name ?: "-") + (if (order.isNotEmpty()) "   [$order]" else "") + running)
+            LabelRow(stringResource(R.string.diag_loc_availability), if (c.availability.isEmpty()) "-" else c.availability.entries.joinToString("   ") { e -> e.key.name + "=" + (if (e.value) "가능" else "불가") })
+            val lastStop = c.lastStop?.let { s -> "   마지막 중단: $s" } ?: ""
+            LabelRow(stringResource(R.string.diag_loc_counts), "fix ${c.fixCount} / 전환 ${c.switches} / restarts ${l.restarts}$lastStop")
+            val age = l.lastFixTs?.let { ts -> "${(System.currentTimeMillis() - ts) / 1000}s 전" } ?: ""
+            val fixHeading = l.lastHeading?.let { h -> "heading=$h" } ?: "heading=?"
+            val fixAcc = l.lastAccuracy?.let { a -> "acc=$a" } ?: "acc=?"
+            val fixSrc = l.lastSource?.name ?: "?"
+            LabelRow(stringResource(R.string.diag_loc_last_fix), l.lastFixMasked?.let { f -> "$f  src=$fixSrc  $fixHeading  $fixAcc  $age" } ?: "-")
+            LabelRow(stringResource(R.string.diag_loc_speed), l.speedKph?.let { s -> "%.1f km/h".format(s) } ?: "-")
+            fun g(b: Boolean) = if (b) "승인" else "미승인"
+            LabelRow(stringResource(R.string.diag_loc_permissions), "FINE_LOCATION=${g(l.fineLocationGranted)}   FUSED_LOCATION=${g(l.fusedLocationGranted)}   POST_NOTIFICATIONS=${g(l.notificationsGranted)}")
+            LabelRow(stringResource(R.string.diag_mqtt_last_error), l.lastError ?: c.lastError ?: "-")
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = { onAction(LocationDebugAction.REQUEST_PERMISSION) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_loc_action_permission)) }
+                OutlinedButton(onClick = { onAction(LocationDebugAction.RESTART) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_loc_action_restart)) }
+            }
         }
     }
 }

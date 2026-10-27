@@ -91,6 +91,15 @@
     <string name="diag_navi_action_dest">목적지 조회</string>
     <string name="diag_navi_action_show">내비 화면</string>
     <string name="diag_navi_last_action">마지막 요청</string>
+    <string name="diag_section_location">위치 소스 (T21)</string>
+    <string name="diag_loc_active">활성 소스</string>
+    <string name="diag_loc_availability">소스 가용성</string>
+    <string name="diag_loc_counts">수신/전환</string>
+    <string name="diag_loc_last_fix">마지막 위치</string>
+    <string name="diag_loc_speed">속도(위치 계산)</string>
+    <string name="diag_loc_permissions">권한</string>
+    <string name="diag_loc_action_permission">위치 권한 요청</string>
+    <string name="diag_loc_action_restart">체인 다시 탐색</string>
     <string name="diag_group_session">활성 그룹</string>
     <string name="diag_group_none">없음 (GROUP_JOINED 대기)</string>
     <string name="diag_last_cmd">마지막 cmd</string>

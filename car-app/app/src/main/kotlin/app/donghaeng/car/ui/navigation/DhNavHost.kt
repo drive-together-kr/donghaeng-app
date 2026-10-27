@@ -10,6 +10,7 @@ import app.donghaeng.car.feature.events.EventsScreen
 import app.donghaeng.car.feature.groupdrive.GroupDriveScreen
 import app.donghaeng.car.feature.home.HomeRoute
 import app.donghaeng.car.feature.pairing.PairingRoute
+import app.donghaeng.car.feature.permissions.LocationPermissionGate
 import app.donghaeng.car.feature.presets.PresetsScreen
 import app.donghaeng.car.feature.settings.DiagnosticsRoute
 import app.donghaeng.car.feature.settings.SettingsRoute
@@ -28,6 +29,7 @@ object DhRoutes {
 
 @Composable
 fun DhNavHost(navController: NavHostController = rememberNavController()) {
+    LocationPermissionGate()   // T21: 활성 그룹 + 정차 시 위치·알림 권한 1회 요청
     NavHost(navController = navController, startDestination = DhRoutes.HOME) {
         composable(DhRoutes.HOME) {
             HomeRoute(

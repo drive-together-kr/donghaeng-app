@@ -7,7 +7,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
 /**
- * Fake 위치 어댑터 — 고정 지점을 1 Hz 로 흘린다(ts 만 갱신). GPX 재생은 T21/T30.
+ * 4순위(마지막) Fake 위치 — 고정 지점을 1 Hz 로 흘린다(ts 만 갱신). 항상 가용·절대 끊기지 않아 체인의 바닥 역할을 한다.
+ * 움직이는 가짜 위치가 필요하면 fake flavor 의 `FakeNaviAdapter`(GPX 재생, 2순위 NAVI 소스) 가 담당한다.
  *
  * @param clock 테스트에서 시각을 고정하기 위한 훅
  */
@@ -16,7 +17,11 @@ class FakeLocationAdapter(
     private val lon: Double = DEMO_LON,
     private val intervalMillis: Long = 1_000L,
     private val clock: () -> Long = System::currentTimeMillis,
-) : LocationAdapter {
+) : LocationAdapter, LocationSource {
+
+    override val source: LocSource = LocSource.FAKE
+
+    override suspend fun isAvailable(): Boolean = true
 
     override fun locations(): Flow<Fix> = flow {
         while (true) {

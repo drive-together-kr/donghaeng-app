@@ -1,8 +1,11 @@
 package app.donghaeng.car.di
 
 import android.content.Context
+import app.donghaeng.car.adapter.location.AndroidLocationSource
+import app.donghaeng.car.adapter.location.CompositeLocationAdapter
 import app.donghaeng.car.adapter.location.FakeLocationAdapter
 import app.donghaeng.car.adapter.location.LocationAdapter
+import app.donghaeng.car.adapter.location.NaviLocationSource
 import app.donghaeng.car.adapter.navi.FakeNaviAdapter
 import app.donghaeng.car.adapter.navi.NaviAdapter
 import app.donghaeng.car.adapter.sdk.NoSdkProbe
@@ -13,6 +16,7 @@ import app.donghaeng.car.adapter.voice.AndroidTtsVoiceAdapter
 import app.donghaeng.car.adapter.voice.VoiceAdapter
 import app.donghaeng.car.core.common.AlwaysParkedDrivingStateMonitor
 import app.donghaeng.car.core.common.DrivingStateMonitor
+import app.donghaeng.car.domain.navi.NaviEventMonitor
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -39,7 +43,8 @@ object AdapterModule {
 
     @Provides
     @Singleton
-    fun provideLocationAdapter(): LocationAdapter = FakeLocationAdapter()
+    fun provideLocationAdapter(@ApplicationContext context: Context, naviMonitor: NaviEventMonitor): LocationAdapter =
+        CompositeLocationAdapter(listOf(NaviLocationSource(naviMonitor), AndroidLocationSource(context), FakeLocationAdapter()))   // Navi = FakeNaviAdapter GPX 재생
 
     @Provides
     @Singleton

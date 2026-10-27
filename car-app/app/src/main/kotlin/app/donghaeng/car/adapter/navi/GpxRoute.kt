@@ -2,13 +2,10 @@ package app.donghaeng.car.adapter.navi
 
 import android.content.Context
 import app.donghaeng.car.core.common.DhLog
+import app.donghaeng.car.core.common.Geo
 import org.w3c.dom.Element
 import java.io.InputStream
 import javax.xml.parsers.DocumentBuilderFactory
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 /** 위경도 한 점 */
 data class LatLon(val lat: Double, val lon: Double)
@@ -49,23 +46,10 @@ object GpxRoute {
     }
 
     /** 두 점 사이 거리(m), Haversine */
-    fun distanceM(a: LatLon, b: LatLon): Double {
-        val r = 6_371_000.0
-        val dLat = Math.toRadians(b.lat - a.lat)
-        val dLon = Math.toRadians(b.lon - a.lon)
-        val h = sin(dLat / 2) * sin(dLat / 2) + cos(Math.toRadians(a.lat)) * cos(Math.toRadians(b.lat)) * sin(dLon / 2) * sin(dLon / 2)
-        return 2 * r * atan2(sqrt(h), sqrt(1 - h))
-    }
+    fun distanceM(a: LatLon, b: LatLon): Double = Geo.distanceM(a.lat, a.lon, b.lat, b.lon)
 
     /** a → b 방위각(0~360) */
-    fun bearingDeg(a: LatLon, b: LatLon): Float {
-        val lat1 = Math.toRadians(a.lat)
-        val lat2 = Math.toRadians(b.lat)
-        val dLon = Math.toRadians(b.lon - a.lon)
-        val y = sin(dLon) * cos(lat2)
-        val x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
-        return ((Math.toDegrees(atan2(y, x)) + 360.0) % 360.0).toFloat()
-    }
+    fun bearingDeg(a: LatLon, b: LatLon): Float = Geo.bearingDeg(a.lat, a.lon, b.lat, b.lon)
 
     /** 경로 전체 길이(m) */
     fun lengthM(points: List<LatLon>): Double = points.zipWithNext().sumOf { (a, b) -> distanceM(a, b) }

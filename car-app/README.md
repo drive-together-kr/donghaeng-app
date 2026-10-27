@@ -59,6 +59,9 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 | `domain.group` | `GroupRepository`(생성 → `GroupSession(isLeader, invite)` 저장 + 그룹 토픽 구독, 초대 재발급, 조회, 나가기/종료) | T17 |
 | `feature.creategroup` | `CreateGroupViewModel`(Form → Active, 멤버 5초 폴링 + 이벤트 갱신, 초대 남은 시간) · `CreateGroupScreen`(목적지 프리셋/내비, QR, 멤버, 종료/나가기) | T17 |
 | `adapter.navi` | `NaviAdapter` + `PleosNaviAdapter`(NaviHelper 3.0.5 콜백 → `NaviEvent`, 1Hz 위치 요청, 요청 API 매핑) + `FakeNaviAdapter`(`assets/gpx/*.gpx` 1Hz 재생, 도착·경유지 이벤트) + `GpxRoute`(파서·재표본화·거리/방위) | T20 |
+| `adapter.location` | `LocationSource` + `CompositeLocationAdapter`(Fused→Navi→Android→Fake 폴백·상위 병렬 재탐색) + `NaviLocationSource`·`AndroidLocationSource`·`FakeLocationAdapter` (+pleos `PleosFusedLocationAdapter`) | T21 |
+| `domain.location` | `LocationFeed`(앱 유일 위치 구독자 — `fixes`/`speedKph`/`state`, 권한 변경 시 restart) + `SpeedEstimator`(Haversine 3샘플) | T21 |
+| `feature.permissions` | `LocationPermissionGate`(활성 그룹 + 정차 시 위치·알림 권한 1회 요청) | T21 |
 | `domain.navi` | `NaviEventMonitor`(앱에서 유일한 내비 구독자 — 콜백 종류별 수·마지막 값 `state`, 공유 `events`, 끊기면 10초 뒤 재구독) | T20 |
 | `domain.session` | `MqttSessionManager`(페어링 있으면 접속 + 자기 `cmd` 구독, cmd `GROUP_JOINED`→`GroupSessionStore` 저장 + 그룹 `state/event` 구독, `GROUP_ENDED`→정리, `TOKEN_REVOKED`→자격 증명 삭제; `groupEvents`/`groupState`/`lastCommand` 노출), `GroupSessionStore`(DataStore `group_session` / InMemory) | T16 |
 | `domain.model` | `Fix`, `Place`(= protocol `Place` typealias), `Gear`, `TurnSignalState`, `CapabilityDomain`/`CapabilityEntry`/`VehicleCapabilities`, `NaviEvent`, `RouteState`, `WaypointIndex`, `Priority` | T04/T11 |
@@ -177,6 +180,12 @@ mqtt subscribed topic=dh/v1/group/grp_…**/state  /  …/event
 - fake flavor: `FakeNavi asset=gpx/lead.gpx points=73 track=3424 lengthM=57142` → 1Hz `fix #N`, 10초마다 `TripInfo 57.1 km · 57분`, 종점에서 `DestinationArrived`. 후속차 인스턴스용 `gpx/follow.gpx` 는 T30 에서 선택.
 - 캡처: `docs/images/t20/carA_pleos_diag_navi.png`(Pleos AVD 내비 카드), `carB_fake_diag_navi.png`(fake — requestRoute 후 DestinationChanged/RouteStateInfo/TripInfo), `carA_navi_app_delayed.png`(AVD 내비 앱 '실행 지연' 화면).
 - 권한: `pleos.car.permission.NAVI_ROUTE`·`NAVI_ROUTE_SEARCH` 외에 `requestNavigationScreen` 은 `NAVI_CUSTOM_MAP` 이 필요하다(없으면 `SecurityException`, 실측) — pleos 매니페스트에 `NAVI_CUSTOM_MAP`·`NAVI_CUSTOM_ROUTE` 추가.
+
+### T21 — 위치 체인 (`adb logcat -s DongHaeng | grep location`)
+- 앱 시작 시 `location feed: subscribe` → 체인 로그 `location: 활성 소스 = NAVI (2/4)` → `location: NAVI 중단 — no first fix` → `location: 활성 소스 = ANDROID (3/4)` … → `location feed: fix #N Fix(37.5**, …) src=ANDROID speed=62.6km/h`(10개마다).
+- 진단 화면 **위치 소스 (T21)** 카드: 활성 소스·체인 순서, 소스 가용성, fix/전환 수와 마지막 중단 사유, 마지막 위치(마스킹)·heading·acc, 위치 계산 속도, 권한(FINE/FUSED/POST_NOTIFICATIONS). 버튼 **위치 권한 요청**(시스템 다이얼로그) · **체인 다시 탐색**.
+- AVD 에서 움직이는 GPS 넣기: `adb -s emulator-5556 emu geo fix <lon> <lat>` 를 1초마다 보내면(세션 스크립트 `t21_location_check.py` 의 `geo_walk`) Android 소스가 1Hz 로 받고 속도가 계산된다. 캡처: `docs/images/t21/`.
+- Pleos AVD 실측(2026-10-27): `FUSED_LOCATION=미승인` → FUSED 건너뜀, NAVI 첫 Fix 없음 → ANDROID(gps) 활성, 속도 ≈ 62 km/h. fake flavor: NAVI(GPX 재생) 활성 ≈ 60 km/h.
 
 ### Virtual Console (차량 상태 조작, docs/09 §1)
 

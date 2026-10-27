@@ -7,6 +7,7 @@ import app.donghaeng.car.BuildConfig
 import app.donghaeng.car.adapter.navi.NaviAdapter
 import app.donghaeng.car.adapter.sdk.ProbeLine
 import app.donghaeng.car.adapter.sdk.SdkProbe
+import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.core.common.TextMasking
 import app.donghaeng.car.core.common.TokenStore
 import app.donghaeng.car.core.common.TokenStoreState
@@ -18,6 +19,8 @@ import app.donghaeng.car.domain.session.LastCommand
 import app.donghaeng.car.domain.session.MqttSessionManager
 import app.donghaeng.car.domain.capability.CapabilityReport
 import app.donghaeng.car.domain.capability.CapabilityReporter
+import app.donghaeng.car.domain.location.LocationFeed
+import app.donghaeng.car.domain.location.LocationFeedState
 import app.donghaeng.car.domain.model.Place
 import app.donghaeng.car.domain.navi.NaviEventMonitor
 import app.donghaeng.car.domain.navi.NaviMonitorState
@@ -53,10 +56,17 @@ data class DiagnosticsUiState(
     val navi: NaviMonitorState = NaviMonitorState(),
     /** 진단 화면에서 보낸 마지막 내비 요청과 결과 */
     val naviActionResult: String? = null,
+    /** T21 위치 체인·속도·권한 */
+    val location: LocationFeedState = LocationFeedState(),
 )
 
 /** 진단 화면의 내비 확인용 요청(T20) — 실제 기능 UI 가 아니라 콜백이 오는지 보는 버튼 */
 enum class NaviDebugAction { REQUEST_ROUTE, SHOW_NAVIGATION, QUERY_DESTINATION }
+
+/** 진단 화면의 위치 확인용 동작(T21) — 권한 요청은 Route 의 런처가, 재탐색은 ViewModel 이 처리 */
+enum class LocationDebugAction { REQUEST_PERMISSION, RESTART }
+
+private data class SideState(val mqtt: MqttStatus, val navi: NaviMonitorState, val naviAction: String?, val location: LocationFeedState)
 
 /** 진단 화면 — capability 표(T11) + SDK 점검 + 빌드 정보. 확인용 화면이라 사용자 입력이 없다. */
 @HiltViewModel
@@ -68,6 +78,7 @@ class DiagnosticsViewModel @Inject constructor(
     sessionManager: MqttSessionManager,
     naviMonitor: NaviEventMonitor,
     private val navi: NaviAdapter,
+    private val locationFeed: LocationFeed,
 ) : ViewModel() {
 
     private val naviActionResult = MutableStateFlow<String?>(null)
@@ -76,7 +87,7 @@ class DiagnosticsViewModel @Inject constructor(
         viewModelScope.launch { tokenStore.load() }
     }
 
-    val uiState: StateFlow<DiagnosticsUiState> = combine(reporter.report, sdkProbe.report, tokenStore.state, combine(mqtt.status, naviMonitor.state, naviActionResult) { m, n, a -> Triple(m, n, a) }, combine(sessionManager.session, sessionManager.lastCommand) { s, c -> s to c }) { report, probe, tokens, (mqttStatus, naviState, actionResult), (session, lastCmd) ->
+    val uiState: StateFlow<DiagnosticsUiState> = combine(reporter.report, sdkProbe.report, tokenStore.state, combine(mqtt.status, naviMonitor.state, naviActionResult, locationFeed.state) { m, n, a, l -> SideState(m, n, a, l) }, combine(sessionManager.session, sessionManager.lastCommand) { s, c -> s to c }) { report, probe, tokens, (mqttStatus, naviState, actionResult, locationState), (session, lastCmd) ->
         DiagnosticsUiState(
             report = report,
             probe = probe,
@@ -86,6 +97,7 @@ class DiagnosticsViewModel @Inject constructor(
             lastCommand = lastCmd,
             navi = naviState,
             naviActionResult = actionResult,
+            location = locationState,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DiagnosticsUiState(report = reporter.report.value, probe = sdkProbe.report.value))
 
@@ -107,6 +119,19 @@ class DiagnosticsViewModel @Inject constructor(
             }.getOrElse { "실패 ${it.javaClass.simpleName}: ${it.message}" }
             naviActionResult.value = "$name $result"
         }
+    }
+
+    fun onLocationAction(action: LocationDebugAction) {
+        when (action) {
+            LocationDebugAction.RESTART -> locationFeed.restart()
+            LocationDebugAction.REQUEST_PERMISSION -> locationFeed.refreshPermissions()   // 실제 요청은 Route 의 런처
+        }
+    }
+
+    /** 시스템 권한 다이얼로그 결과 → 체인 재탐색 */
+    fun onPermissionResult(result: Map<String, Boolean>) {
+        DhLog.i("diag permissions: ${result.entries.joinToString { "${it.key.substringAfterLast('.')}=${it.value}" }}")
+        locationFeed.restart()
     }
 
     private companion object {
