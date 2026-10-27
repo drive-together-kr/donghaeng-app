@@ -14,6 +14,7 @@ import app.donghaeng.group.repo.GroupStatus
 import app.donghaeng.group.repo.MemberRecord
 import app.donghaeng.group.repo.MemberRole
 import app.donghaeng.identity.IdentityApi
+import app.donghaeng.presence.PresenceApi
 import app.donghaeng.identity.VehicleInfo
 import app.donghaeng.protocol.DhJson
 import app.donghaeng.protocol.GroupEnded
@@ -68,6 +69,7 @@ class GroupService(
     private val speech: SpeechComposer,
     private val cache: GroupMembershipCache,
     private val commands: VehicleCommandPort,
+    private val presence: PresenceApi,
     private val props: DhProperties,
     private val clock: Clock,
 ) {
@@ -516,7 +518,7 @@ class GroupService(
         status = group.status.name,
         destination = group.destination,
         members = memberDtos(current),
-        snapshot = null, // presence(T24) 가 채운다
+        snapshot = if (group.active) presence.snapshotOf(group.groupId) else null,   // presence(T24)
         recentEvents = eventReader.recent(group.groupId, RECENT_EVENTS),
     )
 

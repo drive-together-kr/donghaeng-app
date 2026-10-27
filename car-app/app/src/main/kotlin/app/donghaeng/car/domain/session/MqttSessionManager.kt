@@ -61,6 +61,11 @@ class MqttSessionManager @Inject constructor(
     private val _groupState = MutableStateFlow<GroupState?>(null)
     val groupState: StateFlow<GroupState?> = _groupState.asStateFlow()
 
+    /** 마지막 STATE 수신 시각(epoch ms)·누적 수 — 진단용 (T24) */
+    private val _groupStateAt = MutableStateFlow<Long?>(null)
+    val groupStateAt: StateFlow<Long?> = _groupStateAt.asStateFlow()
+    private var stateCount = 0
+
     private val _lastCommand = MutableStateFlow<LastCommand?>(null)
     val lastCommand: StateFlow<LastCommand?> = _lastCommand.asStateFlow()
 
@@ -119,7 +124,14 @@ class MqttSessionManager @Inject constructor(
             }
             current != null && topic == current.topics.state && message.envelope.type == MessageTypes.STATE -> {
                 runCatching { DhJson.decodeData<GroupState>(message.envelope).data }
-                    .onSuccess { _groupState.value = it }
+                    .onSuccess { state ->
+                        _groupState.value = state
+                        _groupStateAt.value = message.receivedAtMs
+                        stateCount++
+                        if (stateCount == 1 || stateCount % 15 == 0) {
+                            DhLog.i("group state #$stateCount members=${state.members.size} online=${state.members.count { it.online }} status=${state.members.joinToString(",") { it.status.name }}")
+                        }
+                    }
                     .onFailure { DhLog.w("group state decode failed cause=${it.javaClass.simpleName}") }
             }
             else -> DhLog.d("inbound ignored type=${message.envelope.type}")

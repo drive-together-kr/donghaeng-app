@@ -22,6 +22,8 @@ import java.time.Clock
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -36,6 +38,9 @@ interface MqttPublisher {
      * 비동기 — 브로커 응답(QoS 1 PUBACK)은 기다리지 않고, 실패는 로그로만 남긴다.
      */
     fun <T> publish(topic: String, type: String, data: T, serializer: KSerializer<T>, qos: Int = 1, retain: Boolean = false): Boolean
+
+    /** retained 메시지 삭제(빈 payload, retained). 연결이 없으면 false */
+    fun clearRetained(topic: String): Boolean
 }
 
 /**
@@ -60,6 +65,7 @@ class ServerMqttClient(
 
     private val running = AtomicBoolean(false)
     private val seqs = ConcurrentHashMap<String, AtomicLong>()
+    private val retryExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "mqtt-subscribe-retry").apply { isDaemon = true } }
 
     @Volatile
     private var client: Mqtt5AsyncClient? = null
@@ -121,16 +127,23 @@ class ServerMqttClient(
             }
     }
 
-    private fun subscribeShared(c: Mqtt5AsyncClient) {
+    /**
+     * 공유 구독. 실패(예외 또는 SUBACK 오류 코드 — 서버 재기동 직후 EMQX 의 HTTP 인가 커넥터가 아직 복구되지 않아 0x87 Not authorized 가 오는 경우를 실측)하면
+     * 연결이 살아 있는 동안 2·4·…·30초 간격으로 다시 건다. 구독이 없으면 텔레메트리가 한 건도 안 들어오므로 반드시 성공할 때까지 반복한다.
+     */
+    private fun subscribeShared(c: Mqtt5AsyncClient, attempt: Int = 1) {
         c.subscribeWith()
             .topicFilter(Topics.SERVER_SHARED_VEHICLE_SUB)
             .qos(MqttQos.AT_LEAST_ONCE)
             .send()
             .whenComplete { ack, error ->
-                if (error != null) {
-                    log.warn("mqtt subscribe failed filter={} cause={}", Topics.SERVER_SHARED_VEHICLE_SUB, error.message)
+                val badCodes = ack?.reasonCodes?.filter { it.isError } ?: emptyList()
+                if (error != null || badCodes.isNotEmpty()) {
+                    val delayS = minOf(SUBSCRIBE_RETRY_MAX_S, 2L * attempt)
+                    log.warn("mqtt subscribe failed filter={} attempt={} cause={} — {}s 뒤 재시도", Topics.SERVER_SHARED_VEHICLE_SUB, attempt, error?.message ?: badCodes.toString(), delayS)
+                    retryExecutor.schedule({ if (running.get() && c.state.isConnected) subscribeShared(c, attempt + 1) }, delayS, TimeUnit.SECONDS)
                 } else {
-                    log.info("mqtt subscribed filter={} reason={}", Topics.SERVER_SHARED_VEHICLE_SUB, ack.reasonCodes)
+                    log.info("mqtt subscribed filter={} reason={} attempt={}", Topics.SERVER_SHARED_VEHICLE_SUB, ack.reasonCodes, attempt)
                 }
             }
     }
@@ -179,8 +192,25 @@ class ServerMqttClient(
         return true
     }
 
+    override fun clearRetained(topic: String): Boolean {
+        val c = client
+        if (c == null || !c.state.isConnectedOrReconnect) {
+            log.warn("mqtt clearRetained skipped (not connected) topic={}", topic)
+            return false
+        }
+        c.publishWith()
+            .topic(topic)
+            .qos(MqttQos.AT_MOST_ONCE)
+            .retain(true)
+            .payload(ByteArray(0))
+            .send()
+            .whenComplete { _, error -> if (error != null) log.warn("mqtt clearRetained failed topic={} cause={}", topic, error.message) }
+        return true
+    }
+
     companion object {
         private val log = LoggerFactory.getLogger(ServerMqttClient::class.java)
+        private const val SUBSCRIBE_RETRY_MAX_S = 30L
         private const val SESSION_EXPIRY_S = 300L
     }
 }

@@ -246,6 +246,20 @@ private fun MqttCard(state: DiagnosticsUiState) {
             val session = state.groupSession
             LabelRow(stringResource(R.string.diag_group_session), session?.let { "${TextMasking.maskVehicleId(it.groupId)}  ${it.name}" } ?: stringResource(R.string.diag_group_none))
             LabelRow(stringResource(R.string.diag_last_cmd), state.lastCommand?.let { "${it.type} ${it.groupIdMasked ?: ""}".trim() } ?: "-")
+            val gs = state.groupState
+            val gsAge = state.groupStateAtMs?.let { ts -> "${(System.currentTimeMillis() - ts) / 1000}s 전" } ?: ""
+            LabelRow(
+                stringResource(R.string.diag_group_state),
+                gs?.let { s ->
+                    "$gsAge  멤버 ${s.members.size} / 온라인 ${s.members.count { it.online }}\n" +
+                        s.members.joinToString("\n") { m ->
+                            val speed = m.speedKph?.let { v -> "%.0f km/h".format(v) } ?: "-"
+                            val dist = m.distanceToLeaderM?.let { d -> "${d}m" } ?: "-"
+                            val age = m.ageMs?.let { a -> "${a / 1000}s" } ?: "-"
+                            "${TextMasking.maskNickname(m.nickname)} ${m.status.name} ${if (m.online) "on" else "off"} $speed 선두↔$dist age=$age"
+                        }
+                } ?: "-",
+            )
         }
     }
 }

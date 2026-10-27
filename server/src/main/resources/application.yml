@@ -40,6 +40,13 @@ dh:
     enabled: ${DH_MQTT_ENABLED:true}
   # EMQX ACL 훅(POST /internal/mqtt/acl)의 X-Internal-Token. 비우면 검사하지 않음(로컬). 클라우드에서는 필수.
   internal-token: ${DH_INTERNAL_TOKEN:}
+  # presence(T24): 그룹 state 스냅샷 주기(ms)·오프라인/정차 판정(ms)·도착 반경(m)·Redis 상태 TTL(s)
+  presence:
+    snapshot-interval-ms: ${DH_SNAPSHOT_INTERVAL_MS:2000}
+    offline-after-ms: 60000
+    stopped-after-ms: 60000
+    arrived-radius-m: 150
+    state-ttl-seconds: 600
   jwt:
     # RS256 개인키 (PKCS#8 PEM, 한 줄 `\n` 이스케이프 허용). 비우면 기동 시 개발용 키 생성(WARN, 재시작마다 바뀜).
     private-key-pem: ${DH_JWT_PRIVATE_KEY_PEM:}

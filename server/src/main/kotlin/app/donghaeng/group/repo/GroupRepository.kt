@@ -58,6 +58,10 @@ class GroupRepository(private val jdbc: NamedParameterJdbcTemplate) {
     fun findByIdForUpdate(groupId: String): GroupRecord? =
         jdbc.query("SELECT $COLUMNS FROM travel_group WHERE group_id = :groupId FOR UPDATE", mapOf("groupId" to groupId), ::mapRow).firstOrNull()
 
+    /** 활성 그룹 전부 — presence 2초 스냅샷용(테이블이 작다는 전제, 생성순) */
+    fun findActive(): List<GroupRecord> =
+        jdbc.query("SELECT $COLUMNS FROM travel_group WHERE status = 'ACTIVE' ORDER BY created_at ASC", ::mapRow)
+
     fun findAllByIds(groupIds: Collection<String>): List<GroupRecord> =
         if (groupIds.isEmpty()) emptyList()
         else jdbc.query("SELECT $COLUMNS FROM travel_group WHERE group_id IN (:ids)", mapOf("ids" to groupIds.toSet()), ::mapRow)

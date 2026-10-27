@@ -257,6 +257,13 @@ ACL: 차량 `{vid}`는 자신의 `telemetry/event/ack/presence`에만 publish, �
   "payload": { "kind": "FUEL", "pct": 12 }
 }
 ```
+**STATE 판정 규칙 (presence, T24 구현):** 서버는 2초마다(`dh.presence.snapshot-interval-ms`) 활성 그룹마다 스냅샷을 **retained·QoS 0** 으로 발행하고, 그룹이 끝나면 빈 payload(retained) 로 지운다.
+- `online`: `…/presence` 토픽 값(접속 시 `{"online":true}`, LWT `{"online":false}`)이 있으면 그 값, 없으면 "15초 안에 텔레메트리가 왔는가". 텔레메트리 수신도 online 으로 친다(retained presence 를 놓친 경우 대비).
+- `ageMs`: 마지막 텔레메트리 봉투 `ts` 기준 경과. 위치 없으면 null. `eta`·`energy` 는 차량이 마지막으로 보낸 값을 유지한다(변화 시에만 오므로).
+- `status`: 위치 없음·`online=false`·`ageMs > 60s` → `OFFLINE`; 목적지 반경 150 m 안 + 속도 < 3 km/h → `ARRIVED`; 속도 < 1 km/h 가 60초 이상 지속 → `STOPPED`; 그 외 `DRIVING`. (판정 기준은 `dh.presence.*`.)
+- `distanceToLeaderM`: 선두차 자신은 0, 선두차·멤버 위치가 둘 다 있을 때 Haversine, 아니면 null.
+- `GET /groups/{id}` 의 `snapshot` 도 같은 규칙으로 요청 시점에 만든다(활성 그룹만, 끝난 그룹은 null).
+
 그룹 이벤트 봉투의 `type`은 공통값 **`EVENT`**(`MessageTypes.EVENT`)이고, 구체 종류는 `data.type`(문자열, `GroupEventType` 이름)으로 구분한다. STATE 봉투의 `type`은 `STATE`, ACK는 `ACK`, 차량 EVENT·CMD 봉투의 `type`은 각 표의 type 값을 그대로 쓴다.
 
 서버 생성 그룹 이벤트 type: 위 차량 이벤트 전부 + `MEMBER_JOINED`, `MEMBER_LEFT`, `LEADER_CHANGED`, `MEMBER_OFFLINE`, `REST_STOP_PROPOSAL`, `REST_STOP_VOTE_RESULT`, `DEVIATION`, `PASSENGER_MESSAGE`, `GROUP_ENDED`

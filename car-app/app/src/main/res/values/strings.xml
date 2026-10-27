@@ -121,6 +121,7 @@
     <string name="drive_notification_text_named">%1$s 그룹과 위치·상태를 공유하고 있어요</string>
     <string name="diag_group_session">활성 그룹</string>
     <string name="diag_group_none">없음 (GROUP_JOINED 대기)</string>
+    <string name="diag_group_state">그룹 STATE (T24)</string>
     <string name="diag_last_cmd">마지막 cmd</string>
     <string name="diag_label_adapter">어댑터</string>
     <string name="diag_label_debug">디버그</string>

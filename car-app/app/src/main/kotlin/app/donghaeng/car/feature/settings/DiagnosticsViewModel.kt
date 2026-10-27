@@ -15,6 +15,7 @@ import app.donghaeng.car.core.network.ServerConfig
 import app.donghaeng.car.core.network.mqtt.MqttGateway
 import app.donghaeng.car.core.network.mqtt.MqttStatus
 import app.donghaeng.car.domain.session.GroupSession
+import app.donghaeng.protocol.GroupState
 import app.donghaeng.car.domain.session.LastCommand
 import app.donghaeng.car.domain.session.MqttSessionManager
 import app.donghaeng.car.domain.capability.CapabilityReport
@@ -57,6 +58,9 @@ data class DiagnosticsUiState(
     /** 활성 그룹(cmd GROUP_JOINED 로 받은 것). null = 없음 */
     val groupSession: GroupSession? = null,
     val lastCommand: LastCommand? = null,
+    /** T24 마지막 그룹 STATE 스냅샷과 수신 시각 */
+    val groupState: GroupState? = null,
+    val groupStateAtMs: Long? = null,
     /** T20 내비 콜백 요약(좌표 마스킹) */
     val navi: NaviMonitorState = NaviMonitorState(),
     /** 진단 화면에서 보낸 마지막 내비 요청과 결과 */
@@ -75,6 +79,8 @@ enum class NaviDebugAction { REQUEST_ROUTE, SHOW_NAVIGATION, QUERY_DESTINATION }
 
 /** 진단 화면의 위치 확인용 동작(T21) — 권한 요청은 Route 의 런처가, 재탐색은 ViewModel 이 처리 */
 enum class LocationDebugAction { REQUEST_PERMISSION, RESTART }
+
+private data class SessionSide(val session: GroupSession?, val lastCommand: LastCommand?, val groupState: GroupState?, val groupStateAt: Long?)
 
 private data class SideState(val mqtt: MqttStatus, val navi: NaviMonitorState, val naviAction: String?, val location: LocationFeedState, val vehicle: VehicleSignalState, val telemetry: TelemetryState, val serviceRunning: Boolean)
 
@@ -100,14 +106,16 @@ class DiagnosticsViewModel @Inject constructor(
         viewModelScope.launch { tokenStore.load() }
     }
 
-    val uiState: StateFlow<DiagnosticsUiState> = combine(reporter.report, sdkProbe.report, tokenStore.state, combine(combine(mqtt.status, naviMonitor.state, naviActionResult) { m, n, a -> Triple(m, n, a) }, combine(locationFeed.state, vehicleSignals.state, telemetryCollector.state, driveSessionController.serviceRunning) { l, v, t, r -> SideState(MqttStatus(), NaviMonitorState(), null, l, v, t, r) }) { (m, n, a), side -> side.copy(mqtt = m, navi = n, naviAction = a) }, combine(sessionManager.session, sessionManager.lastCommand) { s, c -> s to c }) { report, probe, tokens, side, (session, lastCmd) ->
+    val uiState: StateFlow<DiagnosticsUiState> = combine(reporter.report, sdkProbe.report, tokenStore.state, combine(combine(mqtt.status, naviMonitor.state, naviActionResult) { m, n, a -> Triple(m, n, a) }, combine(locationFeed.state, vehicleSignals.state, telemetryCollector.state, driveSessionController.serviceRunning) { l, v, t, r -> SideState(MqttStatus(), NaviMonitorState(), null, l, v, t, r) }) { (m, n, a), side -> side.copy(mqtt = m, navi = n, naviAction = a) }, combine(sessionManager.session, sessionManager.lastCommand, sessionManager.groupState, sessionManager.groupStateAt) { s, c, g, t -> SessionSide(s, c, g, t) }) { report, probe, tokens, side, sess ->
         DiagnosticsUiState(
             report = report,
             probe = probe,
             pairedVehicleIdMasked = (tokens as? TokenStoreState.Present)?.let { TextMasking.maskVehicleId(it.credentials.vehicleId) },
             mqtt = side.mqtt,
-            groupSession = session,
-            lastCommand = lastCmd,
+            groupSession = sess.session,
+            lastCommand = sess.lastCommand,
+            groupState = sess.groupState,
+            groupStateAtMs = sess.groupStateAt,
             navi = side.navi,
             naviActionResult = side.naviAction,
             location = side.location,

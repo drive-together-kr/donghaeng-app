@@ -73,7 +73,7 @@ curl localhost:8080/v1/me/vehicles -H "Authorization: Bearer <accessToken>"
 | `identity` | dev 로그인·`/auth/exchange`(`ExternalTokenVerifier`)·refresh 회전, RS256 JWT·JWKS, 디바이스 코드 페어링(`DeviceAuthService`), 차량 등록(`VehicleRegistry`)·내 차(`VehicleDirectory`) — 하위 `jwt/`, `web/`, `repo/` | T10 완료 |
 | `group` | 그룹 생성·초대(재발급)·합류·조회·내 그룹·나가기·종료·방장 위임·동승자 메시지(docs/03 §2). `GroupService`(잠금 순서: 차량 advisory → 그룹 행 → 초대 행), `GroupMembershipCache`(Redis 소속 키, 커밋 뒤), `VehicleCommandPort`(cmd 출구 — T15 가 MQTT 로 구현), identity 는 `IdentityApi` 로만 호출 — 하위 `web/`, `repo/` | T14 완료 |
 | `event` | 그룹 이벤트 저장·조회(`GroupEventSink`/`GroupEventReader` → `DbGroupEventStore`, 커밋 뒤 `GroupEventRecorded` Spring 이벤트), `SpeechComposer` + `Josa`(조사). 차량 이벤트 정규화·중복 억제·팬아웃은 T26 | T14 일부 |
-| `presence` | 텔레메트리 수신 → Redis 상태, 스냅샷 주기 발행 | — |
+| `presence` | `TelemetryIngestor`(TELEMETRY → Redis `veh:{vid}:state`·`grp:{gid}:geo`), `PresenceIngestor`(봉투 없는 presence 토픽 → `veh:{vid}:online`), `SnapshotBuilder`(명단 + 상태 → `GroupState`, 판정 규칙 docs/03 §5.3: online/OFFLINE 60s/STOPPED 60s/ARRIVED 150 m/선두 거리), `SnapshotPublisher`(`@Scheduled` 2s retained QoS 0, GROUP_ENDED 시 retained 삭제), `PresenceApi.snapshotOf`(`GET /groups/{id}` snapshot). 설정 `dh.presence.*`. 명단은 group 의 `GroupMembershipApi.rosterOf/activeRosters` | T24 완료 |
 | `routesync` | 선두 경로 변경 → 멤버별 따라가기 제안, ACK 집계 | — |
 | `insight` | 규칙 엔진(휴게소 제안·이탈·오프라인·연속 주행) | — |
 | `poi` | 휴게소 시드·조회 | — |
@@ -84,6 +84,10 @@ curl localhost:8080/v1/me/vehicles -H "Authorization: Bearer <accessToken>"
 `common/` 구성: `config/DhProperties`(`dh.*` 설정), `config/HttpJsonConfig`(kotlinx 컨버터), `config/ClockConfig`, `api/ApiError`(docs/03 오류 형식 + `ApiException` + 전역 예외 처리), `id/Ids`(접두사 ULID), `security/SecurityConfig`(무상태·JWT 리소스 서버·역할 규칙·JSON 401/403), `security/SecureTokens`(불투명 토큰 난수·SHA-256 — refresh·디바이스 코드·초대 토큰 공용), `jdbc/JdbcSupport`(timestamptz ↔ Instant), `tx/afterCommit`(커밋 뒤 부수 효과 — Redis·MQTT), `web/LandingController`(`/pair`, `/j/{token}` 웹 폴백). JWKS 는 `identity/web/JwksController` 로 옮겼다.
 
 패키지 간 호출은 `XxxApi` 인터페이스로만 한다. 메시지·REST 스키마는 `protocol/` 에만 정의한다 (합성 빌드로 의존).
+
+## 운영 메모 — 서버 재기동과 EMQX
+- 서버 컨테이너를 재시작하면 EMQX 의 HTTP 인가 커넥터(`server:8080`)가 잠시 끊겨 그 사이의 인가 요청이 실패한다(`http_server_query_failed` → 거부, 10초 캐시). 차량의 텔레메트리 publish 몇 건이 거부되고, **서버 자신의 공유 구독도 0x87 로 거부될 수 있다** → `ServerMqttClient` 는 SUBACK 오류 코드를 보고 2·4·…·30초 간격으로 구독을 다시 건다(2026-10-27 실측: 재시도 없던 버전은 구독 없이 떠서 텔레메트리가 한 건도 안 들어왔다).
+- 이전 인스턴스의 MQTT 세션(`srv_…`, 만료 300초)이 남아 있는 동안은 공유 구독 메시지가 죽은 세션으로도 분배된다 → 재배포 직후 최대 5분간 일부 텔레메트리가 유실될 수 있다. 급하면 EMQX API `DELETE /api/v5/clients/{clientid}` 로 지운다.
 
 ## 데이터베이스
 

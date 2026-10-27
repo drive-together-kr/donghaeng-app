@@ -23,6 +23,14 @@ interface MqttInboundHandler {
     fun handle(vehicleId: String, envelope: Envelope<JsonElement>)
 }
 
+/**
+ * `dh/v1/vehicle/{vid}/presence` — 봉투 없이 `{"online":…}` 만 오는 토픽(브로커 LWT, protocol `Presence`).
+ * [TopicRouter] 가 따로 해석해 전달한다. presence 모듈(T24)이 구현한다.
+ */
+interface PresenceInboundHandler {
+    fun onPresence(vehicleId: String, online: Boolean, tsMs: Long)
+}
+
 /** T15 기본 구현 — 종류별 수신을 로그로만 남긴다(좌표·본문은 찍지 않는다). 담당 모듈이 생기면 그쪽 구현이 함께 호출된다 */
 @Component
 class LoggingInboundHandlers : MqttInboundHandler {

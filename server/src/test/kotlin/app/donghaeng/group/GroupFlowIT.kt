@@ -275,7 +275,8 @@ class GroupFlowIT {
         assertEquals("ACTIVE", byUser.status)
         assertEquals(DEST.copy(address = "광주광역시 …"), byUser.destination)
         assertEquals(3, byUser.members.size)
-        assertNull(byUser.snapshot)
+        assertNotNull(byUser.snapshot, "presence(T24) fills the snapshot for active groups")   // 텔레메트리 전이라 전원 OFFLINE
+        assertTrue(byUser.snapshot!!.members.all { it.status == app.donghaeng.protocol.MemberStatus.OFFLINE })
         val joins = byUser.recentEvents.ofType(GroupEventType.MEMBER_JOINED)
         assertEquals(listOf(c.vehicleId, b.vehicleId), joins.map { it.sourceVehicleId }, "newest first")
         assertEquals("삼촌 차가 그룹에 들어왔어요.", joins[0].speech)
