@@ -27,9 +27,21 @@
 companion 모듈은 제공자와 무관하게 아래 교환 한 가지 경로만 쓴다(호스트 공식 앱의 OAuth 2.0 access token → 동행 JWT).
 `POST /auth/exchange` `{ "provider": "dev" | "bluelink" | "myhyundai" | "kia_connect" | "genesis_connected", "accessToken": "<호스트 앱 토큰>" }` → 위와 같은 토큰 쌍.
 `dev` 의 `accessToken` 은 `/auth/login` 응답의 `accessToken`(JWT) 을 그대로 넘긴다 — 서버 `DevTokenVerifier` 가 이를 인정한다. 모듈은 토큰 형식을 해석하지 않는다.
-서버는 provider 별 `ExternalTokenVerifier.verify(provider, token) → ExternalIdentity(provider, sub, displayName)` 로 검증한다(인터페이스만 두고 MVP 구현은 `DevTokenVerifier`; Bluelink/MyHyundai/KiaConnect/GenesisConnected 는 구현 자리). 실제 IdP 연동은 OEM 협의 대상.
+서버는 provider 별 `ExternalTokenVerifier.verify(provider, token) → ExternalIdentity(provider, sub, displayName)` 로 검증한다(인터페이스만 두고 MVP 구현은 `DevTokenVerifier`; Bluelink/MyHyundai/KiaConnect/GenesisConnected 는 `NotSupportedTokenVerifier` 자리). 실제 IdP 연동은 OEM 협의 대상.
 
-`POST /auth/refresh` `{ "refreshToken": "..." }` → 새 토큰 쌍
+| `/auth/exchange` 상태 | 조건 |
+|---|---|
+| 200 `TokenResponse` | 검증 성공. `(provider, sub)` 로 `app_user` 를 찾거나 만든다(표시 이름은 최신값으로 갱신) |
+| 400 `VALIDATION_FAILED` | 알 수 없는 `provider` |
+| 401 `INVALID_TOKEN` | `accessToken` 이 비었거나 검증 실패 (`dev`: 서명·만료·발급자 불일치, `typ ≠ user`, 사용자 없음) |
+| 501 `PROVIDER_NOT_SUPPORTED` | `bluelink` · `myhyundai` · `kia_connect` · `genesis_connected` (MVP 미구현) |
+
+`POST /auth/login` 은 `provider` 가 `dev` 일 때만 200 (그 외 400 `VALIDATION_FAILED`). `provider_sub` 는 소문자 이메일 — 대소문자가 달라도 같은 사용자다.
+
+`POST /auth/refresh` `{ "refreshToken": "..." }` → 200 새 토큰 쌍. **회전**: 이전 refresh 는 즉시 폐기되고 재사용하면 401. 무효·폐기·만료는 모두 401 `INVALID_TOKEN`(구분하지 않음).
+refresh 토큰은 불투명 문자열(랜덤 32바이트 Base62, 30일, 서버엔 SHA-256 해시만). 차량 refresh 토큰이면 `accessToken` 은 **차량 토큰**이고 `user` 는 소유자다(차량 앱도 같은 엔드포인트를 쓴다). 페어링이 해제된 차량의 refresh 는 거부.
+
+**JWT 형식 (RS256)**: 헤더 `kid`, `iss = "donghaeng"`. 사용자 토큰 `sub = usr_…`, `typ = "user"`, 1시간. 차량 토큰 `sub = veh_…`, `typ = "vehicle"`, `owner = usr_…`, 24시간. 공개키는 `GET /.well-known/jwks.json`(JWK Set — `kty RSA`, `use sig`, `alg RS256`, `kid`, `n`, `e`; EMQX 도 같은 키로 검증). 보호된 API 에 토큰이 없으면 401 `UNAUTHORIZED`, 무효하면 401 `INVALID_TOKEN`, 역할(사용자/차량)이 맞지 않으면 403 `FORBIDDEN`.
 
 ### 1.2 차량 페어링 — Device Authorization Grant (RFC 8628 변형)
 공식 앱 계정에 연결된 차량이 없을 때의 **대체 수단**이다. 계정에 차량이 있으면(실서비스: `VehicleDirectory` 가 OEM 차량 API 조회) 페어링 없이 `GET /me/vehicles` 로 바로 쓴다. MVP(dev 계정)는 이 흐름으로 에뮬레이터 차량을 등록한다.
@@ -62,12 +74,34 @@ companion 모듈은 제공자와 무관하게 아래 교환 한 가지 경로만
 ```
 `POST /device/approve` (companion 모듈 `pairVehicle`, 사용자 JWT — 대체 수단)
 ```json
-{ "userCode": "KQ74MZ", "nickname": "홍길동 차" }   // → 204
+// req — userCode 는 대소문자·하이픈·공백을 무시한다 ("kq7-4mz" 도 됨)
+{ "userCode": "KQ74MZ", "nickname": "홍길동 차" }
+// res 200 — 승인 시점에 차량 행이 만들어진다(또는 호출자에게 이전된다)
+{ "vehicleId": "veh_01H...", "nickname": "홍길동 차", "ownerId": "usr_01H..." }
 ```
+승인 규칙: `car_info_id_hash` 가 처음이면 새 차량(호출자에게 활성 대표 차량이 없으면 `isPrimary = true`). 이미 있으면 **호출자에게 소유권 이전** — 닉네임 갱신, 해제 상태 복원, 이전 소유자가 쥔 차량 refresh 토큰 폐기(이미 발급된 차량 access token 은 만료까지 유효).
 
-`GET /me/vehicles` (폰) → `[{ vehicleId, nickname, brand, model, isPrimary }]`
-`PATCH /me/vehicles/{vehicleId}` `{ nickname?, isPrimary? }`
-`DELETE /me/vehicles/{vehicleId}` → 페어링 해제(차량 토큰 폐기)
+| 엔드포인트 | 상태 | 조건 |
+|---|---|---|
+| `POST /device/token` | 200 `DeviceTokenResponse` | APPROVED → 차량 토큰·refresh 발급 후 CONSUMED (한 번만) |
+| | 404 `CODE_NOT_FOUND` | 없는 `deviceCode` |
+| | 429 `SLOW_DOWN` | 마지막으로 받아 준 폴링 뒤 `interval`(3s) 안에 다시 폴링 (Redis `devcode:poll:{deviceCode}`, 15분 TTL) |
+| | 410 `CODE_EXPIRED` | `expiresIn`(600s) 지남, 또는 승인 뒤 폰에서 그 차량이 해제됨 |
+| | 428 `AUTHORIZATION_PENDING` | 아직 승인 전 |
+| | 409 `ALREADY_APPROVED` | 이미 토큰을 받아 간 코드(CONSUMED) |
+| `POST /device/approve` | 200 `VehicleSummary` | 승인 완료 |
+| | 401 / 403 | 사용자 토큰 없음·무효 / 차량 토큰으로 호출 |
+| | 400 `VALIDATION_FAILED` | `userCode` 비었음, `nickname` 이 1~30자가 아님 |
+| | 404 `CODE_NOT_FOUND` | 없는(또는 형식이 틀린) `userCode` |
+| | 410 `CODE_EXPIRED` | 만료 |
+| | 409 `ALREADY_APPROVED` | 이미 승인·소비된 코드 |
+
+검사 순서: `/device/token` 은 404 → 429 → 410 → 상태별(428/200/409), `/device/approve` 는 인증(401/403) → 400 → 404 → 410 → 409.
+
+### 1.3 내 차 (사용자 JWT)
+`GET /me/vehicles` → 200 `[{ vehicleId, nickname, brand, model, isPrimary }]` — `VehicleDirectory` 조회(MVP: 동행 DB 의 해제되지 않은 차량), 대표 차량이 먼저. 없으면 `[]`.
+`PATCH /me/vehicles/{vehicleId}` `{ nickname?, isPrimary? }` → 200 `MyVehicleDto`. 둘 다 없으면 400. `isPrimary: true` 면 같은 사용자의 다른 대표 차량은 자동 해제된다(사용자당 하나 — DB 부분 유니크 인덱스). 내 차가 아니거나 해제된 차는 404 `NOT_FOUND`.
+`DELETE /me/vehicles/{vehicleId}` → 204 페어링 해제: `vehicle.revoked_at` 기록 + 그 차량의 refresh 토큰 폐기. 이미 발급된 차량 access token 은 만료(24h)까지 유효하다(T15 의 `TOKEN_REVOKED` cmd 로 보완). 같은 차를 다시 페어링하면 같은 `vehicleId` 가 복원된다. 없으면 404.
 
 ## 2. 그룹 (group)
 

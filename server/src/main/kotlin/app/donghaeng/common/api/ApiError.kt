@@ -4,6 +4,7 @@ import jakarta.validation.ConstraintViolationException
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
+import org.springframework.http.converter.HttpMessageNotReadableException
 import org.springframework.security.access.AccessDeniedException
 import org.springframework.web.ErrorResponse
 import org.springframework.web.bind.MethodArgumentNotValidException
@@ -76,6 +77,11 @@ class GlobalExceptionHandler {
         val detail = e.allErrors.joinToString(", ") { it.defaultMessage ?: it.toString() }
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiError.of("VALIDATION_FAILED", validationMessage(detail)))
     }
+
+    /** 본문 JSON 이 깨졌거나 필수 필드가 빠짐 (kotlinx MissingFieldException 포함). 본문 원문은 로그·응답에 싣지 않는다. */
+    @ExceptionHandler(HttpMessageNotReadableException::class)
+    fun handleNotReadable(e: HttpMessageNotReadableException): ResponseEntity<ApiError> =
+        ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiError.of("VALIDATION_FAILED", "요청 본문을 읽을 수 없어요."))
 
     private fun validationMessage(detail: String): String =
         if (detail.isEmpty()) "요청 값이 올바르지 않아요." else "요청 값이 올바르지 않아요. ($detail)"

@@ -1,0 +1,13 @@
+# server/Dockerfile 전용 컨텍스트 필터 (BuildKit 은 <Dockerfile 이름>.dockerignore 를 컨텍스트 루트의 .dockerignore 대신 쓴다).
+# 컨텍스트는 저장소 루트 — 이미지 빌드에 필요한 것은 server/ 와 protocol/ 뿐이다.
+*
+!server
+!protocol
+# 로컬 빌드 산출물·IDE 파일은 두 디렉터리 안에서도 제외
+**/build
+**/.gradle
+**/.kotlin
+**/.idea
+**/out
+**/*.iml
+**/*.log

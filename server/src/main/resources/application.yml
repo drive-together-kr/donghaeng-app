@@ -36,3 +36,8 @@ dh:
   mqtt:
     uri: ${DH_MQTT_URI:tcp://localhost:1883}
     public-uri: ${DH_MQTT_PUBLIC_URI:tcp://10.0.2.2:1883}
+  jwt:
+    # RS256 개인키 (PKCS#8 PEM, 한 줄 `\n` 이스케이프 허용). 비우면 기동 시 개발용 키 생성(WARN, 재시작마다 바뀜).
+    private-key-pem: ${DH_JWT_PRIVATE_KEY_PEM:}
+  # CarInfo 차량 ID 해시 salt (docs/04 vehicle.car_info_id_hash). 운영에서는 반드시 바꾸고, 바꾼 뒤에는 유지한다.
+  car-id-salt: ${DH_CAR_ID_SALT:dev-salt-change-me}

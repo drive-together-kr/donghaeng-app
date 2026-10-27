@@ -1,6 +1,8 @@
 plugins {
     kotlin("jvm") version "2.0.21"
     kotlin("plugin.spring") version "2.0.21"
+    // protocol 의 @Serializable DTO 를 Spring MVC 의 KotlinSerializationJsonHttpMessageConverter 로 주고받는다 (CLAUDE.md 규칙 7)
+    kotlin("plugin.serialization") version "2.0.21"
     id("org.springframework.boot") version "3.3.13"
     id("io.spring.dependency-management") version "1.1.7"
 }
@@ -26,10 +28,15 @@ kotlin {
 }
 
 dependencies {
+    // 공용 스키마 (settings.gradle.kts 의 includeBuild("../protocol") 로 치환된다)
+    implementation("app.donghaeng:protocol")
+
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-security")
+    // JWT(RS256) 검증 — NimbusJwtDecoder, nimbus-jose-jwt(서명·JWKS)
+    implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
     implementation("org.springframework.boot:spring-boot-starter-data-jdbc")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
     implementation("org.flywaydb:flyway-core")

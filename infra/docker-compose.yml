@@ -86,7 +86,10 @@ services:
   # 이미지는 ../server (server/Dockerfile) 에서 빌드한다: docker compose build server
   server:
     build:
-      context: ../server
+      # 컨텍스트는 저장소 루트: server/settings.gradle.kts 가 includeBuild("../protocol") 로 공용 스키마를 합성 빌드하므로
+      # protocol/ 도 이미지 빌드에 들어가야 한다. 컨텍스트 필터는 server/Dockerfile.dockerignore (BuildKit).
+      context: ..
+      dockerfile: server/Dockerfile
     image: donghaeng/server:dev
     ports:
       - "8080:8080"
@@ -103,6 +106,8 @@ services:
       DH_MQTT_PUBLIC_URI: ${DH_MQTT_PUBLIC_URI:-tcp://10.0.2.2:1883}
       # RS256 서명 키 (T10 에서 사용). 값은 .env 에만 둔다.
       DH_JWT_PRIVATE_KEY_PEM: ${DH_JWT_PRIVATE_KEY_PEM:-}
+      # CarInfo 차량 ID 해시 salt (docs/04 vehicle.car_info_id_hash). 운영에서는 반드시 바꾸고, 바꾼 뒤에는 유지한다.
+      DH_CAR_ID_SALT: ${DH_CAR_ID_SALT:-dev-salt-change-me}
     depends_on:
       postgres:
         condition: service_healthy
