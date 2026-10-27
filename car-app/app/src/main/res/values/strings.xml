@@ -73,6 +73,16 @@
     <string name="diag_pending">점검 중…</string>
     <string name="diag_section_probe">Pleos SDK 점검</string>
     <string name="diag_section_build">빌드 정보</string>
+    <string name="diag_section_mqtt">MQTT 연결 (T16)</string>
+    <string name="diag_mqtt_state">상태</string>
+    <string name="diag_mqtt_broker">브로커</string>
+    <string name="diag_mqtt_reconnects">재연결 횟수</string>
+    <string name="diag_mqtt_traffic">수신/발신</string>
+    <string name="diag_mqtt_subscribed">구독 토픽</string>
+    <string name="diag_mqtt_last_error">마지막 오류</string>
+    <string name="diag_group_session">활성 그룹</string>
+    <string name="diag_group_none">없음 (GROUP_JOINED 대기)</string>
+    <string name="diag_last_cmd">마지막 cmd</string>
     <string name="diag_label_adapter">어댑터</string>
     <string name="diag_label_debug">디버그</string>
     <string name="diag_label_android">Android API</string>

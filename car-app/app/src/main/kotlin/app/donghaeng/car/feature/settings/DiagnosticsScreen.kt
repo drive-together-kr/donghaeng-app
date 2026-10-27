@@ -30,6 +30,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.donghaeng.car.R
 import app.donghaeng.car.adapter.sdk.ProbeLine
+import app.donghaeng.car.core.common.TextMasking
 import app.donghaeng.car.domain.capability.CapabilityReport
 import app.donghaeng.car.domain.model.CapabilityDomain
 import app.donghaeng.car.domain.model.CapabilityEntry
@@ -70,6 +71,7 @@ fun DiagnosticsScreen(state: DiagnosticsUiState, onBack: () -> Unit) {
             VehicleCard(state)
             CapabilityCard(state.report?.capabilities)
             ProbeCard(state.probe)
+            MqttCard(state)
             BuildCard(state)
         }
     }
@@ -201,6 +203,31 @@ private fun BuildCard(state: DiagnosticsUiState) {
         }
     }
 }
+
+/** T16 — MQTT 연결 상태·그룹 세션·마지막 cmd. 브로커 재시작 뒤 reconnects 가 늘고 state 가 CONNECTED 로 돌아오면 자동 복구가 된 것 */
+@Composable
+private fun MqttCard(state: DiagnosticsUiState) {
+    Card {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(stringResource(R.string.diag_section_mqtt), style = MaterialTheme.typography.titleMedium)
+            HorizontalDivider()
+            val m = state.mqtt
+            LabelRow(stringResource(R.string.diag_mqtt_state), m.state.name + if (m.tls) "  (TLS)" else "")
+            LabelRow(stringResource(R.string.diag_mqtt_broker), m.brokerUri ?: "-")
+            LabelRow(stringResource(R.string.diag_mqtt_reconnects), "${m.reconnects}")
+            LabelRow(stringResource(R.string.diag_mqtt_traffic), "in ${m.inboundCount} / out ${m.outboundCount}")
+            LabelRow(stringResource(R.string.diag_mqtt_subscribed), if (m.subscribed.isEmpty()) "-" else m.subscribed.joinToString(separator = "\n") { topic -> maskTopic(topic) })
+            LabelRow(stringResource(R.string.diag_mqtt_last_error), m.lastError ?: "-")
+            val session = state.groupSession
+            LabelRow(stringResource(R.string.diag_group_session), session?.let { "${TextMasking.maskVehicleId(it.groupId)}  ${it.name}" } ?: stringResource(R.string.diag_group_none))
+            LabelRow(stringResource(R.string.diag_last_cmd), state.lastCommand?.let { "${it.type} ${it.groupIdMasked ?: ""}".trim() } ?: "-")
+        }
+    }
+}
+
+/** 토픽 속 `veh_…`/`grp_…` 만 마스킹 */
+private fun maskTopic(topic: String): String =
+    topic.split('/').joinToString("/") { seg -> if (seg.startsWith("veh_") || seg.startsWith("grp_")) TextMasking.maskVehicleId(seg) else seg }
 
 @Composable
 private fun LabelRow(label: String, value: String) {

@@ -53,7 +53,9 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 | `DongHaengApp`, `MainActivity` | `@HiltAndroidApp`(시작 로그 `car app started …`, `SdkProbe` + `CapabilityReporter` 1회 실행), 단일 액티비티 Compose | T04/T11 |
 | `ui.theme`, `ui.navigation`, `ui.components` | Material3 테마(동적 색 끔), `DhNavHost`/`DhRoutes`(home·pairing·settings·diagnostics …), 자리표시자 화면 | T04 |
 | `core.common` | `DhLog`(태그 `DongHaeng`, capability 전용 `DH_CAP`), `CoordinateMasking`/`TextMasking`(규칙 8, `maskVehicleId`), `TokenStore`/`EncryptedTokenStore`(security-crypto)/`InMemoryTokenStore`, `VehicleIdFallback`(설치별 ID), `DrivingStateMonitor`(T29 자리) | T04/T12 |
-| `core.network` | `ServerConfig`(BuildConfig 주소), `IdentityApi`(Retrofit 2.11 + kotlinx-serialization, `/v1/device/code`·`/token`), `ApiResult`/`safeApiCall`(428/429/410/404 분기), `NetworkModule`(OkHttp BASIC 로그는 debug 만, Authorization 가림) → MqttGateway(T16) | T12 |
+| `core.network` | `ServerConfig`(BuildConfig 주소), `IdentityApi`(Retrofit 2.11 + kotlinx-serialization, `/v1/device/code`·`/token`), `ApiResult`/`safeApiCall`(428/429/410/404 분기), `NetworkModule`(OkHttp BASIC 로그는 debug 만, Authorization 가림) | T12 |
+| `core.network.mqtt` | `MqttGateway`(인터페이스: connect/disconnect/subscribe/publish, `status`·`inbound` Flow) + `HiveMqttGateway`(HiveMQ MQTT 5 — username/clientId = vehicleId, password = 차량 JWT, 자동 재연결 1~30s 지수 백오프·재연결 시 최신 토큰, 연결될 때마다 구독 복구, LWT `presence {"online":false}` retained, 접속 시 `online:true`) + `InMemoryMqttGateway`(테스트). `MqttUriPolicy`: `ssl://`→TLS(8883), 서버가 https 인데 `tcp://` 면 접속 거부 | T16 |
+| `domain.session` | `MqttSessionManager`(페어링 있으면 접속 + 자기 `cmd` 구독, cmd `GROUP_JOINED`→`GroupSessionStore` 저장 + 그룹 `state/event` 구독, `GROUP_ENDED`→정리, `TOKEN_REVOKED`→자격 증명 삭제; `groupEvents`/`groupState`/`lastCommand` 노출), `GroupSessionStore`(DataStore `group_session` / InMemory) | T16 |
 | `domain.model` | `Fix`, `Place`(= protocol `Place` typealias), `Gear`, `TurnSignalState`, `CapabilityDomain`/`CapabilityEntry`/`VehicleCapabilities`, `NaviEvent`, `RouteState`, `WaypointIndex`, `Priority` | T04/T11 |
 | `domain.capability` | `CapabilityReporter` — 앱 시작 시 `vehicleId()`·`capabilities()` 1회 → `DH_CAP` 로그 + 진단 화면 | T11 |
 | `domain.pairing` | `PairingRepository` — device/code·token 호출, TokenStore 저장, 차량 ID 출처(CAR_INFO / INSTALL_ID) | T12 |
@@ -137,6 +139,18 @@ I DongHaeng: token store: saved vehicleId=veh_… token=eyJh…(len=…)
 서버가 아직 `/v1/device/code` 를 제공하지 않으면 `pairing state=ERROR reason=SERVER retryable=true detail=HTTP 404 NOT_FOUND` 와 함께
 오류 화면("다시 시도")이 뜬다. 설정 → **연결 해제** 가 TokenStore 를 비워 홈이 '연결 안 됨' 으로 돌아간다(반복 시연용).
 토큰 저장소: `androidx.security:security-crypto:1.0.0` EncryptedSharedPreferences(`dh_tokens`), Keystore 실패 시 메모리 전용 폴백.
+
+### T16 — MQTT (`adb logcat -s DongHaeng`)
+페어링돼 있으면 앱이 뜨자마자 `MqttSessionManager` 가 브로커에 붙는다. 기대 로그:
+```
+mqtt session manager started
+mqtt connected broker=10.0.2.2:1883 tls=false vid=veh_…** reconnect=false
+mqtt connack reason=SUCCESS sessionPresent=false
+mqtt subscribed topic=dh/v1/vehicle/veh_…**/cmd
+```
+- 브로커 재시작(`cd infra && docker compose restart emqx`) 뒤 `mqtt disconnected source=SERVER …` → 수 초 안에 `mqtt connected … reconnect=true` + `mqtt subscribed …` 가 다시 찍히면 자동 복구 OK. 설정 → 진단 화면의 **MQTT 연결** 카드에서 상태/재연결 횟수/구독 토픽/마지막 cmd 를 그대로 볼 수 있다.
+- 서버 재시작 뒤 `CONNACK … NOT_AUTHORIZED` 가 반복되면: EMQX 가 JWKS 를 다시 받을 때까지(최대 30초) 정상이며, 계속되면 토큰이 서버의 새 서명 키와 맞지 않는 것 — `infra/.env` 에 `DH_JWT_PRIVATE_KEY_PEM` 을 고정하고 차량을 다시 페어링한다.
+- TLS: `-PdhMqttPublicUri=ssl://…:8883` 또는 서버 응답 `mqtt.uri` 가 `ssl://` 이면 시스템 신뢰 저장소로 TLS 접속(`tls=true`). 서버가 https 인데 브로커가 `tcp://` 면 `mqtt refused: 서버가 https 이므로 브로커도 ssl:// 이어야 해요` 를 남기고 붙지 않는다(`MqttUriPolicyTest`).
 
 ### Virtual Console (차량 상태 조작, docs/09 §1)
 
