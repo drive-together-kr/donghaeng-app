@@ -12,6 +12,8 @@ import app.donghaeng.car.domain.navi.NaviEventMonitor
 import app.donghaeng.car.domain.session.MqttSessionManager
 import app.donghaeng.car.domain.telemetry.TelemetryCollector
 import app.donghaeng.car.domain.vehicle.VehicleSignals
+import app.donghaeng.car.domain.voice.VoiceAnnouncer
+import app.donghaeng.car.adapter.voice.VoiceAdapter
 import app.donghaeng.car.service.DriveSessionController
 import app.donghaeng.protocol.MessageTypes
 import kotlinx.serialization.json.JsonObject
@@ -55,6 +57,12 @@ object SignalsModule {
     @Provides
     @Singleton
     fun provideMyFixSource(feed: LocationFeed): MyFixSource = feed
+
+    /** T27: 그룹 이벤트 → 음성 큐(우선순위·신선도 5s·내 이벤트 생략) */
+    @Provides
+    @Singleton
+    fun provideVoiceAnnouncer(sessionManager: MqttSessionManager, voice: VoiceAdapter): VoiceAnnouncer =
+        VoiceAnnouncer(events = sessionManager.groupEventsReceived, myVehicleId = { sessionManager.myVehicleId }, voice = voice)
 
     /** T26: 활성 그룹 동안 1Hz 판정 → `dh/v1/vehicle/{vid}/event` QoS 1 */
     @Provides

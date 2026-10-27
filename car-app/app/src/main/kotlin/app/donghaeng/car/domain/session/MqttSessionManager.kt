@@ -34,6 +34,9 @@ import javax.inject.Singleton
 /** 진단 화면용 — 마지막으로 받은 cmd 요약(민감 정보 없음) */
 data class LastCommand(val type: String, val groupIdMasked: String?, val atMs: Long)
 
+/** 봉투 ts(서버 발행 시각)·수신 시각이 붙은 그룹 이벤트 */
+data class ReceivedGroupEvent(val event: GroupEvent, val envelopeTsMs: Long, val receivedAtMs: Long)
+
 /**
  * 페어링 상태 ↔ MQTT 연결 ↔ 그룹 세션을 잇는다 (T16; 호출 순서는 docs/03 §4·§5.5).
  *
@@ -57,6 +60,13 @@ class MqttSessionManager @Inject constructor(
 
     private val _groupEvents = MutableSharedFlow<GroupEvent>(replay = 20, extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     val groupEvents: SharedFlow<GroupEvent> = _groupEvents.asSharedFlow()
+
+    /** 수신 시각이 붙은 그룹 이벤트(replay 없음) — 음성 안내(T27)의 신선도 판정용 */
+    private val _groupEventsReceived = MutableSharedFlow<ReceivedGroupEvent>(extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    val groupEventsReceived: SharedFlow<ReceivedGroupEvent> = _groupEventsReceived.asSharedFlow()
+
+    /** 현재 접속에 쓰는 내 vehicleId (페어링 전 null) */
+    val myVehicleId: String? get() = vehicleId
 
     private val _groupState = MutableStateFlow<GroupState?>(null)
     val groupState: StateFlow<GroupState?> = _groupState.asStateFlow()
@@ -119,7 +129,10 @@ class MqttSessionManager @Inject constructor(
             topic == Topics.vehicleCmd(vid) -> onCommand(message)
             current != null && topic == current.topics.event && message.envelope.type == MessageTypes.EVENT -> {
                 runCatching { DhJson.decodeData<GroupEvent>(message.envelope).data }
-                    .onSuccess { _groupEvents.emit(it) }
+                    .onSuccess { event ->
+                        _groupEvents.emit(event)
+                        _groupEventsReceived.emit(ReceivedGroupEvent(event, envelopeTsMs = message.envelope.ts, receivedAtMs = message.receivedAtMs))
+                    }
                     .onFailure { DhLog.w("group event decode failed cause=${it.javaClass.simpleName}") }
             }
             current != null && topic == current.topics.state && message.envelope.type == MessageTypes.STATE -> {

@@ -18,13 +18,16 @@ data class SettingsUiState(
     val tokens: TokenStoreState = TokenStoreState.Loading,
     /** 이번 화면에서 연결 해제를 눌렀는지(안내 문구 표시) */
     val justDisconnected: Boolean = false,
+    /** T27 음성 안내 on/off */
+    val voiceEnabled: Boolean = true,
 )
 
-/** 설정 — 지금은 연결 해제(반복 시연용)와 진단 화면 진입만. 음성 안내 on/off 는 T27. */
+/** 설정 — 연결 해제(반복 시연용), 진단 화면 진입, 음성 안내 on/off(T27). */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val repository: PairingRepository,
     tokenStore: TokenStore,
+    private val voiceAnnouncer: app.donghaeng.car.domain.voice.VoiceAnnouncer,
 ) : ViewModel() {
 
     private val justDisconnected = MutableStateFlow(false)
@@ -33,9 +36,11 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { tokenStore.load() }
     }
 
-    val uiState: StateFlow<SettingsUiState> = combine(tokenStore.state, justDisconnected) { tokens, disconnected ->
-        SettingsUiState(tokens = tokens, justDisconnected = disconnected)
+    val uiState: StateFlow<SettingsUiState> = combine(tokenStore.state, justDisconnected, voiceAnnouncer.state) { tokens, disconnected, voice ->
+        SettingsUiState(tokens = tokens, justDisconnected = disconnected, voiceEnabled = voice.enabled)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState(tokens = tokenStore.state.value))
+
+    fun setVoiceEnabled(enabled: Boolean) = voiceAnnouncer.setEnabled(enabled)
 
     /** TokenStore 를 비운다 → 홈이 '연결 안 됨' 으로 돌아간다. */
     fun disconnect() {

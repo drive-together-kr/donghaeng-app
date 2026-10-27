@@ -20,7 +20,11 @@ import app.donghaeng.car.domain.session.LastCommand
 import app.donghaeng.car.domain.session.MqttSessionManager
 import app.donghaeng.car.domain.capability.CapabilityReport
 import app.donghaeng.car.domain.capability.CapabilityReporter
+import app.donghaeng.car.adapter.voice.VoiceAdapter
+import app.donghaeng.car.adapter.voice.VoiceAdapterStatus
 import app.donghaeng.car.domain.event.EventEngineState
+import app.donghaeng.car.domain.voice.VoiceAnnouncer
+import app.donghaeng.car.domain.voice.VoiceAnnouncerState
 import app.donghaeng.car.domain.event.VehicleEventEngine
 import app.donghaeng.car.domain.location.LocationFeed
 import app.donghaeng.car.domain.location.LocationFeedState
@@ -76,7 +80,13 @@ data class DiagnosticsUiState(
     val driveServiceRunning: Boolean = false,
     /** T26 차량 이벤트 판정·발행 */
     val events: EventEngineState = EventEngineState(),
+    /** T27 음성 안내 */
+    val voice: VoiceAnnouncerState = VoiceAnnouncerState(),
+    val tts: VoiceAdapterStatus = VoiceAdapterStatus(),
 )
+
+/** 진단 화면의 음성 확인용 동작(T27) */
+enum class VoiceDebugAction { SPEAK_TEST, TOGGLE }
 
 /** 진단 화면의 내비 확인용 요청(T20) — 실제 기능 UI 가 아니라 콜백이 오는지 보는 버튼 */
 enum class NaviDebugAction { REQUEST_ROUTE, SHOW_NAVIGATION, QUERY_DESTINATION }
@@ -86,7 +96,7 @@ enum class LocationDebugAction { REQUEST_PERMISSION, RESTART }
 
 private data class SessionSide(val session: GroupSession?, val lastCommand: LastCommand?, val groupState: GroupState?, val groupStateAt: Long?)
 
-private data class SideState(val mqtt: MqttStatus, val navi: NaviMonitorState, val naviAction: String?, val location: LocationFeedState, val vehicle: VehicleSignalState, val telemetry: TelemetryState, val serviceRunning: Boolean, val events: EventEngineState = EventEngineState())
+private data class SideState(val mqtt: MqttStatus, val navi: NaviMonitorState, val naviAction: String?, val location: LocationFeedState, val vehicle: VehicleSignalState, val telemetry: TelemetryState, val serviceRunning: Boolean, val events: EventEngineState = EventEngineState(), val voice: VoiceAnnouncerState = VoiceAnnouncerState(), val tts: VoiceAdapterStatus = VoiceAdapterStatus())
 
 /** 진단 화면 — capability 표(T11) + SDK 점검 + 빌드 정보. 확인용 화면이라 사용자 입력이 없다. */
 @HiltViewModel
@@ -103,6 +113,8 @@ class DiagnosticsViewModel @Inject constructor(
     telemetryCollector: TelemetryCollector,
     driveSessionController: DriveSessionController,
     eventEngine: VehicleEventEngine,
+    private val voiceAnnouncer: VoiceAnnouncer,
+    voiceAdapter: VoiceAdapter,
 ) : ViewModel() {
 
     private val naviActionResult = MutableStateFlow<String?>(null)
@@ -111,7 +123,7 @@ class DiagnosticsViewModel @Inject constructor(
         viewModelScope.launch { tokenStore.load() }
     }
 
-    val uiState: StateFlow<DiagnosticsUiState> = combine(reporter.report, sdkProbe.report, tokenStore.state, combine(combine(mqtt.status, naviMonitor.state, naviActionResult) { m, n, a -> Triple(m, n, a) }, combine(locationFeed.state, vehicleSignals.state, telemetryCollector.state, driveSessionController.serviceRunning, eventEngine.state) { l, v, t, r, ev -> SideState(MqttStatus(), NaviMonitorState(), null, l, v, t, r, ev) }) { (m, n, a), side -> side.copy(mqtt = m, navi = n, naviAction = a) }, combine(sessionManager.session, sessionManager.lastCommand, sessionManager.groupState, sessionManager.groupStateAt) { s, c, g, t -> SessionSide(s, c, g, t) }) { report, probe, tokens, side, sess ->
+    val uiState: StateFlow<DiagnosticsUiState> = combine(reporter.report, sdkProbe.report, tokenStore.state, combine(combine(mqtt.status, naviMonitor.state, naviActionResult, voiceAnnouncer.state, voiceAdapter.status) { m, n, a, vo, tt -> SideState(m, n, a, LocationFeedState(), VehicleSignalState(), TelemetryState(), false, EventEngineState(), vo, tt) }, combine(locationFeed.state, vehicleSignals.state, telemetryCollector.state, driveSessionController.serviceRunning, eventEngine.state) { l, v, t, r, ev -> SideState(MqttStatus(), NaviMonitorState(), null, l, v, t, r, ev) }) { head, side -> side.copy(mqtt = head.mqtt, navi = head.navi, naviAction = head.naviAction, voice = head.voice, tts = head.tts) }, combine(sessionManager.session, sessionManager.lastCommand, sessionManager.groupState, sessionManager.groupStateAt) { s, c, g, t -> SessionSide(s, c, g, t) }) { report, probe, tokens, side, sess ->
         DiagnosticsUiState(
             report = report,
             probe = probe,
@@ -128,6 +140,8 @@ class DiagnosticsViewModel @Inject constructor(
             telemetry = side.telemetry,
             driveServiceRunning = side.serviceRunning,
             events = side.events,
+            voice = side.voice,
+            tts = side.tts,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DiagnosticsUiState(report = reporter.report.value, probe = sdkProbe.report.value))
 
@@ -166,6 +180,13 @@ class DiagnosticsViewModel @Inject constructor(
     }
 
     fun restartVehicleSignals() = vehicleSignals.restart()
+
+    fun onVoiceAction(action: VoiceDebugAction) {
+        when (action) {
+            VoiceDebugAction.SPEAK_TEST -> voiceAnnouncer.speakTest()
+            VoiceDebugAction.TOGGLE -> voiceAnnouncer.setEnabled(!voiceAnnouncer.state.value.enabled)
+        }
+    }
 
     private companion object {
         /** 확인용 목적지 — 공공장소, 시연 전용 */

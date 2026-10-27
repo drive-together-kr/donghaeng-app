@@ -38,7 +38,7 @@ fun SettingsRoute(
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    SettingsScreen(state = state, onBack = onBack, onDisconnect = viewModel::disconnect, onOpenDiagnostics = onOpenDiagnostics)
+    SettingsScreen(state = state, onBack = onBack, onDisconnect = viewModel::disconnect, onOpenDiagnostics = onOpenDiagnostics, onVoiceEnabled = viewModel::setVoiceEnabled)
 }
 
 /** 설정 화면 — 연결 상태·연결 해제(T12), 진단 진입(T11). 닉네임은 폰 쪽(`PATCH /me/vehicles`)에서 바꾼다. */
@@ -48,6 +48,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onDisconnect: () -> Unit,
     onOpenDiagnostics: () -> Unit,
+    onVoiceEnabled: (Boolean) -> Unit = {},
 ) {
     Scaffold { innerPadding ->
         Column(
@@ -110,7 +111,13 @@ fun SettingsScreen(
             Card(modifier = Modifier.widthIn(max = 720.dp).fillMaxWidth()) {
                 Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(stringResource(R.string.settings_section_voice), style = MaterialTheme.typography.titleMedium)
-                    Text(stringResource(R.string.settings_voice_placeholder), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(stringResource(R.string.settings_voice_switch), style = MaterialTheme.typography.titleMedium)
+                            Text(stringResource(R.string.settings_voice_placeholder), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        androidx.compose.material3.Switch(checked = state.voiceEnabled, onCheckedChange = onVoiceEnabled)
+                    }
                 }
             }
         }

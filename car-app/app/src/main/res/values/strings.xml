@@ -51,7 +51,8 @@
     <string name="settings_diagnostics_hint">차량 SDK capability 실측값·SDK 점검·빌드 정보를 표로 봅니다.</string>
     <string name="settings_btn_diagnostics">진단 화면 열기</string>
     <string name="settings_section_voice">음성 안내</string>
-    <string name="settings_voice_placeholder">음성 안내 on/off 는 T27 에서 추가됩니다.</string>
+    <string name="settings_voice_placeholder">그룹 소식(급제동·저잔량·도착·동승자 메시지)을 음성으로 읽어 줍니다. 내 차 일은 읽지 않아요.</string>
+    <string name="settings_voice_switch">음성 안내</string>
 
     <!-- 진단 (T11) -->
     <string name="diag_title">진단</string>
@@ -115,6 +116,15 @@
     <string name="diag_tm_topic">토픽</string>
     <string name="diag_tm_service">포그라운드 서비스</string>
     <string name="diag_section_events">차량 이벤트 (T26)</string>
+    <string name="diag_section_voice">음성 안내 (T27)</string>
+    <string name="diag_voice_tts">TTS 엔진</string>
+    <string name="diag_voice_state">안내</string>
+    <string name="diag_voice_counts">읽음/생략</string>
+    <string name="diag_voice_tts_counts">TTS 호출</string>
+    <string name="diag_voice_last">마지막 문장</string>
+    <string name="diag_voice_action_test">테스트 발화</string>
+    <string name="diag_voice_action_on">음성 켜기</string>
+    <string name="diag_voice_action_off">음성 끄기</string>
     <string name="diag_ev_counts">판정 수</string>
     <string name="diag_ev_published">발행</string>
     <string name="diag_ev_last">마지막 이벤트</string>
