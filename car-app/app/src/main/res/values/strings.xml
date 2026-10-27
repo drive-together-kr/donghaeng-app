@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">동행</string>
+    <string name="app_tagline">전화 없이, 한 대처럼.</string>
+
+    <string name="home_vehicle_connection">차량 연결 상태</string>
+    <string name="home_connection_disconnected">연결 안 됨</string>
+    <string name="home_btn_pair_phone">내 폰과 연결하기</string>
+    <string name="home_btn_start_group">같이 가기 시작</string>
+    <string name="home_label_flavor">빌드 변형</string>
+    <string name="home_label_base_url">서버 주소</string>
+    <string name="home_label_mqtt_uri">MQTT 주소</string>
+    <string name="home_label_version">버전</string>
+    <string name="home_sdk_probe_title">Pleos SDK 점검</string>
+    <string name="home_sdk_probe_pending">점검 중…</string>
+    <string name="home_buttons_hint">페어링(T12)·그룹 생성(T17) 구현 후 활성화됩니다.</string>
+
+    <string name="placeholder_in_progress">준비 중 — %1$s 에서 구현</string>
+</resources>

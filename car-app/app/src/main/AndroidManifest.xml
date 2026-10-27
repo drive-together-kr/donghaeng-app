@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 네트워크 (REST / MQTT) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 위치 폴백 (Android LocationManager, docs/05 §3.2 3순위) -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- 그룹 활성 중 포그라운드 서비스 DriveSessionService (docs/05 §6) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Pleos 차량 권한(pleos.car.permission.*, android.car.permission.*)은 src/pleos/AndroidManifest.xml 에만 선언 -->
+
+    <!-- AAOS(Pleos Connect)와 일반 폰·태블릿 AVD(fake flavor) 양쪽에 설치되도록 required=false -->
+    <uses-feature android:name="android.hardware.type.automotive" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+    <application
+        android:name=".DongHaengApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.DongHaeng"
+        android:usesCleartextTraffic="true"
+        tools:targetApi="35">
+        <!-- usesCleartextTraffic: 로컬 개발 시 http://10.0.2.2:8080 접근용. 클라우드 빌드(https/ssl)에서는 영향 없음.
+             공식 샘플(pleos-sample-vehicle-app)은 android.car.application / distractionOptimized 메타데이터를 선언하지 않으므로
+             여기서도 선언하지 않는다. 주행 중 UX 제한(distractionOptimized, CarUxRestrictions)은 T29 에서 다룬다. -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="unspecified"
+            android:theme="@style/Theme.DongHaeng">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

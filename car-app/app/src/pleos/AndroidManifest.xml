@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- pleos flavor 전용 매니페스트 — Pleos 차량 권한 (docs/05 §1.2, 최소 권한 원칙: 조회 권한만, CONTROL_* 없음).
+     Pleos 차량 권한은 런타임 팝업 없이 매니페스트 선언만으로 동작한다(공식 샘플 가이드). FusedLocation 은 런타임 승인 필요. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Vehicle SDK (조회만) -->
+    <uses-permission android:name="pleos.car.permission.CAR_INFO" />     <!-- CarInfo: 차량 ID -->
+    <uses-permission android:name="pleos.car.permission.CAR_DRIVE" />    <!-- Brake, DrivingMode, Odometer -->
+    <uses-permission android:name="pleos.car.permission.CAR_ENERGY" />   <!-- Fuel, EvBattery -->
+    <uses-permission android:name="pleos.car.permission.CAR_LIGHTS" />   <!-- Light, TurnSignal -->
+    <uses-permission android:name="pleos.car.permission.CAR_SAFETY" />   <!-- Safety: 에어백 -->
+    <!-- NaviHelper -->
+    <uses-permission android:name="pleos.car.permission.NAVI_ROUTE" />
+    <uses-permission android:name="pleos.car.permission.NAVI_ROUTE_SEARCH" />
+    <!-- FusedLocation (오픈 시) -->
+    <uses-permission android:name="pleos.car.permission.FUSED_LOCATION" />
+    <!-- 속도·기어: AAOS 표준 Car API 시도용 (T22) -->
+    <uses-permission android:name="android.car.permission.CAR_SPEED" />
+    <uses-permission android:name="android.car.permission.CAR_POWERTRAIN" />
+
+</manifest>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 공식 샘플과 같이 플랫폼 Material 테마 사용(AppCompat 의존 없음). 실제 색은 Compose DongHaengTheme 가 결정한다. -->
+    <style name="Theme.DongHaeng" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/dh_window_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>
