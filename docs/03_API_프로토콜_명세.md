@@ -4,7 +4,7 @@
   - 로컬(에뮬레이터) `http://10.0.2.2:8080` · 로컬(실기기, 같은 Wi-Fi) `http://<PC-IP>:8080` · 클라우드 `https://<VM-IP>.sslip.io` (예: `https://1-2-3-4.sslip.io`, Caddy 자동 인증서)
 - REST Base URL: `{DH_PUBLIC_BASE_URL}/v1` (로컬: `http://10.0.2.2:8080/v1` — 에뮬레이터 기준)
 - MQTT 공개 주소 설정값 **`DH_MQTT_PUBLIC_URI`**: 로컬 `tcp://10.0.2.2:1883`, 클라우드 `ssl://<VM-IP>.sslip.io:8883`. MQTT 5.0
-- QR·딥링크 URL은 항상 `{DH_PUBLIC_BASE_URL}` + 경로(`/pair?c=…`, `/j/{token}`)로 **서버가 생성**하고, 폰 앱은 호스트가 아니라 **경로로 종류를 판별**한다(07 문서 §4)
+- QR·딥링크 URL은 항상 `{DH_PUBLIC_BASE_URL}` + 경로(`/pair?c=…`, `/j/{token}`)로 **서버가 생성**하고, companion 모듈은 호스트가 아니라 **경로로 종류를 판별**한다(07 문서 §5)
 - 직렬화: JSON (UTF-8), 필드명 camelCase, 시간은 epoch milliseconds(`ts`), 좌표는 WGS84 소수점 7자리
 - 인증 헤더: `Authorization: Bearer <JWT>`
 - 오류 형식:
@@ -16,7 +16,7 @@
 
 ## 1. 인증 · 페어링 (identity)
 
-### 1.1 사용자 로그인 (폰 앱)
+### 1.1 사용자 인증 (companion 모듈 — 공식 앱 계정)
 `POST /auth/login` — MVP 개발용 간편 로그인
 ```json
 // req
@@ -24,11 +24,15 @@
 // res 200
 { "accessToken": "jwt", "refreshToken": "opaque", "user": { "userId": "usr_01H...", "displayName": "홍길동" } }
 ```
-운영 전환: `provider: "pleos" | "kakao" | "google"`, OAuth2 Authorization Code + PKCE 결과의 `code`를 전달.
+운영 전환: 호스트 공식 앱의 OAuth 2.0 access token 을 교환한다.
+`POST /auth/exchange` `{ "provider": "bluelink" | "myhyundai" | "kia_connect" | "genesis_connected", "accessToken": "<호스트 앱 토큰>" }` → 위와 같은 토큰 쌍.
+서버는 provider 별 `ExternalTokenVerifier` 로 검증한다(인터페이스만 두고 MVP 는 `dev` 구현). 실제 IdP 연동은 OEM 협의 대상.
 
 `POST /auth/refresh` `{ "refreshToken": "..." }` → 새 토큰 쌍
 
 ### 1.2 차량 페어링 — Device Authorization Grant (RFC 8628 변형)
+공식 앱 계정에 연결된 차량이 없을 때의 **대체 수단**이다. 계정에 차량이 있으면(실서비스: `VehicleDirectory` 가 OEM 차량 API 조회) 페어링 없이 `GET /me/vehicles` 로 바로 쓴다. MVP(dev 계정)는 이 흐름으로 에뮬레이터 차량을 등록한다.
+
 `POST /device/code` (차량 앱, 인증 없음)
 ```json
 // req
@@ -55,7 +59,7 @@
   "mqtt": { "uri": "tcp://10.0.2.2:1883", "clientId": "veh_01H...", "username": "veh_01H..." }   // uri = DH_MQTT_PUBLIC_URI
 }
 ```
-`POST /device/approve` (폰 앱, 사용자 JWT)
+`POST /device/approve` (companion 모듈 `pairVehicle`, 사용자 JWT — 대체 수단)
 ```json
 { "userCode": "KQ74MZ", "nickname": "홍길동 차" }   // → 204
 ```
@@ -85,7 +89,7 @@
 ```
 `POST /groups/{groupId}/invites` → 초대 토큰 재발급 (만료 시)
 
-### 2.2 그룹 합류 (폰 앱이 QR 스캔 후)
+### 2.2 그룹 합류 (공식 앱의 companion 모듈이 QR 스캔 후 — `joinGroup`)
 `POST /groups/join` (사용자 JWT)
 ```json
 // req

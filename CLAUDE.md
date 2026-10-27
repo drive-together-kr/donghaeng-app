@@ -6,7 +6,7 @@
 - `docs/01_상세기획서_PRD.md` — 기능 F1~F15, 우선순위
 - `docs/02_시스템아키텍처.md` — 운영 설계 vs MVP 매핑
 - `docs/03_API_프로토콜_명세.md` — REST·MQTT 토픽·메시지 스키마 (**계약. 바꾸면 문서도 같이 수정**)
-- `docs/04_데이터모델.md`, `05_차량앱_설계.md`, `06_서버_설계.md`, `07_폰앱_설계.md`
+- `docs/04_데이터모델.md`, `05_차량앱_설계.md`, `06_서버_설계.md`, `07_companion모듈_설계.md`
 - `docs/08_구현계획서.md` — 작업 ID(T00~T57). 작업 지시는 이 ID로 온다.
 - `docs/10_리스크_확인사항.md` — SDK 제약
 
@@ -14,7 +14,7 @@
 ```
 car-app/     Android(AAOS/Pleos) Kotlin, Compose, Hilt   ── flavors: pleos / fake
 server/      Kotlin + Spring Boot 3.3 모듈러 모놀리스        ── packages = 미래 마이크로서비스
-phone-app/   Flutter 동반 앱(QR 스캔·로그인·메시지)
+companion/   공식 앱(블루링크·마이현대·기아 커넥트·제네시스) 내장 모듈 ── sdk/(Android AAR, 공개 API 6개) + demo-host/(시연용 호스트 앱)
 protocol/    Kotlin 공용 메시지 스키마 (car-app, server가 의존)
 infra/       docker-compose(postgres, redis, emqx, server), Caddy(T32 예정)
 docs/        설계 문서
@@ -32,8 +32,8 @@ cd car-app && ./gradlew :app:assemblePleosDebug     # 실 SDK
 cd car-app && ./gradlew :app:assembleFakeDebug      # 일반 에뮬레이터용
 cd car-app && ./gradlew test
 
-# 폰 앱
-cd phone-app && flutter pub get && flutter test && flutter run
+# companion (sdk + 시연용 호스트 앱)
+cd companion && ./gradlew :sdk:testDebugUnitTest :sdk:assembleDebug :demo-host:assembleDebug
 ```
 
 ## 핵심 규칙
@@ -47,8 +47,9 @@ cd phone-app && flutter pub get && flutter test && flutter run
 8. 로그에 좌표·닉네임·토큰 원문 금지(마스킹 유틸 사용).
 9. 비밀 값(.env, keystore, JWT 키)은 커밋 금지. `.env.example`만 커밋.
 10. **실명·학교 등 개인정보를 코드·README·커밋 메시지·리소스에 넣지 않는다**(블라인드 심사).
-11. minSdk 28 유지. JDK 17(car-app) / JDK 21(server, Gradle toolchain). 로컬 JDK 경로는 커밋하지 않고 `~/.gradle/gradle.properties`의 `org.gradle.java.installations.paths`로 지정한다.
+11. minSdk 28 유지. JDK 17(car-app·companion) / JDK 21(server, Gradle toolchain). 로컬 JDK 경로는 커밋하지 않고 `~/.gradle/gradle.properties`의 `org.gradle.java.installations.paths`로 지정한다.
 12. 서버 주소: 에뮬레이터 → `http://10.0.2.2:8080`, 클라우드 → `https://<VM-IP>.sslip.io` (고정 도메인 없음). QR·딥링크 URL은 서버 설정값 `DH_PUBLIC_BASE_URL` + 경로로만 만든다.
+13. `companion/sdk` 공개 API는 docs/07 §3의 6개뿐(`explicitApi`). 자체 로그인 UI·계정 저장 금지 — 토큰은 호스트 앱의 `TokenProvider`로 받는다. 공식 앱 OAuth 토큰은 서버 `ExternalTokenVerifier` 인터페이스로만 검증하고 Device Authorization Grant 는 대체 수단으로 유지한다.
 
 ## 작업 방식
 - 작업 ID 하나 = 하나의 브랜치/커밋 묶음. 완료 시 08 문서의 완료 기준을 직접 검증(테스트 실행·빌드)하고 결과를 보고한다.
