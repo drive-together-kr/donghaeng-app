@@ -80,6 +80,7 @@ class DemoControlReceiver : BroadcastReceiver() {
         fun clockSync(): ClockSync
         fun turnProbe(): TurnProbe
         fun sessionManager(): MqttSessionManager
+        fun voiceAdapter(): app.donghaeng.car.adapter.voice.VoiceAdapter
     }
 
     private lateinit var routeSync: RouteSyncEngine
@@ -93,12 +94,14 @@ class DemoControlReceiver : BroadcastReceiver() {
     private lateinit var clockSync: ClockSync
     private lateinit var turnProbe: TurnProbe
     private lateinit var sessionManager: MqttSessionManager
+    private lateinit var voiceAdapter: app.donghaeng.car.adapter.voice.VoiceAdapter
 
     override fun onReceive(context: Context, intent: Intent) {
         val deps = EntryPointAccessors.fromApplication(context.applicationContext, Deps::class.java)
         routeSync = deps.routeSync(); voice = deps.voice(); navi = deps.navi(); sessionStore = deps.sessionStore()
         surfaceController = deps.surfaceController(); surfaceState = deps.surfaceState(); surfaceCards = deps.surfaceCards()
         surfaceOverlay = deps.surfaceOverlay(); clockSync = deps.clockSync(); turnProbe = deps.turnProbe(); sessionManager = deps.sessionManager()
+        voiceAdapter = deps.voiceAdapter()
         val action = intent.getStringExtra(EXTRA_ACTION)
         if (action.isNullOrBlank()) {
             DhLog.w("demo: action 없음 (--es action …)")
@@ -262,7 +265,10 @@ class DemoControlReceiver : BroadcastReceiver() {
                 DhLog.i(
                     "demo: status group=${s?.groupId?.let(TextMasking::maskVehicleId) ?: "없음"} leader=${s?.isLeader} dest=${s?.destination?.name} " +
                         "pending=${r.pending?.proposalId?.let(TextMasking::maskVehicleId) ?: "없음"} accepted=${r.accepted} declined=${r.declined} autoDeclined=${r.autoDeclined} " +
-                        "autoFollow=${r.autoFollow} routeChangedSent=${r.routeChangedSent} voice=${voice.state.value.enabled} gpx=${DemoPrefs.gpxRole(context)}",
+                        "autoFollow=${r.autoFollow} routeChangedSent=${r.routeChangedSent} voice=${voice.state.value.enabled} gpx=${DemoPrefs.gpxRole(context)} " +
+                        // 음성 엔진 준비 여부(2026-10-28 — demo.py preflight 가 본다): ready / init / off, 엔진 패키지(공백 없음)
+                        "tts=${voiceAdapter.status.value.let { v -> when (v.ready) { true -> "ready"; null -> "init"; false -> "off" } }} " +
+                        "ttsEngine=${voiceAdapter.status.value.engine?.replace(' ', '_') ?: "-"}",
                 )
             }
             "is_me" -> {

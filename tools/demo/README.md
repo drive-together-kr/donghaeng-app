@@ -73,3 +73,6 @@ release 빌드에는 들어가지 않는다(`src/debug`).
 - `out/` 은 git 에 올리지 않는다(로그에 마스킹된 ID 만 있지만 시연 환경 정보가 섞인다).
 - Pleos AVD 에는 TTS 엔진이 없어 음성은 `voice: speak …` 로그 폴백으로 확인한다. 실제 음성은 TTS 엔진이 있는 기기(실차·일반 폰 AVD)에서 난다.
 - 차 A(실 SDK)는 내비 앱이 에뮬레이터에서 지연 상태라 `WAYPOINT_ARRIVED` 를 내지 못한다. 그래서 장면 7 은 차 B(fake 내비)가 도착하고 차 A 가 듣는 방향으로 둔다(docs/09 §4).
+
+## 에뮬레이터 음성 엔진 (2026-10-28)
+Pleos AVD 기본 상태는 이벤트 음성이 무음이다(docs/10 R19). sherpa-onnx Supertonic 3 한국어 엔진 APK 를 받아 `python tools/demo/demo.py --dry-run --tts-apk <APK>` 로 두 대에 설치·기본 지정한다(없을 때만, `DH_TTS_APK` 환경 변수도 됨). preflight 표의 `TTS 엔진 설치`·`기본 TTS 엔진`·`앱 음성 준비(tts=ready)` 가 OK 여야 한다. 내려받기 주소·라이선스·품질 비교는 docs/09 §1.4.

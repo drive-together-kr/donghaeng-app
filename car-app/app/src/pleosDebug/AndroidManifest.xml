@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- pleos debug 빌드 전용: Pleos TextToSpeech SDK 실측 프로브(2026-10-28). 호출 방법은 PleosTtsProbe.kt 머리 주석 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Pleos CaaS(ai.pleos.playground.caas) 가 정의한 권한, protectionLevel normal — 없으면 SDK 가 SecurityException -->
+    <uses-permission android:name="pleos.car.permission.TTS_SERVICE" />
+    <application>
+        <receiver
+            android:name=".adapter.voice.PleosTtsProbeReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+    </application>
+</manifest>

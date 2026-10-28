@@ -40,7 +40,7 @@ companion 모듈은 제공자와 무관하게 아래 교환 한 가지 경로만
 | 501 `PROVIDER_NOT_SUPPORTED` | `bluelink` · `myhyundai` · `kia_connect` · `genesis_connected` (MVP 미구현) |
 
 `POST /auth/login` 은 `provider` 가 `dev` 일 때만 200 (그 외 400 `VALIDATION_FAILED`). `provider_sub` 는 소문자 이메일 — 대소문자가 달라도 같은 사용자다.
-**접속 키**: 서버에 `DH_DEV_LOGIN_KEY` 가 설정돼 있으면(클라우드 필수, 로컬은 비움) 요청 헤더 `X-Dev-Login-Key`(protocol `ApiHeaders.DEV_LOGIN_KEY`)가 같아야 하고, 없거나 다르면 본문을 보기 전에 **403 `FORBIDDEN`** 이다 — 비밀번호 없는 dev 로그인이 공개 서버에서 이메일만으로 남의 계정을 열지 않게(docs/10 R16).
+**접속 키**: 서버에 `DH_DEV_LOGIN_KEY` 가 설정돼 있으면(클라우드 필수, 로컬은 비움) 요청 헤더 `X-Dev-Login-Key`(protocol `ApiHeaders.DEV_LOGIN_KEY`)가 같아야 하고, 없거나 다르면 본문을 보기 전에 **403 `FORBIDDEN`** 이다 — 비밀번호 없는 dev 로그인이 공개 서버에서 이메일만으로 남의 계정을 열지 않게(docs/10 R20).
 demo-host 는 빌드 속성 `dhDevLoginKey`, `tools/demo` 는 환경변수 `DH_DEV_LOGIN_KEY` 로 넣는다. `/auth/exchange`·`/auth/refresh` 는 이 키를 보지 않는다(dev 교환은 로그인이 발급한 토큰만 인정).
 
 `POST /auth/refresh` `{ "refreshToken": "..." }` → 200 새 토큰 쌍. **회전**: 이전 refresh 는 즉시 폐기되고 재사용하면 401. 무효·폐기·만료는 모두 401 `INVALID_TOKEN`(구분하지 않음).

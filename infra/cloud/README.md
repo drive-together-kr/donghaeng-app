@@ -90,7 +90,7 @@ bash infra/cloud/deploy.sh ubuntu@203.0.113.10 -i ~/.ssh/donghaeng-vm.pem [--ema
 - Caddy 액세스 로그는 켜지 않는다(경로에 초대 토큰 `/j/{token}`·페어링 코드·좌표 쿼리가 들어감 — CLAUDE.md 규칙 8). 오류 로그(업스트림 502 등)는 요청 uri·헤더를 함께 남기므로
   Caddyfile 전역 `log` 의 `filter` 가 **쿼리 전체 → `?***`, `/j/<토큰>` → `/j/***`, `Referer`·`X-Dev-Login-Key` 헤더 삭제** 로 가린다(`Authorization`·`Cookie` 는 Caddy 기본 마스킹). 서버 프로필은 `cloud`(로컬의 DEBUG 로그 없음).
 - **dev 간편 로그인 접속 키(필수)** — `POST /v1/auth/login {provider:dev, email}` 은 비밀번호 없이 이메일만 보는 MVP 로그인이고(docs/03 §1.1), demo-host 의 기본 이메일은 저장소·APK 에 공개돼 있다.
-  키가 없으면 인터넷의 누구나 시연 계정 토큰을 받아 `/v1/me/vehicles` 조회·차량 해제(`DELETE`), 그룹 메시지(차량에서 음성으로 읽힘), `/v1/device/approve` 를 호출할 수 있다(docs/10 R16).
+  키가 없으면 인터넷의 누구나 시연 계정 토큰을 받아 `/v1/me/vehicles` 조회·차량 해제(`DELETE`), 그룹 메시지(차량에서 음성으로 읽힘), `/v1/device/approve` 를 호출할 수 있다(docs/10 R20).
   그래서 클라우드 서버는 `DH_DEV_LOGIN_KEY`(remote-env.sh 가 hex 32자로 생성, 비면 compose 가 기동 거부)를 요구하고, 헤더 `X-Dev-Login-Key` 가 없거나 다르면 **403 `FORBIDDEN`** 으로 끊는다(헬스체크 5번이 확인).
   - 키 확인: `ssh <vm> "grep ^DH_DEV_LOGIN_KEY= donghaeng/infra/.env"` — 화면·채팅·스크린샷에 올리지 않는다.
   - demo-host: `cd companion && ./gradlew :demo-host:assembleDebug -PdhPublicBaseUrl=https://<host> -PdhDevLoginKey=<키>`(또는 `~/.gradle/gradle.properties` 의 `dhDevLoginKey`, 저장소에는 적지 않음).

@@ -136,6 +136,9 @@ kotlin {
     }
 }
 
+// 플레이버+빌드 유형 조합 의존성(pleosDebugImplementation)은 미리 만들어 둬야 한다(AGP 문서)
+configurations { create("pleosDebugImplementation") }
+
 dependencies {
     // 공용 메시지 스키마 (합성 빌드)
     implementation(libs.donghaeng.protocol)
@@ -144,6 +147,8 @@ dependencies {
     "pleosImplementation"(libs.pleos.vehicle)
     "pleosImplementation"(libs.pleos.navihelper)
     "pleosImplementation"(libs.pleos.fusedlocation)
+    // Pleos TextToSpeech SDK(준비 중 SDK, CLAUDE.md 규칙 5) — 에뮬레이터 실측 프로브용으로 pleos debug 빌드에만(2026-10-28)
+    "pleosDebugImplementation"("ai.pleos.playground:TextToSpeech:3.3.1")
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)

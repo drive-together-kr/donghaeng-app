@@ -38,6 +38,8 @@ import replay_gpx  # noqa: E402
 from vc import VirtualConsole  # noqa: E402
 
 PKG = "app.donghaeng.car"
+# 에뮬레이터 음성 엔진(오픈 소스 오프라인 한국어) — sherpa-onnx TTS engine(Apache-2.0) + Supertonic 3(OpenRAIL-M), docs/09 §1.4
+TTS_ENGINE_PKG = "com.k2fsa.sherpa.onnx.tts.engine"
 RECEIVER = f"{PKG}/.debug.DemoControlReceiver"
 ADB = replay_gpx.adb_path()
 FOLLOW_GPX = os.path.join(replay_gpx.REPO, "car-app", "app", "src", "main", "assets", "gpx", "follow.gpx")
@@ -168,6 +170,11 @@ class Demo:
         rows.append(("A 최근 2분 내 LOW_ENERGY 발행 없음(서버 중복 억제 120 s)", self.seconds_since_last_event(self.A, "LOW_ENERGY") > 125))
         sa = status(self.A)
         rows.append(("A 리시버 응답", bool(sa)))
+        # 음성 엔진(2026-10-28, docs/09 §1.4·docs/10 R19): Pleos AVD 의 기본 TTS(ai.pleos.playground.caas)는 TTS_SERVICE 필터에
+        # category DEFAULT 가 없어 Android TextToSpeech 가 못 찾는다 → 이벤트 음성이 전부 무음(로그 폴백). 오픈 소스 오프라인 엔진
+        # sherpa-onnx(Supertonic 3, 한국어)를 깔고 기본 엔진으로 지정해야 에뮬레이터 스피커로 나온다
+        for name, s in (("A", self.A), ("B", self.B)):
+            rows.extend(self.ensure_tts_engine(name, s))
         # 주행 중 표면(2026-10-28): 플로팅 창 권한 — 없으면 알림 카드 + 음성 모드로 동작하므로 경고만
         for name, s in (("A", self.A), ("B", self.B)):
             mode = sh(s, f"appops get --user 10 {PKG} SYSTEM_ALERT_WINDOW")
@@ -195,6 +202,40 @@ class Demo:
             if not self.a.dry_run:
                 sys.exit(2)
         return sa, sb
+
+    def ensure_tts_engine(self, name: str, serial: str):
+        """차 한 대의 TTS 엔진 점검(+ --tts-apk 가 있으면 설치·기본 지정). 표 행 목록을 돌려준다"""
+        rows = []
+        installed = TTS_ENGINE_PKG in sh(serial, f"pm list packages --user 10 {TTS_ENGINE_PKG}")
+        if not installed and self.a.tts_apk and not self.a.dry_run:
+            print(f"  {name}: TTS 엔진 설치 중 ({os.path.basename(self.a.tts_apk)}) …", flush=True)
+            out = subprocess.run([ADB, "-s", serial, "install", "-r", self.a.tts_apk], capture_output=True, text=True, timeout=600).stdout
+            installed = "Success" in out
+        rows.append((f"{name} TTS 엔진 설치({TTS_ENGINE_PKG})" + ("" if installed else " — --tts-apk <APK> 로 설치, docs/09 §1.4"), installed))
+        current = sh(serial, "settings --user 10 get secure tts_default_synth").strip()
+        changed = False
+        if installed and current != TTS_ENGINE_PKG and not self.a.dry_run:
+            sh(serial, f"settings --user 10 put secure tts_default_synth {TTS_ENGINE_PKG}")
+            current = sh(serial, "settings --user 10 get secure tts_default_synth").strip()
+            changed = True
+        rows.append((f"{name} 기본 TTS 엔진 = {TTS_ENGINE_PKG} (지금 {current or '없음'})", current == TTS_ENGINE_PKG))
+        if changed:
+            # 앱의 TextToSpeech 는 시작할 때 기본 엔진에 붙는다 — 바꿨으면 앱을 다시 띄운다
+            sh(serial, f"am force-stop {PKG}; am start -n {PKG}/.MainActivity >/dev/null 2>&1")
+        ready = self.wait_tts_ready(serial, 75 if changed else 20)
+        rows.append((f"{name} 앱 음성 준비(디버그 status tts=ready — 모델 적재가 무거워 부하가 크면 20 s 넘게 걸린다)", ready))
+        return rows
+
+    def wait_tts_ready(self, serial: str, timeout_s: float) -> bool:
+        """앱의 음성 어댑터 상태(디버그 status 의 tts=ready|init|off)를 기다린다 — 로그가 밀리거나 지워져도 맞는 값. off 면 바로 False"""
+        end = time.time() + timeout_s
+        while True:
+            st = status(serial)
+            if st.get("tts") == "ready":
+                return True
+            if st.get("tts") == "off" or time.time() >= end:
+                return False
+            time.sleep(3)
 
     def a_location_source(self):
         """차 A **현재 프로세스**의 마지막 텔레메트리 src(ANDROID/NAVI/…) — 이전 프로세스 로그는 보지 않는다. 없으면 None"""
@@ -503,6 +544,8 @@ def main():
     ap.add_argument("--out", default=os.path.join(HERE, "out"))
     ap.add_argument("--dry-run", action="store_true", help="preflight 만")
     ap.add_argument("--skip-preflight", action="store_true")
+    ap.add_argument("--tts-apk", default=os.environ.get("DH_TTS_APK"),
+                    help="에뮬레이터에 TTS 엔진이 없으면 설치할 sherpa-onnx 한국어 TTS 엔진 APK(x86_64, docs/09 §1.4) — 설치 뒤 기본 엔진으로 지정")
     ap.add_argument("--nick-a", default="아빠 차", help="preflight 가 맞출 차 A 닉네임(--email 필요)")
     ap.add_argument("--nick-b", default="둘째 차", help="preflight 가 맞출 차 B 닉네임")
     ap.add_argument("--nick-c", default="삼촌 차", help="같은 계정의 나머지 차 하나(있으면)의 닉네임")
