@@ -15,6 +15,7 @@
 서버 주소 기본값 http://127.0.0.1:8080 (환경변수 DH_SERVER). 토큰·이메일은 로그에 남기지 않는다.
 """
 import argparse
+import http.client
 import json
 import os
 import sys
@@ -51,6 +52,12 @@ class DhApi:
                 return e.code, json.loads(raw)
             except Exception:
                 return e.code, raw[:300]
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+            # 서버가 꺼졌거나 닿지 않음(연결 거부·시간 초과·끊김) → HTTP 상태 0 으로 돌려준다.
+            # 예외를 그대로 올리면 demo.py preflight 처럼 SystemExit 만 잡는 호출자가 traceback 으로 죽어 진단 표가 안 나온다(2026-10-28 리뷰).
+            # 상태를 보는 login()·vehicles()·active_groups() 는 200 이 아니면 SystemExit 로 바꾼다.
+            reason = getattr(e, "reason", None) or e
+            return 0, f"연결 실패: {type(e).__name__} {reason}"[:300]
 
     # ---- 인증 ----
     def login(self, force: bool = False) -> str:

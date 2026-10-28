@@ -9,6 +9,7 @@ adb 는 환경변수 `ADB` 또는 `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb
 | `replay_gpx.py` | GPX → `adb emu geo fix` 재생 (차 A, 실 SDK Pleos AVD 의 GPS) |
 | `vc.py` | Pleos 에뮬레이터 Virtual Console 클라이언트 (기어·속도·브레이크·EV 잔량·방향지시등) |
 | `api.py` | 서버 REST 보조 (dev 로그인, 페어링 승인, 닉네임 바꾸기, 초대·합류, 동승자 메시지) — 폰 없이 리허설할 때 |
+| `test_demo.py` | 위 스크립트 단위 테스트(표준 라이브러리 unittest, adb·서버 없이) — `python -m unittest discover -s tools/demo -p "test_*.py"` |
 
 GPX 는 `car-app/app/src/main/assets/gpx/{lead,follow}.gpx` 를 그대로 쓴다(단일 원본). 두 파일은 같은 가상 복도(직선 보간, 실제 도로·주소와 무관)를
 선두가 1.2 km 앞서 달리는 구성이며 덕평휴게소 좌표(37.2963, 127.4120)를 지난다 — `RouteSyncEngine.DEMO_WAYPOINT` 와 같아 차 B(fake)의 `WaypointArrived` 가 난다.
@@ -48,7 +49,9 @@ release 빌드에는 들어가지 않는다(`src/debug`).
 
 ## 시연 닉네임·그룹 이름 (2026-10-28)
 - `demo.py` preflight 가 `--email` 계정의 차 닉네임을 맞춘다: 차 A = `--nick-a`(기본 "아빠 차"), 차 B = `--nick-b`("둘째 차"), 같은 계정의 나머지 차 하나(대표 차량 먼저·등록순, 있으면) = `--nick-c`("삼촌 차"). 이미 같으면 건너뛰고(`같음`), `--dry-run` 이면 `계획` 만 출력하고 바꾸지 않는다. `--email` 이 없으면 WARN 한 줄.
-- 어느 vehicleId 가 차 A/B 인지: `GET /me/vehicles` 의 id 를 각 차에 `is_me` 로 물어 `demo: is_me=true` 인 것을 고른다(기기 로그에 id 원문이 남지 않는다). 차 A·B 를 둘 다 찾았을 때만 나머지 차를 고른다 — 못 찾은 차는 FAIL(다른 계정으로 페어링했거나 앱이 응답하지 않음).
+- 어느 vehicleId 가 차 A/B 인지: `GET /me/vehicles` 의 id 를 각 차에 `is_me` 로 물어 `demo: is_me=true` 인 것을 고른다(기기 로그에 id 원문이 남지 않는다 — `is_me` 응답에는 id 가 없고, 이어지는 `nickname` 저장·그룹 스냅샷 동기화가 남기는 `token store: saved vehicleId=…` 도 마스킹한다). 차 A·B 를 둘 다 찾았을 때만 나머지 차를 고른다 — 못 찾은 차는 FAIL(다른 계정으로 페어링했거나 앱이 응답하지 않음).
+- 실패해도 표는 나온다: 서버가 꺼져 있거나 닿지 않으면 `시연 닉네임 — 서버 조회 실패(login failed: 0 연결 실패: …)` FAIL 한 줄(`DhApi.call` 은 연결 오류를 HTTP 상태 0 으로 돌려준다). 서버 `PATCH` 가 실패한 차(404·400·500·0)는 그 차 앱 저장값을 **바꾸지 않는다** — 앱만 새 이름이면 홈·그룹 기본 이름과 서버 음성·패널 이름이 어긋나고 다음 그룹 스냅샷이 옛 이름으로 되돌린다.
+- 스크립트 단위 테스트(adb·서버 없이): `python -m unittest discover -s tools/demo -p "test_*.py" -v` — 닉네임 단계의 서버 꺼짐·PATCH 실패·dry-run·같음·차 A 미확인, `DhApi` 연결 실패.
 - 서버 쪽 이름(그룹 스냅샷의 패널 이름·음성 문구·멤버 목록)은 서버가 매번 DB 에서 읽어 다음 스냅샷(2초)부터 바뀐다. 차 앱의 저장값(홈 "연결됨: …"·그룹 기본 이름)은 그룹 스냅샷으로도 따라오지만 그룹 전에는 알 길이 없어, preflight 가 리시버 `nickname` 으로 같은 값을 넣는다(`차 A 앱 저장 닉네임 맞춤` 행).
 - 패널 머리글 = 그룹 이름. 닉네임을 맞춘 **뒤에** 차 A 에서 그룹을 만들면 기본 이름이 "아빠 차와 같이 가기"(받침에 따라 와/과). 옛 이름의 그룹이 살아 있으면 preflight 가 `(활성 그룹 '…')` 로 알려 준다 — 끝내고 새로 만든다.
 

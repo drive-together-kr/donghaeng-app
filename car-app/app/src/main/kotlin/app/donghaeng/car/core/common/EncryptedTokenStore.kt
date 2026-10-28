@@ -63,7 +63,8 @@ class EncryptedTokenStore(
         }
         loaded = true
         publish(credentials)
-        DhLog.i("token store: saved vehicleId=${credentials.vehicleId} token=${TextMasking.maskToken(credentials.vehicleAccessToken)}")
+        // vehicleId 도 마스킹(2026-10-28) — 시연 닉네임 맞춤(debug `nickname`·그룹 스냅샷 동기화)이 save 를 부르는데, 그 흐름은 id 원문을 로그에 남기지 않기로 했다(`is_me`)
+        DhLog.i("token store: saved vehicleId=${TextMasking.maskVehicleId(credentials.vehicleId)} token=${TextMasking.maskToken(credentials.vehicleAccessToken)}")
     }
 
     override suspend fun clear() = mutex.withLock {

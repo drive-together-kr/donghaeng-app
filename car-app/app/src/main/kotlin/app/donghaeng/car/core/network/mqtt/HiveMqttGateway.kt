@@ -63,14 +63,16 @@ class HiveMqttGateway @Inject constructor() : MqttGateway {
     }
 
     private fun connectLocked(credentials: StoredCredentials) {
-        val current = this.credentials
-        if (client != null && current != null && current.vehicleId == credentials.vehicleId) {
-            if (current.vehicleAccessToken != credentials.vehicleAccessToken) {
+        when (MqttConnectPolicy.decide(connected = client != null, current = this.credentials, next = credentials)) {
+            // 같은 차·같은 토큰(닉네임만 바뀐 자격 증명 포함) — 연결 유지
+            ConnectDecision.KEEP -> return
+            ConnectDecision.REFRESH_TOKEN -> {
                 // 토큰만 바뀜(갱신) — 다음 재연결부터 새 토큰을 쓴다. 지금 연결은 유지
                 this.credentials = credentials
                 DhLog.i("mqtt token refreshed for next reconnect vid=${TextMasking.maskVehicleId(credentials.vehicleId)}")
+                return
             }
-            return
+            ConnectDecision.CONNECT -> Unit
         }
         if (client != null) disconnectLocked()
 

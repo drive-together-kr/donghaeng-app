@@ -2,8 +2,11 @@ package app.donghaeng.car.domain.session
 
 import app.donghaeng.car.core.common.InMemoryTokenStore
 import app.donghaeng.car.core.common.StoredCredentials
+import app.donghaeng.car.core.common.TokenStore
 import app.donghaeng.car.core.common.TokenStoreState
+import app.donghaeng.car.core.network.mqtt.ConnectDecision
 import app.donghaeng.car.core.network.mqtt.InMemoryMqttGateway
+import app.donghaeng.car.core.network.mqtt.MqttConnectPolicy
 import app.donghaeng.protocol.CmdType
 import app.donghaeng.protocol.GroupEnded
 import app.donghaeng.protocol.GroupEvent
@@ -26,7 +29,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -123,14 +125,15 @@ class MqttSessionManagerTest {
     }
 
     @Test
-    fun `a renamed nickname in the group state updates the stored credentials without reconnecting`() = runTest {
+    fun `a renamed nickname in the group state is saved once and the gateway keeps the same connection`() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
-        val tokens = InMemoryTokenStore(creds)
+        val tokens = CountingTokenStore(InMemoryTokenStore(creds))
         val gateway = InMemoryMqttGateway()
         val sessions = InMemoryGroupSessionStore(GroupSession.from(joined, 1L))
         val manager = MqttSessionManager(tokens, gateway, sessions)
         manager.start(dispatcher)
         runCurrent()
+        assertEquals(listOf(creds), gateway.connectedWith)
 
         fun state(myNick: String) = GroupState(
             "grp_1", "veh_A",
@@ -142,15 +145,33 @@ class MqttSessionManagerTest {
         // 폰에서 "엄마 차" → "둘째 차" 로 바꿈 → 다음 스냅샷에서 저장값이 따라온다
         gateway.emitInbound("dh/v1/group/grp_1/state", MessageTypes.STATE, "srv_1", state("둘째 차"), GroupState.serializer(), seq = 2)
         runCurrent()
+        assertEquals(1, tokens.saves)
         assertEquals("둘째 차", (tokens.state.value as TokenStoreState.Present).credentials.nickname)
-        assertEquals("토큰·차는 그대로", "jwt-1", tokens.load()?.vehicleAccessToken)
-        assertEquals(0, gateway.disconnectCount)
+        assertEquals("토큰·차는 그대로", creds.copy(nickname = "둘째 차"), tokens.load())
 
-        // 같은 닉네임 스냅샷은 저장하지 않는다
-        val before = tokens.state.value
+        // 저장값이 바뀌면 MqttSessionManager 가 새 자격 증명으로 connect 를 다시 부른다 — 닉네임만 다르므로
+        // 실제 게이트웨이(HiveMqttGateway)의 판단은 KEEP(연결 유지)이어야 한다. 판단 함수 자체는 MqttConnectPolicyTest.
+        assertEquals(2, gateway.connectedWith.size)
+        val (previous, latest) = gateway.connectedWith
+        assertEquals("둘째 차", latest.nickname)
+        assertEquals(ConnectDecision.KEEP, MqttConnectPolicy.decide(connected = true, current = previous, next = latest))
+
+        // 같은 닉네임 스냅샷은 저장하지 않는다(2초마다 디스크 쓰기·connect 재호출 없음)
         gateway.emitInbound("dh/v1/group/grp_1/state", MessageTypes.STATE, "srv_1", state("둘째 차"), GroupState.serializer(), seq = 3)
         runCurrent()
-        assertSame(before, tokens.state.value)
+        assertEquals(1, tokens.saves)
+        assertEquals(2, gateway.connectedWith.size)
+    }
+
+    /** save 횟수를 센다 — 같은 값을 다시 저장해도 StateFlow 는 바뀌지 않아 상태만 봐서는 구별이 안 된다 */
+    private class CountingTokenStore(private val inner: InMemoryTokenStore) : TokenStore by inner {
+        var saves = 0
+            private set
+
+        override suspend fun save(credentials: StoredCredentials) {
+            saves++
+            inner.save(credentials)
+        }
     }
 
     @Test

@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * 페어링으로 받은 차량 자격 증명 (docs/03 §1.2 `POST /device/token` 200 응답을 그대로 보관).
- * 로그에는 [vehicleId] 만 남길 수 있다 — 토큰·닉네임 원문 금지(CLAUDE.md 규칙 8, [TextMasking]).
+ * 로그에는 마스킹한 값만 남긴다 — 토큰·닉네임 원문 금지(CLAUDE.md 규칙 8), [vehicleId] 도 `TextMasking.maskVehicleId`([TextMasking]).
  */
 data class StoredCredentials(
     val vehicleAccessToken: String,

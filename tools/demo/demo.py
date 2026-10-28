@@ -244,17 +244,18 @@ class Demo:
         """시연 닉네임을 서버(PATCH /me/vehicles/{id})와 두 차 앱 저장값에 맞춘다 (docs/09 §5).
         차 A = --nick-a, 차 B = --nick-b, 같은 계정의 나머지 차 하나(있으면) = --nick-c. 이미 같으면 건너뛰고, --dry-run 이면 계획만 출력한다.
         그룹 스냅샷·이벤트 문구는 서버가 매번 DB 에서 닉네임을 읽어 바로 반영되고, 차 앱 저장값(홈 화면·그룹 기본 이름 "아빠 차와 같이 가기")은
-        그룹 스냅샷으로도 맞춰지지만 그룹 전에는 알 길이 없어 debug 리시버 `nickname` 으로 같은 값을 넣는다."""
+        그룹 스냅샷으로도 맞춰지지만 그룹 전에는 알 길이 없어 debug 리시버 `nickname` 으로 같은 값을 넣는다.
+        서버에 닿지 않아도 예외로 죽지 않고 FAIL 행만 남긴다 — preflight 표가 바로 그 상황을 진단하는 곳이다(2026-10-28 리뷰)."""
         a = self.a
         if not a.email:
             rows.append(("시연 닉네임 — --email 없음: 서버 닉네임을 바꾸지 않았다(패널·음성에 페어링 때 이름이 나온다)", None))
             return
+        from api import DhApi, mask
         try:
-            from api import DhApi, mask
             api = DhApi(a.server, a.email)
             api.login()
             vehicles = api.vehicles()
-        except SystemExit as e:
+        except (SystemExit, OSError) as e:   # OSError: 혹시 DhApi.call 밖에서 난 연결 오류(URLError·TimeoutError 는 OSError 하위)
             rows.append((f"시연 닉네임 — 서버 조회 실패({e})", False))
             return
         print("\n== 시연 닉네임 ==")
@@ -273,22 +274,33 @@ class Demo:
             plan.append(("C", rest[0], a.nick_c))
         else:
             print(f"  (나머지 차 없음 또는 차 A/B 미확인 — '{a.nick_c}' 는 건너뜀)")
+        synced = []   # 서버 값이 새 닉네임과 같아진 항목(처음부터 같음 또는 PATCH 200)만 — 차 앱 저장값은 이것만 맞춘다
         for role, vid, nick in plan:
             old = by_id[vid].get("nickname")
             label = f"차 {role} {mask(vid)} '{old}' → '{nick}'"
             if old == nick:
                 print(f"  같음  {label}")
                 rows.append((f"닉네임 차 {role} = '{nick}'", True))
+                synced.append((role, nick))
             elif a.dry_run:
                 print(f"  계획  {label} (dry-run — 바꾸지 않음)")
                 rows.append((f"닉네임 차 {role} = '{nick}' (dry-run: 지금 '{old}', 실제 실행 때 바꾼다)", None))
             else:
-                st, res = api.rename_vehicle(vid, nick)
+                try:
+                    st, res = api.rename_vehicle(vid, nick)
+                except (SystemExit, OSError) as e:
+                    st, res = 0, e
                 print(f"  {'변경' if st == 200 else '실패'}  {label} → HTTP {st}")
                 rows.append((f"닉네임 차 {role} = '{nick}'" + ("" if st == 200 else f" (PATCH {st} {str(res)[:80]})"), st == 200))
-        # 차 앱 저장값(홈·그룹 기본 이름) — 서버가 같아도 앱이 옛 값일 수 있어 항상 넣는다(같으면 앱이 changed=false)
+                if st == 200:
+                    synced.append((role, nick))
+        # 차 앱 저장값(홈·그룹 기본 이름) — 서버가 같아도 앱이 옛 값일 수 있어 넣는다(같으면 앱이 changed=false).
+        # 서버 PATCH 가 실패한 차는 넣지 않는다: 앱만 새 이름이면 홈·그룹 기본 이름과 서버 음성·패널 이름이 어긋나고, 다음 그룹 스냅샷이 다시 옛 이름으로 되돌린다
         if not a.dry_run:
-            for role, vid, nick in plan:
+            for role, _vid, _nick in plan:
+                if role in ("A", "B") and role not in {r for r, _ in synced}:
+                    print(f"  (차 {role} 서버 닉네임이 안 바뀌어 앱 저장값은 그대로 둔다)")
+            for role, nick in synced:
                 serial = {"A": self.A, "B": self.B}.get(role)
                 if not serial:
                     continue
@@ -298,7 +310,7 @@ class Demo:
                 rows.append((f"차 {role} 앱 저장 닉네임 맞춤({'바꿈' if hit and 'changed=true' in hit else '이미 같음' if hit else '응답 없음'})", bool(hit)))
         try:
             groups = api.active_groups()
-        except SystemExit:
+        except (SystemExit, OSError):
             groups = []
         if groups:
             print(f"  (활성 그룹 '{groups[0].get('name')}' — 패널 머리글에 그대로 나온다. 이름을 바꾸려면 그룹을 끝내고 차 A 에서 새로 만든다: 기본 이름 '{a.nick_a}{gwa_wa(a.nick_a)} 같이 가기')")
