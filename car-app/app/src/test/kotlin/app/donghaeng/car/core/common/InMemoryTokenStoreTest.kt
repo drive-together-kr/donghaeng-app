@@ -2,6 +2,7 @@ package app.donghaeng.car.core.common
 
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -98,5 +99,25 @@ class InMemoryTokenStoreTest {
         val masked = TextMasking.maskVehicleId("KMHXX00XXXX000001")
         assertEquals("KMHX…01", masked)
         assertTrue(!masked.contains("X00XXXX0000"))
+    }
+
+    @Test
+    fun `자격 증명과 Present 의 toString 은 마스킹 값만 낸다 (규칙 8, T33 리뷰)`() {
+        val secret = StoredCredentials(
+            vehicleAccessToken = "eyJhbGciOiJSUzI1NiJ9.payloadPART.signaturePART", refreshToken = "Rf7Qx9SecretRefreshValue",
+            vehicleId = "veh_01HSECRETID", nickname = "엄마차", ownerId = "usr_01HOWNERID",
+            mqttUri = "tcp://10.0.2.2:1883", mqttClientId = "veh_01HSECRETID", mqttUsername = "veh_01HSECRETID",
+        )
+        val present = TokenStoreState.Present(secret)
+        for (text in listOf(secret.toString(), present.toString(), "token state $present")) {
+            listOf("payloadPART", "signaturePART", "SecretRefreshValue", "엄마차", "01HOWNERID", "01HSECRETID").forEach { raw ->
+                assertFalse("원문 '$raw' 이 남았다: $text", text.contains(raw))
+            }
+            assertTrue(text, text.contains("veh_…ID"))
+            assertTrue(text, text.contains("eyJh…(len=${secret.vehicleAccessToken.length})"))
+        }
+        // equals 는 그대로(원문 비교) — 마스킹은 문자열화에만
+        assertEquals(secret, secret.copy())
+        assertTrue(secret != secret.copy(refreshToken = "other"))
     }
 }

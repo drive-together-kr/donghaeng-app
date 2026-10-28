@@ -7,6 +7,9 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * 페어링으로 받은 차량 자격 증명 (docs/03 §1.2 `POST /device/token` 200 응답을 그대로 보관).
  * 로그에는 [vehicleId] 만 남길 수 있다 — 토큰·닉네임 원문 금지(CLAUDE.md 규칙 8, [TextMasking]).
+ *
+ * [toString] 은 **마스킹된 값만** 낸다(T33 리뷰) — 문자열 템플릿·예외 메시지·테스트 실패 메시지로 새어 나가도
+ * logcat·링 버퍼·`files/dh_log.txt`(진단 화면 캡처)에 토큰·닉네임·소유자 ID 원문이 남지 않게 한다.
  */
 data class StoredCredentials(
     val vehicleAccessToken: String,
@@ -17,7 +20,13 @@ data class StoredCredentials(
     val mqttUri: String,
     val mqttClientId: String,
     val mqttUsername: String,
-)
+) {
+    override fun toString(): String =
+        "StoredCredentials(vehicleId=${TextMasking.maskVehicleId(vehicleId)}, accessToken=${TextMasking.maskToken(vehicleAccessToken)}, " +
+            "refreshToken=${TextMasking.maskToken(refreshToken)}, nickname=${TextMasking.maskNickname(nickname)}, " +
+            "ownerId=${TextMasking.maskVehicleId(ownerId)}, mqttUri=$mqttUri, mqttClientId=${TextMasking.maskVehicleId(mqttClientId)}, " +
+            "mqttUsername=${TextMasking.maskVehicleId(mqttUsername)})"
+}
 
 /**
  * 저장소 상태 — 읽기 전(Loading)과 "읽었는데 없음"(Empty)을 구분해 홈 화면이 잠깐 '연결 안 됨' 으로 깜빡이지 않게 한다.
@@ -27,7 +36,11 @@ data class StoredCredentials(
 sealed interface TokenStoreState {
     data object Loading : TokenStoreState
     data object Empty : TokenStoreState
-    data class Present(val credentials: StoredCredentials) : TokenStoreState
+    data class Present(val credentials: StoredCredentials) : TokenStoreState {
+        /** 마스킹된 [StoredCredentials.toString] 만 — 상태를 통째로 로그에 넣어도 원문이 남지 않게 */
+        override fun toString(): String = "Present(credentials=$credentials)"
+    }
+
 
     /** @param reason 예외 요약(클래스 이름 위주, 토큰·경로 없음) — 진단·홈 배너 표시용 */
     data class Unavailable(val reason: String) : TokenStoreState

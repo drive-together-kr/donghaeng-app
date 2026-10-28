@@ -1,10 +1,12 @@
 package app.donghaeng.car.domain.session
 
+import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.core.common.InMemoryTokenStore
 import app.donghaeng.car.core.common.StoredCredentials
 import app.donghaeng.car.core.common.TokenClearReason
 import app.donghaeng.car.core.common.TokenStoreState
 import app.donghaeng.car.core.network.mqtt.InMemoryMqttGateway
+import app.donghaeng.car.core.network.mqtt.MqttGateway
 import app.donghaeng.car.testing.FakeIdentityApi
 import app.donghaeng.car.testing.fakeJwt
 import app.donghaeng.car.testing.testRefresher
@@ -271,5 +273,28 @@ class MqttSessionManagerTest {
         assertEquals(TokenStoreState.Empty, tokens.state.value)
         assertEquals(listOf(TokenClearReason.TOKEN_REVOKED_CMD), tokens.clearReasons)
         assertNotNull(tokens.lastClear.value)
+    }
+
+    @Test
+    fun `T33 리뷰 - 토큰 상태 처리가 실패해도 로그에는 상태 종류만, 자격 증명 원문은 남지 않는다`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val secret = creds.copy(vehicleAccessToken = "eyJSECRETACCESS.part.sig", refreshToken = "SECRETREFRESHVALUE", nickname = "비밀차", ownerId = "usr_SECRETOWNERX")
+        val tokens = InMemoryTokenStore(secret)
+        val inner = InMemoryMqttGateway()
+        // 접속 단계에서 예외(HiveMQ 빌더·topicFilter 오류 등) → MqttSessionManager.guarded 가 E 로그를 남긴다
+        val failing = object : MqttGateway by inner {
+            override suspend fun connect(credentials: StoredCredentials) = throw IllegalStateException("builder failed")
+        }
+        val manager = MqttSessionManager(tokens, failing, InMemoryGroupSessionStore(), testRefresher(tokens))
+        manager.start(dispatcher)
+        runCurrent()
+
+        val lines = DhLog.recent(DhLog.RING_CAPACITY)
+        val failure = lines.lastOrNull { it.contains("token state") && it.contains("failed") }
+        assertNotNull("실패 줄이 남는다", failure)
+        assertTrue(failure, failure!!.contains("token state Present failed"))
+        listOf("SECRETACCESS", "SECRETREFRESHVALUE", "비밀차", "SECRETOWNERX").forEach { raw ->
+            assertTrue("원문 '$raw' 이 로그에 남았다", lines.none { it.contains(raw) })
+        }
     }
 }

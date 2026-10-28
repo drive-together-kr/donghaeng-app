@@ -130,7 +130,8 @@ class MqttSessionManager @Inject constructor(
             // 세션 저장소가 깨져도 토큰 처리는 계속돼야 한다
             guarded("group session load") { sessionStore.load() }
             guarded("token store load") { tokenStore.load() }
-            tokenStore.state.collect { state -> guarded("token state $state") { onTokenState(state) } }
+            // 상태 객체를 문자열에 넣지 않는다 — Present 에는 자격 증명이 들어 있다(규칙 8, T33 리뷰). 종류 이름만
+            tokenStore.state.collect { state -> guarded("token state ${state::class.simpleName}") { onTokenState(state) } }
         }
         scope.launch { gateway.inbound.collect { message -> guarded("inbound ${message.envelope.type}") { onInbound(message) } } }
         scope.launch { gateway.authFailures.collect { failure -> guarded("auth failure") { onAuthFailure(failure) } } }
