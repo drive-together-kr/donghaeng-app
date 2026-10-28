@@ -112,6 +112,7 @@ class RestDtosTest {
     @Test
     fun `경로 헬퍼는 docs-03 경로와 QR 규칙을 만든다`() {
         assertEquals("/v1/auth/login", ApiPaths.AUTH_LOGIN)
+        assertEquals("X-Dev-Login-Key", ApiHeaders.DEV_LOGIN_KEY)
         assertEquals("/v1/device/token", ApiPaths.DEVICE_TOKEN)
         assertEquals("/v1/me/vehicles/veh_1", ApiPaths.meVehicle("veh_1"))
         assertEquals("/v1/groups/grp_1/messages", ApiPaths.groupMessages("grp_1"))

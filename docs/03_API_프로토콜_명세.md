@@ -4,6 +4,7 @@
   - 로컬(에뮬레이터) `http://10.0.2.2:8080` · 로컬(실기기, 같은 Wi-Fi) `http://<PC-IP>:8080` · 클라우드 `https://<VM-IP>.sslip.io` (예: `https://1-2-3-4.sslip.io`, Caddy 자동 인증서)
 - REST Base URL: `{DH_PUBLIC_BASE_URL}/v1` (로컬: `http://10.0.2.2:8080/v1` — 에뮬레이터 기준)
 - MQTT 공개 주소 설정값 **`DH_MQTT_PUBLIC_URI`**: 로컬 `tcp://10.0.2.2:1883`, 클라우드 `ssl://<VM-IP>.sslip.io:8883`. MQTT 5.0
+- MQTT 대체 주소(WSS): **`wss://{DH_PUBLIC_BASE_URL 호스트}/mqtt` (443)** — 클라우드 Caddy 가 EMQX WebSocket 리스너로 넘긴다(서브프로토콜 `mqtt`, 인증·토픽·ACL 은 1차 주소와 같음). 8883 이 막힌 망에서 쓰며 별도 설정값 없이 `DH_PUBLIC_BASE_URL` 이 `https://` 일 때만 이 규칙으로 만든다(로컬 `http://` 는 1883 직결만). 예: `https://1-2-3-4.sslip.io` → `wss://1-2-3-4.sslip.io/mqtt` (infra/cloud, T32)
 - QR·딥링크 URL은 항상 `{DH_PUBLIC_BASE_URL}` + 경로(`/pair?c=…`, `/j/{token}`)로 **서버가 생성**하고, companion 모듈은 호스트가 아니라 **경로로 종류를 판별**한다(07 문서 §5)
 - 직렬화: JSON (UTF-8), 필드명 camelCase, 시간은 epoch milliseconds(`ts`), 좌표는 WGS84 소수점 7자리
 - 시각 기준: 모든 `ts` 는 **서버 시계**가 기준이다. `GET /v1/time`(인증 없음) → 200 `{ "serverTimeMs": 1730000000000 }`. 차량 앱은 3회 호출 중 왕복이 가장 짧은 표본으로 `offset = serverTime − (t0 + rtt/2)` 를 잡아(T31 `ClockSync`, 5분마다) 메시지 지연(ms) 표시와 음성 신선도(5 s) 판정에 쓴다 — 차량 시계가 틀려도 동작한다(에뮬레이터 실측: 호스트보다 1.2~1.9 s 늦어 보정 없이는 지연이 음수).
@@ -38,6 +39,8 @@ companion 모듈은 제공자와 무관하게 아래 교환 한 가지 경로만
 | 501 `PROVIDER_NOT_SUPPORTED` | `bluelink` · `myhyundai` · `kia_connect` · `genesis_connected` (MVP 미구현) |
 
 `POST /auth/login` 은 `provider` 가 `dev` 일 때만 200 (그 외 400 `VALIDATION_FAILED`). `provider_sub` 는 소문자 이메일 — 대소문자가 달라도 같은 사용자다.
+**접속 키**: 서버에 `DH_DEV_LOGIN_KEY` 가 설정돼 있으면(클라우드 필수, 로컬은 비움) 요청 헤더 `X-Dev-Login-Key`(protocol `ApiHeaders.DEV_LOGIN_KEY`)가 같아야 하고, 없거나 다르면 본문을 보기 전에 **403 `FORBIDDEN`** 이다 — 비밀번호 없는 dev 로그인이 공개 서버에서 이메일만으로 남의 계정을 열지 않게(docs/10 R16).
+demo-host 는 빌드 속성 `dhDevLoginKey`, `tools/demo` 는 환경변수 `DH_DEV_LOGIN_KEY` 로 넣는다. `/auth/exchange`·`/auth/refresh` 는 이 키를 보지 않는다(dev 교환은 로그인이 발급한 토큰만 인정).
 
 `POST /auth/refresh` `{ "refreshToken": "..." }` → 200 새 토큰 쌍. **회전**: 이전 refresh 는 즉시 폐기되고 재사용하면 401. 무효·폐기·만료는 모두 401 `INVALID_TOKEN`(구분하지 않음).
 refresh 토큰은 불투명 문자열(랜덤 32바이트 Base62, 30일, 서버엔 SHA-256 해시만). 차량 refresh 토큰이면 `accessToken` 은 **차량 토큰**이고 `user` 는 소유자다(차량 앱도 같은 엔드포인트를 쓴다). 페어링이 해제된 차량의 refresh 는 거부.

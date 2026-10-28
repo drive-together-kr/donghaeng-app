@@ -76,7 +76,7 @@ public fun interface TokenProvider { public suspend fun accessToken(): String } 
 서버에는 **검증 인터페이스만** 둔다: `ExternalTokenVerifier` (MVP 구현 `DevTokenVerifier`; 구현 자리: Bluelink/MyHyundai, KiaConnect, GenesisConnected). 실제 IdP 연동은 OEM 협의 대상이며 공모전 범위 밖이다.
 
 ### 4.2 MVP — dev 로그인
-`provider = DEV`. demo-host 가 `POST /v1/auth/login {provider:"dev", email, displayName}` 로 받은 토큰(accessToken JWT)을 `TokenProvider` 로 넘기고, sdk 는 다른 제공자와 똑같이 `POST /v1/auth/exchange {provider:"dev", accessToken}` 으로 동행 JWT 를 받는다 — 서버의 `DevTokenVerifier` 가 이를 그대로 인정한다(docs/03 §1.1). 모듈은 토큰 형식을 해석하지 않는다. 계정에 연결된 차량은 4.3 의 페어링으로 만든다.
+`provider = DEV`. demo-host 가 `POST /v1/auth/login {provider:"dev", email, displayName}`(클라우드 서버면 헤더 `X-Dev-Login-Key` — 빌드 속성 `dhDevLoginKey`, docs/03 §1.1) 로 받은 토큰(accessToken JWT)을 `TokenProvider` 로 넘기고, sdk 는 다른 제공자와 똑같이 `POST /v1/auth/exchange {provider:"dev", accessToken}` 으로 동행 JWT 를 받는다 — 서버의 `DevTokenVerifier` 가 이를 그대로 인정한다(docs/03 §1.1). 모듈은 토큰 형식을 해석하지 않는다. 계정에 연결된 차량은 4.3 의 페어링으로 만든다.
 
 **T13(2026-10-27) 이후:** `provider = DEV` 도 `HttpDongHaengApi` + `/v1/auth/exchange` 로 실서버와 통신한다. 메모리 Fake(`internal/FakeDongHaengApi`)는 단위 테스트용 `internal` 훅(`DongHaeng.initWithApi`)으로만 남았다(공개 API 변경 없음). 실서버 검증: demo-host dev 로그인 → 차량 페어링 QR 승인(`/device/approve` 200) → `listMyVehicles` 에 차량 표시.
 

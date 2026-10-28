@@ -2,6 +2,7 @@ package app.donghaeng.companion.demo
 
 import android.util.Log
 import app.donghaeng.protocol.DhJson
+import app.donghaeng.protocol.rest.ApiHeaders
 import app.donghaeng.protocol.rest.ApiPaths
 import app.donghaeng.protocol.rest.ErrorEnvelope
 import app.donghaeng.protocol.rest.LoginRequest
@@ -19,9 +20,12 @@ import java.util.concurrent.TimeUnit
  * 호스트 앱(공식 앱) 쪽의 로그인 — 데모에서는 서버의 dev 간편 로그인 `POST /v1/auth/login {provider:"dev", email, displayName}` 다(docs/03 §1.1).
  * 동행 모듈의 일이 아니라 호스트가 직접 부른다(모듈은 자체 로그인이 없다, CLAUDE.md 규칙 13). 응답의 accessToken 이 모듈 [app.donghaeng.companion.sdk.TokenProvider] 로
  * 넘어가고, 모듈이 `POST /v1/auth/exchange` 로 동행 JWT 와 교환한다. 실제 공식 앱이라면 이 자리가 자기 OAuth 2.0 로그인이다.
+ *
+ * [devLoginKey]: 클라우드 서버(T32)가 요구하는 dev 로그인 접속 키(`X-Dev-Login-Key`, docs/03 §1.1). 비어 있으면 헤더를 보내지 않는다(로컬 서버).
  */
 class DevAuthClient(
     publicBaseUrl: String,
+    private val devLoginKey: String = "",
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
@@ -43,6 +47,7 @@ class DevAuthClient(
         val request = Request.Builder()
             .url(baseUrl + ApiPaths.AUTH_LOGIN)
             .header("Accept", "application/json")
+            .apply { if (devLoginKey.isNotBlank()) header(ApiHeaders.DEV_LOGIN_KEY, devLoginKey.trim()) }
             .post(body.toRequestBody(JSON))
             .build()
         val (code, text) = try {
@@ -57,6 +62,7 @@ class DevAuthClient(
             throw DevAuthException(
                 when {
                     code == 404 -> "서버에 dev 로그인(/v1/auth/login)이 아직 없어요. 서버(T10)가 배포되면 다시 시도해 주세요"
+                    code == 403 && devLoginKey.isBlank() -> "이 서버는 dev 로그인 접속 키가 필요해요. -PdhDevLoginKey=<키> 로 다시 빌드해 주세요 (infra/cloud/README.md §3)"
                     envelope != null -> "${envelope.message} [${envelope.code}]"
                     else -> "로그인에 실패했어요 (HTTP $code)"
                 },

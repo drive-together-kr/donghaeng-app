@@ -35,6 +35,6 @@ _(구현 후 작성)_ 1) `infra/`에서 `docker compose up -d` 2) Pleos Connect 
 | `companion/` | 공식 앱 내장 모듈: `sdk/`(Android AAR, 공개 API 6개) + `demo-host/`(시연용 호스트 앱) |
 | `server/` | Kotlin + Spring Boot 3.3 모듈러 모놀리스 |
 | `protocol/` | car-app·server·companion/sdk 공용 메시지 스키마 (kotlinx.serialization; sdk 는 `MemberState`·`GroupEvent` 를 공개 API 에 재노출) |
-| `infra/` | docker compose (postgres·redis·emqx·server), Caddy(T32 예정) |
+| `infra/` | docker compose (postgres·redis·emqx·server) + `cloud/`(클라우드 VM: Caddy+layer4 오버라이드·`deploy.sh`, T32) |
 | `docs/` | 기획·설계 문서 |
 | `apk/` | 제출용 release APK |

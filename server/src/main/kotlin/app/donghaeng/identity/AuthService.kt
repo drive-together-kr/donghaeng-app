@@ -1,5 +1,6 @@
 package app.donghaeng.identity
 
+import app.donghaeng.common.config.DhProperties
 import app.donghaeng.identity.jwt.JwtIssuer
 import app.donghaeng.identity.repo.UserRecord
 import app.donghaeng.identity.repo.UserRepository
@@ -12,6 +13,7 @@ import app.donghaeng.protocol.rest.UserDto
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import java.security.MessageDigest
 
 /**
  * 사용자 인증 (docs/03 §1.1): dev 로그인, 공식 앱 토큰 교환, refresh 회전.
@@ -23,10 +25,15 @@ class AuthService(
     private val verifiers: List<ExternalTokenVerifier>,
     private val jwt: JwtIssuer,
     private val refreshTokens: RefreshTokenService,
+    private val props: DhProperties,
 ) {
-    /** MVP 개발용 간편 로그인 — `provider = dev` 만. `provider_sub` 는 소문자 이메일. */
+    /**
+     * MVP 개발용 간편 로그인 — `provider = dev` 만. `provider_sub` 는 소문자 이메일.
+     * `dh.auth.dev-login-key` 가 설정돼 있으면(클라우드) [presentedDevLoginKey](헤더 `X-Dev-Login-Key`)가 같아야 한다 — 아니면 403 `FORBIDDEN`.
+     */
     @Transactional
-    fun login(req: LoginRequest): TokenResponse {
+    fun login(req: LoginRequest, presentedDevLoginKey: String? = null): TokenResponse {
+        requireDevLoginKey(presentedDevLoginKey)
         if (req.provider.trim().lowercase() != Providers.DEV) {
             throw IdentityErrors.validation("provider: 간편 로그인은 dev 만 지원해요. 공식 앱 계정은 /auth/exchange 를 쓰세요")
         }
@@ -72,6 +79,17 @@ class AuthService(
                 TokenResponse(jwt.vehicleToken(vehicle.vehicleId, vehicle.ownerId), rotation.refreshToken, UserDto(owner.userId, owner.displayName))
             }
             else -> throw IdentityErrors.invalidToken()
+        }
+    }
+
+    /** 키 값은 로그에 남기지 않는다(CLAUDE.md 규칙 8). 비교는 상수 시간. */
+    private fun requireDevLoginKey(presented: String?) {
+        val expected = props.auth.devLoginKey ?: return
+        val ok = presented != null &&
+            MessageDigest.isEqual(expected.toByteArray(Charsets.UTF_8), presented.trim().toByteArray(Charsets.UTF_8))
+        if (!ok) {
+            log.warn("dev login rejected: {} dev login key", if (presented.isNullOrBlank()) "missing" else "wrong")
+            throw IdentityErrors.devLoginKeyRejected()
         }
     }
 

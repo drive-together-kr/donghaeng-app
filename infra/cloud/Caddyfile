@@ -1,0 +1,110 @@
+# 동행 클라우드(T32) Caddy 설정 — docs/06 §7, infra/cloud/README.md
+#
+#   https://{$DH_PUBLIC_HOST}           (443)  /mqtt       → emqx:8083  MQTT over WebSocket(WSS, 차량 앱 대체 경로)
+#                                              /internal/* → 404        EMQX 인증·ACL 훅은 compose 네트워크 전용
+#                                              그 밖        → server:8080 REST·JWKS·QR 웹 폴백
+#   http://{$DH_PUBLIC_HOST}            (80)   → https 로 308 리다이렉트 + ACME HTTP-01 (Caddy 자동)
+#   {$DH_PUBLIC_HOST}:8883              (8883) layer4: TLS 종단 → emqx:1883 평문 MQTT (차량 앱 기본 경로)
+#
+# 인증서: <IP>.sslip.io 를 Let's Encrypt 로 자동 발급·갱신(80/443 이 인터넷에서 닿아야 함). 8883 은 같은 인증서를
+# SNI 로 골라 쓴다 — 아래 HTTPS 사이트가 그 이름의 인증서를 관리하기 때문에 layer4 쪽에 따로 적지 않는다.
+# 환경 변수(docker-compose.cloud.yml 의 caddy 서비스가 .env 로 채움): DH_PUBLIC_HOST(필수, 예 1-2-3-4.sslip.io),
+# CADDY_EMAIL_OPTION(.env 의 CADDY_EMAIL 이 있으면 "email <주소>", 없으면 빈 값).
+#
+# 이 파일을 바꾼 뒤에는 deploy.sh(8단계가 실행 중인 caddy 가 읽은 해시와 비교해 caddy 를 다시 만든다) 또는 `dc up -d --force-recreate caddy`.
+# `caddy reload` 는 쓰지 않는다 — 단일 파일 바인드 마운트라 파일이 새로 만들어지면 실행 중인 컨테이너는 옛 내용을 계속 본다(README §5).
+{
+	# ACME 계정 메일(선택). compose 가 .env 의 CADDY_EMAIL 이 있으면 "email <주소>" 를, 없으면 빈 값을 넣는다.
+	# {$VAR} 는 파싱 전에 치환돼 빈 값·여러 토큰으로도 풀린다 — 빈 값이면 이 줄이 사라져 메일 없이 Let's Encrypt 계정을 만든다.
+	# (email {$CADDY_EMAIL} 로 쓰면 비었을 때 'wrong argument count' 파싱 오류가 난다. 메일이 있으면 Caddy 가 ZeroSSL 을 예비 발급자로 붙인다.)
+	{$CADDY_EMAIL_OPTION}
+
+	# Caddy 자체 로그(http.log.error·reverse_proxy — 예: 서버 재시작 중 502)는 요청 객체(uri·headers)를 함께 남긴다.
+	# "로그에 좌표·토큰 원문 금지"(CLAUDE.md 규칙 8)에 맞게 기본 로거에서 거른다:
+	#   uri     쿼리 전체(?c=<페어링 코드>, ?lat=…&lng=… 좌표 등) → ?***,  /j/<초대 토큰> → /j/***
+	#   headers Referer(토큰 경로가 실릴 수 있음)·X-Dev-Login-Key(dev 로그인 접속 키) 삭제. Authorization·Cookie 는 Caddy 가 기본으로 가린다.
+	# 확인: README §8 (502 를 일으켜 docker logs 에 원문이 없는지).
+	log {
+		format filter {
+			wrap json
+			fields {
+				request>uri multi_regexp {
+					regexp "^/j/[^?]*" "/j/***"
+					regexp "\?.*$" "?***"
+				}
+				request>headers>Referer delete
+				request>headers>X-Dev-Login-Key delete
+			}
+		}
+	}
+
+	servers {
+		# h3(QUIC, UDP 443) 끔 — 차량 앱(OkHttp·HiveMQ)은 쓰지 않고, 방화벽도 TCP 만 연다.
+		protocols h1 h2
+		timeouts {
+			# 요청 헤더는 10초 안에 다 와야 한다(느린 연결로 소켓 붙잡기 방지).
+			read_header 10s
+			# keep-alive 유휴 연결 정리.
+			idle 2m
+			# read_body·write 는 일부러 두지 않는다: 연결 전체에 걸리는 기한이라
+			# WebSocket(MQTT) 처럼 몇 시간씩 열려 있는 연결을 끊을 수 있다.
+		}
+	}
+
+	layer4 {
+		# MQTT over TLS. 클라이언트(HiveMQ)는 SNI 로 {$DH_PUBLIC_HOST} 를 보낸다.
+		# 프록시 구간은 raw TCP 라 유휴 타임아웃이 없다 — 끊긴 연결은 MQTT keepalive(EMQX 가 1.5배 초과 시 정리)로 걸러진다.
+		:8883 {
+			route {
+				tls
+				proxy emqx:1883
+			}
+		}
+	}
+}
+
+{$DH_PUBLIC_HOST} {
+	# 액세스 로그는 켜지 않는다: 경로·쿼리에 초대 토큰(/j/{token})·페어링 코드(/pair?c=…)·좌표가 들어가
+	# "로그에 토큰 원문 금지"(CLAUDE.md 규칙 8)에 걸린다. 인증서 발급·오류 같은 Caddy 자체 로그는 남기되,
+	# 오류 로그에 실리는 요청 uri·헤더는 위 전역 log 필터가 가린다.
+
+	# dev 간편 로그인(POST /v1/auth/login)은 서버가 접속 키(X-Dev-Login-Key = .env 의 DH_DEV_LOGIN_KEY)로 막는다 —
+	# 공개 VM 에서 이메일만으로 남의 dev 계정 토큰을 받지 못하게(docs/10 R16). Caddy 는 그대로 넘긴다.
+
+	# EMQX 의 HTTP 인가 훅(POST /internal/mqtt/acl)은 emqx → server:8080 내부 호출 전용이다. 밖에서는 없는 경로로 보인다.
+	@internal path /internal /internal/*
+	handle @internal {
+		respond 404
+	}
+
+	# MQTT over WebSocket — EMQX ws 리스너(8083) 기본 경로 /mqtt, 서브프로토콜 mqtt. 경로를 벗기지 않는다(handle_path 금지).
+	handle /mqtt {
+		reverse_proxy emqx:8083 {
+			transport http {
+				dial_timeout 5s
+			}
+			# stream_timeout 은 두지 않는다(기본 무제한) — 연결 수명은 MQTT keepalive 가 관리한다.
+			# 설정 리로드 때 열린 WebSocket 을 바로 끊지 않고 최대 5분 유지 → 차량이 한꺼번에 재접속하지 않게.
+			stream_close_delay 5m
+		}
+	}
+
+	handle {
+		# REST 본문은 작다(최대 수 KB). EMQX max_packet_size(1 MB)와 맞춘다.
+		request_body {
+			max_size 1MB
+		}
+		reverse_proxy server:8080 {
+			transport http {
+				dial_timeout 5s
+				# 서버가 30초 안에 응답 헤더를 못 주면 502 — 긴 폴링 API 는 없다(디바이스 토큰 폴링은 클라이언트가 반복 호출).
+				response_header_timeout 30s
+			}
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=86400"
+		X-Content-Type-Options nosniff
+	}
+}

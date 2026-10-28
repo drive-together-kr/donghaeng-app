@@ -12,6 +12,8 @@
   python tools/demo/api.py --email dev@example.com message "휴게소 들렀다 가요" # 동승자 메시지(PASSENGER_MESSAGE)
 
 서버 주소 기본값 http://127.0.0.1:8080 (환경변수 DH_SERVER). 토큰·이메일은 로그에 남기지 않는다.
+클라우드 서버(T32)는 dev 로그인에 접속 키를 요구한다 → 환경변수 DH_DEV_LOGIN_KEY(VM infra/.env 의 같은 이름 값)를 주면
+X-Dev-Login-Key 헤더로 보낸다(docs/03 §1.1, infra/cloud/README.md §3). demo.py 도 이 클래스를 쓰므로 같은 환경변수로 된다.
 """
 import argparse
 import json
@@ -30,12 +32,15 @@ class DhApi:
         self.email = email
         self.display_name = display_name
         self.token: str | None = None
+        self.dev_login_key = (os.environ.get("DH_DEV_LOGIN_KEY") or "").strip()
 
     # ---- HTTP ----
-    def call(self, method: str, path: str, body=None, auth: bool = True, accept_json: bool = True):
+    def call(self, method: str, path: str, body=None, auth: bool = True, accept_json: bool = True, headers: dict | None = None):
         data = json.dumps(body).encode("utf-8") if body is not None else None
         req = urllib.request.Request(self.base + path, data=data, method=method)
         req.add_header("Content-Type", "application/json")
+        for k, v in (headers or {}).items():
+            req.add_header(k, v)
         if accept_json:
             req.add_header("Accept", "application/json")
         if auth and self.token:
@@ -65,7 +70,10 @@ class DhApi:
                 pass
         if not self.email:
             raise SystemExit("--email 이 필요하다 (demo-host 에서 dev 로그인에 쓴 것과 같은 이메일)")
-        st, res = self.call("POST", "/auth/login", {"provider": "dev", "email": self.email, "displayName": self.display_name}, auth=False)
+        key_header = {"X-Dev-Login-Key": self.dev_login_key} if self.dev_login_key else None
+        st, res = self.call("POST", "/auth/login", {"provider": "dev", "email": self.email, "displayName": self.display_name}, auth=False, headers=key_header)
+        if st == 403 and not self.dev_login_key:
+            raise SystemExit("login failed: 403 — 이 서버는 dev 로그인 접속 키가 필요하다. 환경변수 DH_DEV_LOGIN_KEY 를 주고 다시 실행 (infra/cloud/README.md §3)")
         if st != 200:
             raise SystemExit(f"login failed: {st} {res}")
         self.token = res["accessToken"]

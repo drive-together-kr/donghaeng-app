@@ -1,6 +1,7 @@
 package app.donghaeng.mqtt
 
 import app.donghaeng.group.GroupMembershipApi
+import app.donghaeng.group.GroupRoster
 import app.donghaeng.mqtt.MqttAclService.Action.PUBLISH
 import app.donghaeng.mqtt.MqttAclService.Action.SUBSCRIBE
 import kotlin.test.Test
@@ -12,6 +13,11 @@ class MqttAclServiceTest {
 
     private val membership = object : GroupMembershipApi {
         override fun activeGroupIdOf(vehicleId: String): String? = if (vehicleId == "veh_A") "grp_1" else null
+
+        // T24 에서 인터페이스에 추가된 명단 조회 — ACL 판정은 쓰지 않는다
+        override fun rosterOf(groupId: String): GroupRoster? = null
+
+        override fun activeRosters(): List<GroupRoster> = emptyList()
     }
     private val acl = MqttAclService(membership)
 
