@@ -56,6 +56,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
@@ -128,7 +129,8 @@ fun DriveDashboardScreen(
             val landscape = maxWidth > maxHeight
             val narrow = maxWidth < 900.dp
             Column(Modifier.fillMaxSize()) {
-                if (ui.overlayNotice) OverlayNotice(onOpenOverlaySettings)
+                // 안내 문구는 늘 보이고 [권한 열기](설정 화면으로 이동)는 정차 중에만 — 주행 중 입력 UI 비활성(CLAUDE.md 규칙 6)
+                if (ui.overlayNotice) OverlayNotice(if (ui.parked) onOpenOverlaySettings else null)
                 PttTopBand(ui.ptt)
                 Box(Modifier.weight(1f)) {
                     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -161,7 +163,7 @@ fun DriveDashboardScreen(
     }
 }
 
-/** '알림 카드 + 음성' 모드 안내 1줄(플로팅 창 권한 없음) — 설정 화면이 있는 기기에서만 [권한 열기] */
+/** '알림 카드 + 음성' 모드 안내 1줄(플로팅 창 권한 없음) — 설정 화면이 있는 기기·정차 중에만 [권한 열기] */
 @Composable
 private fun OverlayNotice(onOpenSettings: (() -> Unit)?) {
     Surface(Modifier.fillMaxWidth(), color = DriveTone.caution.copy(alpha = 0.16f)) {
@@ -589,7 +591,8 @@ fun BottomBar(ui: DriveDashboardUi, onPtt: () -> Unit, onOpenNavi: () -> Unit, c
                     Spacer(Modifier.width(8.dp))
                     Text(if (ui.connected) stringResource(R.string.dash_connected) else stringResource(R.string.dash_reconnecting), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                ui.latencyMs?.let { Text(stringResource(R.string.dash_latency, it), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                val latency = ui.latencyText?.let { stringResource(R.string.drive_latency, it) } ?: ui.latencyMs?.let { stringResource(R.string.dash_latency, it) }
+                latency?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, textAlign = TextAlign.End) }
             }
         }
     }

@@ -57,6 +57,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
+import app.donghaeng.car.BuildConfig
 import app.donghaeng.car.R
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.session.GroupSession
@@ -77,7 +78,7 @@ import kotlin.math.roundToInt
  * 그룹 주행 화면 진입점 (T25 → 2026-10-28 정차 대시보드로 교체, docs/05 §5.1).
  *
  * 그룹이 있으면 [DriveDashboardScreen](실데이터 = [DriveDashboardMapper]) 위에 선두 경로 제안 카드(T28)를 띄운다. 그룹이 없으면 기존 화면의 "끝났어요" 패널.
- * 초대 QR·나가기/종료는 정차 블록 '그룹 관리'(그룹 생성 화면 Active)에 있다. [내비 보기] = 순정 내비를 앞으로(지도 앱 selector → 실패 시 NaviHelper 화면 요청).
+ * 초대 QR·나가기/종료(확인 다이얼로그)는 정차 블록 '그룹 관리'(그룹 생성 화면 Active)에 있다. [내비 보기] = 순정 내비를 앞으로([NaviLauncher]: 순정 내비 패키지 → 순정 내비로 풀리는 지도 selector → pleos 는 NaviHelper 화면 요청).
  * [무전](F16)은 다음 작업 — 지금은 안내 토스트만.
  */
 @Composable
@@ -104,7 +105,7 @@ fun GroupDriveRoute(
                 DhLog.i("group drive: ptt tapped (F16 미구현)")
                 Toast.makeText(context, R.string.surface_ptt_soon, Toast.LENGTH_SHORT).show()
             },
-            onOpenNavi = { if (!NaviLauncher.bringToFront(context)) viewModel.showNavigationFallback() },
+            onOpenNavi = { if (!NaviLauncher.bringToFront(context, pleosBuild = BuildConfig.ADAPTER == "pleos")) viewModel.showNavigationFallback() },
             onManageGroup = onManageGroup,
             onSettings = onOpenSettings,
             onOpenEvents = onOpenEvents,

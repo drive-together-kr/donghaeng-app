@@ -144,4 +144,49 @@ class DriveDashboardMapperTest {
         assertEquals("3초 전", driving.recentEvents.first().whenText)
         assertEquals("3분 전", driving.recentEvents.last().whenText)   // 3초·9초·1분·2분·3분 전
     }
+
+    private fun received(id: String, type: String, source: String?, envelopeAgeMs: Long, receivedAgeMs: Long = envelopeAgeMs) =
+        ReceivedGroupEvent(GroupEvent(id, type, source, Severity.INFO, "$type 문구", JsonObject(emptyMap())), envelopeTsMs = now - envelopeAgeMs, receivedAtMs = now - receivedAgeMs)
+
+    @Test
+    fun `my own car events are left out of the band and the recent list like the panel and cards`() {
+        val evs = listOf(
+            received("mine", "HARD_BRAKE", "veh_ME", 1_000),
+            received("other", "LOW_ENERGY", "veh_A", 5_000),
+            received("server", "MEMBER_OFFLINE", null, 70_000),
+        )
+        val ui = DriveDashboardMapper.map(state(events = evs), zone)!!
+        assertEquals("내 차 급제동은 띠에 없다", "LOW_ENERGY 문구", ui.event!!.text)
+        assertEquals(listOf("LOW_ENERGY 문구", "MEMBER_OFFLINE 문구"), ui.recentEvents.map { it.text })
+        // me 가 아직 스냅샷에 없어도 자격 증명의 내 차 id 로 거른다
+        val noSnapshot = DriveDashboardMapper.map(state(events = evs).copy(me = null, myVehicleId = "veh_ME"), zone)!!
+        assertEquals(2, noSnapshot.recentEvents.size)
+    }
+
+    @Test
+    fun `events the broker redelivers after a reconnect do not show as just now and their age uses the envelope on the server clock`() {
+        // 모두 방금(0초 전) 받았지만 실제로는 3분·61초·20초 전에 생김. 서버 시계는 기기보다 1초 앞
+        val evs = listOf(
+            received("a", "HARD_BRAKE", "veh_A", envelopeAgeMs = 180_000, receivedAgeMs = 0),
+            received("b", "LOW_ENERGY", "veh_B", envelopeAgeMs = 61_000, receivedAgeMs = 0),
+            received("c", "MEMBER_JOINED", "veh_C", envelopeAgeMs = 20_000, receivedAgeMs = 0),
+        )
+        val ui = DriveDashboardMapper.map(state(events = evs).copy(serverNowMs = now + 1_000), zone)!!
+        assertEquals("60초 안의 것만 띠 후보", "MEMBER_JOINED 문구", ui.event!!.text)
+        assertEquals(21, ui.event!!.ageS)
+        assertEquals(listOf("21초 전", "1분 전", "3분 전"), ui.recentEvents.map { it.whenText })
+        assertEquals("발생 시각 순", listOf("MEMBER_JOINED 문구", "LOW_ENERGY 문구", "HARD_BRAKE 문구"), ui.recentEvents.map { it.text })
+
+        val stale = DriveDashboardMapper.map(state(events = evs.take(2)), zone)!!
+        assertNull("다 오래되면 띠 없음", stale.event)
+        assertEquals(2, stale.recentEvents.size)
+    }
+
+    @Test
+    fun `bottom latency uses the T31 text with event and state when present`() {
+        val ui = DriveDashboardMapper.map(state().copy(latencyText = "이벤트 12 ms · 상태 30 ms"), zone)!!
+        assertEquals("이벤트 12 ms · 상태 30 ms", ui.latencyText)
+        assertEquals(12, ui.latencyMs)
+        assertNull(DriveDashboardMapper.map(state(), zone)!!.latencyText)
+    }
 }

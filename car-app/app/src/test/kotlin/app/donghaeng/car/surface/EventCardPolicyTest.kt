@@ -10,6 +10,7 @@ import kotlinx.serialization.json.JsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -86,4 +87,61 @@ class EventCardPolicyTest {
         assertEquals(1, s.skipped["no-group"])
         assertEquals(1, s.skipped["not-target"])
     }
+
+    private fun ev(id: String, type: String, source: String? = "veh_A", severity: Severity = Severity.WARN) =
+        ReceivedGroupEvent(GroupEvent(id, type, source, severity, "$type 문구", JsonObject(emptyMap())), envelopeTsMs = serverNow - 1_000, receivedAtMs = 0L)
+
+    @Test
+    fun `throttle drops duplicate event ids, repeats of the same type and source within 30 s, and more than two cards in 8 s`() {
+        val t = CardThrottle()
+        fun admit(e: ReceivedGroupEvent, at: Long): String? = t.check(e, at).also { if (it == null) t.record(e, at) }
+
+        assertNull(admit(ev("e1", "MEMBER_OFFLINE", "veh_B"), 0))
+        assertEquals("QoS1 중복 수신", "duplicate", admit(ev("e1", "MEMBER_OFFLINE", "veh_B"), 100))
+        assertEquals("연결 들락날락", "same-recent", admit(ev("e2", "MEMBER_OFFLINE", "veh_B"), 20_000))
+        assertNull("다른 차는 따로", admit(ev("e3", "MEMBER_OFFLINE", "veh_C"), 20_000))
+        assertNull(admit(ev("e3b", "HARD_BRAKE", "veh_C"), 20_500))
+        assertEquals("8초 안 세 번째 카드", "burst", admit(ev("e4", "LOW_ENERGY", "veh_D"), 21_000))
+        assertNull("위험(에어백)은 한도와 상관없이", admit(ev("e5", "AIRBAG_DEPLOYED", "veh_D", Severity.ALERT), 21_500))
+        assertNull("8초 지나면 다시", admit(ev("e6", "LOW_ENERGY", "veh_D"), 30_000))
+        assertNull("30초 지나면 같은 차·같은 종류도 다시", admit(ev("e7", "MEMBER_OFFLINE", "veh_B"), 31_000))
+        // 메시지는 내용이 매번 달라 같은 차라도 eventId 만 거른다(전체 한도는 적용)
+        assertNull(admit(ev("m1", "PASSENGER_MESSAGE", "veh_B", Severity.INFO), 60_000))
+        assertNull(admit(ev("m2", "PASSENGER_MESSAGE", "veh_B", Severity.INFO), 61_000))
+        assertEquals("duplicate", admit(ev("m2", "PASSENGER_MESSAGE", "veh_B", Severity.INFO), 70_000))
+    }
+
+    @Test
+    fun `eventId memory is bounded and keeps the most recent ids`() {
+        val t = CardThrottle(maxIds = 3, burstMax = 100)
+        (1..5).forEach { t.record(ev("id$it", "PASSENGER_MESSAGE"), it * 10_000L) }
+        assertNull("오래된 id 는 잊는다", t.check(ev("id1", "PASSENGER_MESSAGE"), 60_000))
+        assertEquals("duplicate", t.check(ev("id5", "PASSENGER_MESSAGE"), 60_000))
+    }
+
+    @Test
+    fun `notifier applies the throttle and a card that could not be posted does not use up the limit`() {
+        var now = 0L
+        var enabled = false
+        val posted = mutableListOf<String>()
+        val notifier = EventCardNotifier(
+            events = emptyFlow(), myVehicleId = { "veh_ME" }, serverNow = { serverNow }, mode = MutableStateFlow(SurfaceMode.CARDS_ONLY), groupName = { null },
+            poster = { card, _ -> if (enabled) { posted += card.type; true } else false }, clock = { now },
+        )
+        assertFalse("알림 꺼짐 → 못 올림", notifier.onEvent(ev("x1", "HARD_BRAKE")))
+        enabled = true
+        assertTrue("못 올린 건 기억하지 않아 같은 id 재전달은 올린다", notifier.onEvent(ev("x1", "HARD_BRAKE")))
+        assertFalse(notifier.onEvent(ev("x1", "HARD_BRAKE")))
+        now = 5_000
+        assertFalse(notifier.onEvent(ev("x2", "HARD_BRAKE")))
+        assertTrue(notifier.onEvent(ev("x3", "LOW_ENERGY")))
+        assertFalse(notifier.onEvent(ev("x4", "MEMBER_JOINED", "veh_B")))
+        assertEquals(listOf("HARD_BRAKE", "LOW_ENERGY"), posted)
+        val skipped = notifier.state.value.skipped
+        assertEquals(1, skipped["not-posted"])
+        assertEquals(1, skipped["duplicate"])
+        assertEquals(1, skipped["same-recent"])
+        assertEquals(1, skipped["burst"])
+    }
 }
+

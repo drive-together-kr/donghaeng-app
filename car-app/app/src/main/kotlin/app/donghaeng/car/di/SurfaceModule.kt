@@ -31,8 +31,9 @@ object SurfaceModule {
 
     @Provides
     @Singleton
-    fun provideOverlayPermissionMonitor(@ApplicationContext context: Context): OverlayPermissionMonitor =
-        OverlayPermissionMonitor(check = OverlayPermissionMonitor.androidCheck(context))
+    fun provideOverlayPermissionMonitor(@ApplicationContext context: Context, sessionManager: MqttSessionManager): OverlayPermissionMonitor =
+        // 5초 주기 확인은 그룹이 있는 동안만(표면 OFF 면 쓸 데가 없다) — 시작·포그라운드 복귀 때의 확인은 항상
+        OverlayPermissionMonitor(check = OverlayPermissionMonitor.androidCheck(context), active = sessionManager.session.map { it != null })
 
     @Provides
     @Singleton
@@ -46,6 +47,7 @@ object SurfaceModule {
     @Singleton
     fun provideSurfaceState(
         sessionManager: MqttSessionManager,
+        clockSync: ClockSync,
         mqtt: MqttGateway,
         driving: DrivingStateMonitor,
         overlay: OverlayPermissionMonitor,
@@ -59,8 +61,10 @@ object SurfaceModule {
         connected = mqtt.status.map { it.state == MqttState.CONNECTED },
         driving = driving.isDriving(),
         canDrawOverlays = overlay.canDraw,
-        appResumed = tracker.appResumed,
+        appVisible = tracker.appVisible,
         positions = positions,
+        // 소식 줄·대시보드 띠의 신선도(60 s)·"N초 전"은 서버 시계 기준(T31) — 재접속 때 밀려 온 옛 이벤트가 '방금'으로 보이지 않게
+        serverClock = { clockSync.serverNow() },
     )
 
     @Provides

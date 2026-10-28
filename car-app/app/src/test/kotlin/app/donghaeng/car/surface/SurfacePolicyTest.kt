@@ -19,10 +19,10 @@ class SurfacePolicyTest {
 
     @Test
     fun `panel shows only in PANEL mode while the app screen is not in front`() {
-        assertTrue(SurfacePolicy.panelVisible(SurfaceMode.PANEL, appResumed = false))
-        assertFalse("동행 화면이 앞이면 대시보드가 같은 정보를 보여 준다", SurfacePolicy.panelVisible(SurfaceMode.PANEL, appResumed = true))
-        assertFalse(SurfacePolicy.panelVisible(SurfaceMode.CARDS_ONLY, appResumed = false))
-        assertFalse(SurfacePolicy.panelVisible(SurfaceMode.OFF, appResumed = false))
+        assertTrue(SurfacePolicy.panelVisible(SurfaceMode.PANEL, appVisible = false))
+        assertFalse("동행 화면이 앞이면 대시보드가 같은 정보를 보여 준다", SurfacePolicy.panelVisible(SurfaceMode.PANEL, appVisible = true))
+        assertFalse(SurfacePolicy.panelVisible(SurfaceMode.CARDS_ONLY, appVisible = false))
+        assertFalse(SurfacePolicy.panelVisible(SurfaceMode.OFF, appVisible = false))
     }
 
     @Test

@@ -43,6 +43,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlin.math.hypot
 
@@ -52,6 +55,8 @@ import kotlin.math.hypot
  *
  * - 데이터: [SurfaceState.panelUi](Hilt EntryPoint). 크기: [PanelLayout.geometry](폭 ≤ 내비 22%, 높이 ≤ 30%).
  * - 위치: 저장된 모서리(기본 오른쪽 위). **정차 중에만** 드래그 → 놓으면 가장 가까운 모서리로 스냅·저장. 주행 중에는 드래그를 무시하고 [무전] 탭만 받는다.
+ *   드래그 도중 주행으로 바뀌면 그 드래그를 취소한다(원래 모서리로 돌아가고 저장하지 않음).
+ * - 창이 실제로 붙어 있는지는 [shownState] 로 내보낸다 — [DriveSurfaceController] 가 보고 붙지 않았으면 다시 시작한다.
  * - 주간/야간: Configuration.uiMode 야간이면 짙은 패널, 아니면 밝은 패널.
  */
 class FloatingPanelService : Service(), LifecycleOwner, SavedStateRegistryOwner {
@@ -134,7 +139,7 @@ class FloatingPanelService : Service(), LifecycleOwner, SavedStateRegistryOwner 
         }
         frame = f
         params = lp
-        shown = true
+        _shown.value = true
         val g = geometry.value
         DhLog.i("surface panel: shown corner=$corner night=${night.value} widthPx=${g.widthPx} maxHeightPx=${g.maxHeightPx} scale=${"%.2f".format(g.scale)} display=${displaySize().let { "${it.first}x${it.second}" }}")
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).also { sc ->
@@ -149,6 +154,7 @@ class FloatingPanelService : Service(), LifecycleOwner, SavedStateRegistryOwner 
             sc.launch {
                 state.isDriving.collect { driving ->
                     f.dragEnabled = !driving
+                    if (driving && f.cancelDrag()) DhLog.i("surface panel: 주행 시작 — 진행 중 드래그 취소, $corner 로 복귀(저장 안 함)")
                     DhLog.d("surface panel: drag ${if (driving) "잠금(주행 중)" else "허용(정차)"}")
                 }
             }
@@ -207,6 +213,11 @@ class FloatingPanelService : Service(), LifecycleOwner, SavedStateRegistryOwner 
             relayout()
             state.setCorner(target)
         }
+
+        override fun onDragCancel() {
+            dragOrigin = null
+            relayout()
+        }
     }
 
     private fun place(lp: WindowManager.LayoutParams, c: PanelCorner) {
@@ -256,28 +267,33 @@ class FloatingPanelService : Service(), LifecycleOwner, SavedStateRegistryOwner 
         if (frame != null) DhLog.i("surface panel: removed")
         frame = null
         params = null
-        shown = false
+        _shown.value = false
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         super.onDestroy()
     }
 
     companion object {
-        /** 패널 창이 지금 붙어 있는가(디버그 `surface` 액션) */
-        @Volatile
-        var shown: Boolean = false
-            private set
+        private val _shown = MutableStateFlow(false)
+
+        /** 패널 창이 지금 붙어 있는가 — 컨트롤러의 재시작 판단·디버그 `surface` 액션 */
+        val shownState: StateFlow<Boolean> = _shown.asStateFlow()
+
+        val shown: Boolean get() = _shown.value
     }
 }
 
 /**
  * 패널 창의 뿌리 뷰 — [dragEnabled] 일 때 터치가 슬롭을 넘으면 가로채 화면 좌표(rawX/rawY) 기준 이동량을 [Listener] 로 넘긴다.
- * 짧은 탭은 그대로 Compose([무전] 버튼)로 간다.
+ * 짧은 탭은 그대로 Compose([무전] 버튼)로 간다. 드래그 중 [dragEnabled] 가 꺼지면(주행 시작) 이동·놓기를 더 넘기지 않고 [Listener.onDragCancel] 한다.
  */
 class PanelDragFrame(context: Context) : FrameLayout(context) {
     interface Listener {
         fun onDragStart()
         fun onDrag(dx: Float, dy: Float)
         fun onDragEnd()
+
+        /** 드래그 취소 — 원래 모서리로 돌아가고 저장하지 않는다 */
+        fun onDragCancel()
     }
 
     var listener: Listener? = null
@@ -298,6 +314,14 @@ class PanelDragFrame(context: Context) : FrameLayout(context) {
         return dragEnabled || dragging
     }
 
+    /** 진행 중인 드래그를 취소한다(주행 시작). 취소했으면 true. 메인 스레드에서 부른다 */
+    fun cancelDrag(): Boolean {
+        if (!dragging) return false
+        dragging = false
+        listener?.onDragCancel()
+        return true
+    }
+
     private fun track(ev: MotionEvent): Boolean {
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -308,7 +332,9 @@ class PanelDragFrame(context: Context) : FrameLayout(context) {
             MotionEvent.ACTION_MOVE -> {
                 val dx = ev.rawX - downX
                 val dy = ev.rawY - downY
-                if (!dragging && dragEnabled && hypot(dx, dy) > slop) {
+                if (dragging && !dragEnabled) {
+                    cancelDrag()
+                } else if (!dragging && dragEnabled && hypot(dx, dy) > slop) {
                     dragging = true
                     listener?.onDragStart()
                 }
@@ -316,7 +342,7 @@ class PanelDragFrame(context: Context) : FrameLayout(context) {
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (dragging) {
                 dragging = false
-                listener?.onDragEnd()
+                if (dragEnabled && ev.actionMasked == MotionEvent.ACTION_UP) listener?.onDragEnd() else listener?.onDragCancel()
                 return true
             }
         }

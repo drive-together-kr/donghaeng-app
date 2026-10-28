@@ -38,10 +38,10 @@ class SurfaceStateTest {
     private val positions = InMemoryPanelPositionStore(PanelCorner.BOTTOM_START)
     private val group = GroupSession("grp_1", "강릉 가족 여행", "veh_A", Place(37.7, 128.9, "경포해변"), GroupTopics("s", "e"), 0L)
 
-    private fun surface(scheduler: TestCoroutineScheduler) = SurfaceState(
+    private fun surface(scheduler: TestCoroutineScheduler, serverOffsetMs: Long = 0L) = SurfaceState(
         session = session, groupState = groupState, events = events, myVehicleId = { "veh_ME" }, connected = MutableStateFlow(true),
-        driving = driving, canDrawOverlays = canDraw, appResumed = resumed, positions = positions,
-        dispatcher = StandardTestDispatcher(scheduler), clock = { scheduler.currentTime },
+        driving = driving, canDrawOverlays = canDraw, appVisible = resumed, positions = positions,
+        dispatcher = StandardTestDispatcher(scheduler), clock = { scheduler.currentTime }, serverClock = { scheduler.currentTime + serverOffsetMs },
     )
 
     private fun member(vid: String, dist: Int) = MemberState(vid, vid, "#2E7DFF", true, 37.0, 127.0, 0f, 80f, 0, null, null, dist, MemberStatus.DRIVING)
@@ -96,6 +96,27 @@ class SurfaceStateTest {
 
             session.value = group.copy(groupId = "grp_2"); runCurrent()
             assertTrue(s.recentEvents.value.isEmpty())
+        } finally { s.stop() }
+    }
+
+    @Test
+    fun `an old event redelivered by the broker after a reconnect is kept in the list but never shown as just now`() = runTest {
+        session.value = group
+        // 서버 시계가 기기보다 1.5 s 앞(T31 실측 범위) — 신선도·나이는 서버 시계 기준
+        val s = surface(testScheduler, serverOffsetMs = 1_500); s.start(); runCurrent()
+        try {
+            groupState.value = GroupState("grp_1", "veh_A", listOf(member("veh_A", 0), member("veh_ME", 500))); runCurrent()
+            val serverNow = testScheduler.currentTime + 1_500
+            val local = testScheduler.currentTime
+            // 재접속 직후: 3분 전에 생긴 급제동이 지금 수신됨(receivedAt = 지금)
+            events.emit(ReceivedGroupEvent(GroupEvent("old", "HARD_BRAKE", "veh_A", Severity.WARN, "옛 급제동", JsonObject(emptyMap())), serverNow - 180_000, local)); runCurrent()
+            assertEquals(1, s.recentEvents.value.size)
+            assertNull("60초보다 오래된 이벤트는 소식 줄에 안 뜬다", s.panelUi.value!!.event)
+            assertEquals(serverNow, s.serverNow())
+
+            events.emit(ReceivedGroupEvent(GroupEvent("new", "LOW_ENERGY", "veh_A", Severity.WARN, "저잔량", JsonObject(emptyMap())), serverNow - 4_000, local)); runCurrent()
+            assertEquals("저잔량", s.panelUi.value!!.event?.text)
+            assertEquals("나이 = 서버 시계 − 봉투 ts", 4, s.panelUi.value!!.event?.ageS)
         } finally { s.stop() }
     }
 }

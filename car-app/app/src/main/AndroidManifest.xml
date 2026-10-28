@@ -23,10 +23,16 @@
     <uses-feature android:name="android.hardware.type.automotive" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
-    <!-- 정차 대시보드 '권한 열기' 버튼: 오버레이 권한 설정 화면이 있는 기기에서만 보이도록 resolve 확인(API 30+ 패키지 가시성) -->
+    <!-- 정차 대시보드 '권한 열기' 버튼: 오버레이 권한 설정 화면이 있는 기기에서만 보이도록 resolve 확인(API 30+ 패키지 가시성).
+         [내비 보기](NaviLauncher): 순정 내비 패키지 실행 인텐트·지도 앱 selector 가 어느 앱으로 풀리는지 확인 -->
     <queries>
         <intent>
             <action android:name="android.settings.action.MANAGE_OVERLAY_PERMISSION" />
+        </intent>
+        <package android:name="ai.umos.maps.android.navigation.app" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.APP_MAPS" />
         </intent>
     </queries>
 

@@ -24,9 +24,11 @@ import app.donghaeng.car.core.common.LocationPermissions
  * - API 34+: `foregroundServiceType` 은 **위치 권한이 있으면 location, 없으면 dataSync** (location 타입은 권한 없이 시작하면 SecurityException).
  *   둘 다 실패하면 알림 없이 일반 서비스로라도 남는다(크래시 없음).
  * - **조용한 상시 알림(docs/05 §5.2, 2026-10-28):** 옛 채널 `drive_session`(IMPORTANCE_LOW, category navigation)은 Pleos 에서 상단 카드로 계속 떠
- *   순정 내비 TBT 를 가렸다(docs/images/surfaces/b_floating_panel_design.png). 새 채널 `drive_session_quiet` 는 IMPORTANCE_MIN(소리·진동·배지·헤드업 없음),
- *   알림은 무음·한 번만·PRIORITY_MIN·CATEGORY_SERVICE 이고 **문구는 고정**("동행 그룹 주행 중") — 내용을 갱신하지 않는다.
- *   내비 위에 뜨는 것은 플로팅 패널과 이벤트 알림 카드(8초)뿐이다. 옛 채널은 지운다.
+ *   순정 내비 TBT 를 가렸다(docs/images/surfaces/b_floating_panel_design.png). 새 채널 `drive_session_quiet` 는 IMPORTANCE_MIN 으로 **만들지만**
+ *   포그라운드 서비스 알림이라 Android(NotificationManagerService)가 사용자 설정이 없으면 **LOW 로 올린다**(dumpsys 에 importance=2 로 보일 수 있음).
+ *   LOW 여도 소리·진동·헤드업은 없다. Pleos 상단 카드를 막는 핵심은 **category service**(category navigation 이 카드로 뜨던 원인 — 78dcafd 프로브는
+ *   FGS 가 아닌 ongoing 알림으로 확인, FGS 알림 실측은 메인 세션 확인 명령으로). 알림은 무음·한 번만·PRIORITY_MIN·CATEGORY_SERVICE 이고
+ *   **문구는 고정**("동행 그룹 주행 중") — 내용을 갱신하지 않는다. 내비 위에 뜨는 것은 플로팅 패널과 이벤트 알림 카드(8초)뿐이다. 옛 채널은 지운다.
  */
 class DriveSessionService : Service() {
 

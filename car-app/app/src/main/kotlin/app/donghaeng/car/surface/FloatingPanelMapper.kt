@@ -22,11 +22,12 @@ import kotlin.math.abs
  * - 간격 = 상대.distanceToLeaderM − 나.distanceToLeaderM → 음수 "앞", 양수 "뒤"(1 km 미만 m), 어느 쪽이든 모르면 "—".
  * - 도착 시각 = `eta.destTs` 를 기기 시간대 HH:mm(없으면 "—"), 기준 문구 = "{그룹 목적지} 도착".
  * - 저잔량 = min(연료%, 배터리%) ≤ 15, 경고 = |간격| > 3 km 또는 연결 끊김, 연결 끊김 = !online 또는 OFFLINE.
- * - 이벤트 = [EVENT_WINDOW_MS](10초) 안에 받은 것 중 가장 최근, 내 차가 출처인 이벤트는 제외. 톤: 급제동·에어백 위험 / 저잔량·끊김·이탈 주의 / 그 밖 정보.
+ * - 이벤트 = [SurfaceEvents.banner]: 받은 지 10초 안 + 서버 시계로 60초 안에 생긴 것 중 가장 최근, 내 차가 출처인 이벤트는 제외(재접속 때 밀려 온 옛 이벤트는 빠진다).
+ *   나이는 서버 시계 − 봉투 ts. 톤: 급제동·에어백 위험 / 저잔량·끊김·이탈 주의 / 그 밖 정보.
  */
 object FloatingPanelMapper {
     const val MAX_ROWS = 4
-    const val EVENT_WINDOW_MS = 10_000L
+    const val EVENT_WINDOW_MS = SurfaceEvents.BANNER_WINDOW_MS
     const val WARN_GAP_M = 3_000
     const val LOW_ENERGY_PCT = 15
 
@@ -39,6 +40,8 @@ object FloatingPanelMapper {
         connected: Boolean,
         nowMs: Long,
         zone: ZoneId,
+        /** 서버 시계 기준 지금(ClockSync.serverNow) — 이벤트 신선도·나이. 기본 = [nowMs] */
+        serverNowMs: Long = nowMs,
     ): FloatingPanelUi {
         val members = state?.members.orEmpty()
         val me = members.firstOrNull { it.vehicleId == myVehicleId }
@@ -50,7 +53,7 @@ object FloatingPanelMapper {
             groupName = session.name,
             cars = others.take(MAX_ROWS),
             moreCount = (others.size - MAX_ROWS).coerceAtLeast(0),
-            event = recentEvent(events, myVehicleId, nowMs),
+            event = recentEvent(events, myVehicleId, nowMs, serverNowMs),
             ptt = ptt,
             connected = connected,
             etaLabel = "${session.destination.name} 도착",
@@ -84,16 +87,7 @@ object FloatingPanelMapper {
         )
     }
 
-    /** 10초 안의 가장 최근 이벤트(내 차 출처 제외) */
-    fun recentEvent(events: List<ReceivedGroupEvent>, myVehicleId: String?, nowMs: Long): EventBannerUi? =
-        events
-            .filter { nowMs - it.receivedAtMs <= EVENT_WINDOW_MS && (myVehicleId == null || it.event.sourceVehicleId != myVehicleId) }
-            .maxByOrNull { it.receivedAtMs }
-            ?.let { e ->
-                EventBannerUi(
-                    text = DriveFormat.eventText(e.event.type, e.event.speech),
-                    tone = DriveFormat.eventTone(e.event.type),
-                    ageS = ((nowMs - e.receivedAtMs).coerceAtLeast(0) / 1_000).toInt(),
-                )
-            }
+    /** 소식 줄 — [SurfaceEvents.bannerUi] (10초 안·서버 시계 60초 안·내 차 출처 제외) */
+    fun recentEvent(events: List<ReceivedGroupEvent>, myVehicleId: String?, nowMs: Long, serverNowMs: Long = nowMs): EventBannerUi? =
+        SurfaceEvents.bannerUi(events, myVehicleId, nowMs, serverNowMs)
 }

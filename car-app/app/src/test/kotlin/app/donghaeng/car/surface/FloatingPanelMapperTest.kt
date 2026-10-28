@@ -145,4 +145,24 @@ class FloatingPanelMapperTest {
         assertEquals("9분", DriveFormat.duration(570))
         assertEquals("9.5 km · 9분", DriveFormat.remain(9_500, 570))
     }
+
+    @Test
+    fun `events replayed after a reconnect are judged by the envelope time on the server clock, not by arrival`() {
+        val members = listOf(member("veh_ME", "나", dist = 0), member("veh_A", "아빠", dist = 0))
+        fun replayed(id: String, type: String, envelopeAgeMs: Long) =
+            ReceivedGroupEvent(GroupEvent(id, type, "veh_A", Severity.INFO, "$type 문구", JsonObject(emptyMap())), envelopeTsMs = now - envelopeAgeMs, receivedAtMs = now)
+        // 방금 한꺼번에 받았지만 61초·5분 전에 생긴 이벤트 → 소식 줄 없음
+        assertNull(map(members, listOf(replayed("a", "HARD_BRAKE", 61_000), replayed("b", "LOW_ENERGY", 300_000))).event)
+        // 60초 안의 것은 뜨고, 나이는 봉투 ts 기준(받은 시각 기준이면 0초)
+        val ui = FloatingPanelMapper.map(
+            session, GroupState("grp_1", "veh_A", members), "veh_ME",
+            listOf(replayed("a", "HARD_BRAKE", 61_000), replayed("c", "LOW_ENERGY", 45_000), replayed("d", "MEMBER_JOINED", 50_000)),
+            PttUi(), connected = true, nowMs = now, zone = zone, serverNowMs = now,
+        )
+        assertEquals("발생 시각이 가장 최근인 것", "LOW_ENERGY 문구", ui.event!!.text)
+        assertEquals(45, ui.event!!.ageS)
+        // 서버 시계가 2초 앞이면 그만큼 더 오래된 것으로 본다
+        val skewed = FloatingPanelMapper.recentEvent(listOf(replayed("e", "LOW_ENERGY", 59_000)), "veh_ME", nowMs = now, serverNowMs = now + 2_000)
+        assertNull(skewed)
+    }
 }

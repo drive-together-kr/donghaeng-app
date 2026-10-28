@@ -63,8 +63,8 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 | `adapter.vehicle` (T22) | `PleosVehicleAdapter` 신호 Flow(Fuel·EvBattery·Brake·TurnSignal·Airbag register/unregister, 미지원은 null/빈 스트림) + `CarApiSignals`(AAOS Car API 속도 `PERF_VEHICLE_SPEED`·기어 `GEAR_SELECTION` 폴백) | T22 |
 | `domain.vehicle` | `VehicleSignals`(앱 유일 신호 구독자 — 최신값·수신 수·스트림 상태, 끝난 스트림 30s 재구독, 값 변경 시만 로그) | T22 |
 | `domain.telemetry` | `TelemetryCollector`(활성 그룹 동안 1Hz `TELEMETRY` QoS 0: LocationFeed 최신 Fix + 차량 속도/기어 + ETA 30s/변화 시 + 에너지 1%p 변화 시·60s) | T23 |
-| `service` | `DriveSessionService`(포그라운드 알림, location/dataSync 타입 자동 선택 — 2026-10-28 부터 조용한 채널 `drive_session_quiet` IMPORTANCE_MIN·문구 고정) + `DriveSessionController`(그룹 세션 ↔ 서비스) | T23 |
-| `surface` | 주행 중 표면(docs/05 §5.2): `SurfaceMode`(OFF/PANEL/CARDS_ONLY)·`SurfaceState`(상태 홀더)·`FloatingPanelService`(순정 내비 위 오버레이 패널, 정차 중 드래그 → 4모서리 스냅·저장)·`FloatingPanelMapper`·`PanelLayout`(폭 ≤ 내비 22%, 높이 ≤ 30%)·`EventCardNotifier`(8초 알림 카드)·`DriveSurfaceController`(배선), `di/SurfaceModule` | SURF |
+| `service` | `DriveSessionService`(포그라운드 알림, location/dataSync 타입 자동 선택 — 2026-10-28 부터 조용한 채널 `drive_session_quiet` — MIN 으로 만들지만 FGS 라 시스템이 LOW 로 올릴 수 있음, 상단 카드를 막는 것은 `CATEGORY_SERVICE`, 문구 고정) + `DriveSessionController`(그룹 세션 ↔ 서비스) | T23 |
+| `surface` | 주행 중 표면(docs/05 §5.2): `SurfaceMode`(OFF/PANEL/CARDS_ONLY)·`SurfaceState`(상태 홀더)·`FloatingPanelService`(순정 내비 위 오버레이 패널, 정차 중 드래그 → 4모서리 스냅·저장)·`FloatingPanelMapper`·`PanelLayout`(폭 ≤ 내비 22%, 높이 ≤ 30%)·`EventCardNotifier`(8초 무음 알림 카드, `CardThrottle` 중복·빈도 제한)·`SurfaceEvents`(패널·대시보드 공통 이벤트 규칙 — 내 차 제외·서버 시계 신선도)·`DriveSurfaceController`+`PanelKeeper`(배선·패널 재시작)·`NaviLauncher`([내비 보기] 경로), `di/SurfaceModule` | SURF |
 | `domain.location` | `LocationFeed`(앱 유일 위치 구독자 — `fixes`/`speedKph`/`state`, 권한 변경 시 restart) + `SpeedEstimator`(Haversine 3샘플) | T21 |
 | `feature.permissions` | `LocationPermissionGate`(활성 그룹 + 정차 시 위치·알림 권한 1회 요청) | T21 |
 | `domain.navi` | `NaviEventMonitor`(앱에서 유일한 내비 구독자 — 콜백 종류별 수·마지막 값 `state`, 공유 `events`, 끊기면 10초 뒤 재구독) | T20 |

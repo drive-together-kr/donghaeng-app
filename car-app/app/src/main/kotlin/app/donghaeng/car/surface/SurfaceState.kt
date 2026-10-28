@@ -30,8 +30,8 @@ import java.time.ZoneId
 /**
  * 주행 중 표면의 상태 홀더(싱글턴, docs/05 §5.2). 플로팅 패널 서비스·알림 카드·정차 대시보드·디버그 리시버가 같은 값을 본다.
  *
- * - [mode] = [SurfacePolicy.mode](그룹 세션, 오버레이 권한), [panelVisible] = PANEL 이고 동행 화면이 전면이 아님.
- * - [panelUi] = [FloatingPanelMapper] 결과(그룹이 있을 때만, 1초 틱으로 이벤트 10초 창을 갱신).
+ * - [mode] = [SurfacePolicy.mode](그룹 세션, 오버레이 권한), [panelVisible] = PANEL 이고 동행 화면이 보이지 않음(started 기준).
+ * - [panelUi] = [FloatingPanelMapper] 결과(그룹이 있을 때만, 1초 틱으로 이벤트 10초 창을 갱신, 신선도·나이는 [serverNow] 기준).
  * - [recentEvents] = 앱 시작 이후 받은 그룹 이벤트(실제 수신 시각) — 그룹이 바뀌면 비운다.
  * - [corner] = 패널 모서리(SharedPreferences "dh_surface"), [isDriving] = 드래그 허용 판단(정차 중에만).
  */
@@ -43,10 +43,12 @@ class SurfaceState(
     private val connected: Flow<Boolean>,
     private val driving: Flow<Boolean>,
     private val canDrawOverlays: StateFlow<Boolean>,
-    private val appResumed: StateFlow<Boolean>,
+    private val appVisible: StateFlow<Boolean>,
     private val positions: PanelPositionStore,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** 서버 시계 기준 지금(ClockSync.serverNow) — 기본 = [clock] */
+    private val serverClock: () -> Long = clock,
     private val zone: () -> ZoneId = ZoneId::systemDefault,
     private val tickMs: Long = 1_000L,
 ) : SurfaceFeed {
@@ -83,7 +85,7 @@ class SurfaceState(
         _corner.value = runCatching { positions.load() }.getOrDefault(PanelCorner.TOP_END)
         job = scope.launch {
             launch { combine(session, canDrawOverlays) { s, c -> SurfacePolicy.mode(s != null, c) }.collect { _mode.value = it } }
-            launch { combine(_mode, appResumed) { m, r -> SurfacePolicy.panelVisible(m, r) }.collect { _panelVisible.value = it } }
+            launch { combine(_mode, appVisible) { m, v -> SurfacePolicy.panelVisible(m, v) }.collect { _panelVisible.value = it } }
             launch { driving.collect { _isDriving.value = it } }
             launch { connected.collect { _connected.value = it } }
             launch { session.map { it?.groupId }.distinctUntilChanged().collect { _recent.value = emptyList() } }
@@ -92,7 +94,7 @@ class SurfaceState(
                 session.flatMapLatest { s ->
                     if (s == null) flowOf(null)
                     else combine(groupState, _recent, _connected, ptt, ticker()) { g, ev, c, p, now ->
-                        FloatingPanelMapper.map(s, g, myVehicleId(), ev, p, c, now, zone())
+                        FloatingPanelMapper.map(s, g, myVehicleId(), ev, p, c, nowMs = now, zone = zone(), serverNowMs = serverClock())
                     }
                 }.collect { _panelUi.value = it }
             }
@@ -109,6 +111,8 @@ class SurfaceState(
         _recent.update { (listOf(e) + it).distinctBy { r -> r.event.eventId }.take(MAX_EVENTS) }
     }
 
+    override fun serverNow(): Long = serverClock()
+
     fun setCorner(corner: PanelCorner) {
         positions.save(corner)
         _corner.value = corner
@@ -117,7 +121,7 @@ class SurfaceState(
 
     /** 진단·디버그 한 줄(민감 정보 없음) */
     fun describe(): String =
-        "mode=${_mode.value} panelVisible=${_panelVisible.value} canDraw=${canDrawOverlays.value} appResumed=${appResumed.value} " +
+        "mode=${_mode.value} panelVisible=${_panelVisible.value} canDraw=${canDrawOverlays.value} appVisible=${appVisible.value} " +
             "driving=${_isDriving.value} corner=${_corner.value} cars=${_panelUi.value?.cars?.size ?: 0} more=${_panelUi.value?.moreCount ?: 0} " +
             "event=${_panelUi.value?.event != null} recent=${_recent.value.size}"
 

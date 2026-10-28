@@ -23,8 +23,8 @@ object SurfacePolicy {
         else -> SurfaceMode.CARDS_ONLY
     }
 
-    /** 동행 화면(MainActivity)이 전면이면 같은 정보를 대시보드가 보여 주므로 패널은 숨긴다 */
-    fun panelVisible(mode: SurfaceMode, appResumed: Boolean): Boolean = mode == SurfaceMode.PANEL && !appResumed
+    /** 동행 화면(MainActivity)이 보이면(started — 권한 다이얼로그로 paused 여도) 같은 정보를 대시보드가 보여 주므로 패널은 숨긴다 */
+    fun panelVisible(mode: SurfaceMode, appVisible: Boolean): Boolean = mode == SurfaceMode.PANEL && !appVisible
 }
 
 /** 정차 대시보드(GroupDriveViewModel)가 보는 표면 상태 — 테스트에서 가짜로 바꿔 끼운다 */
@@ -33,4 +33,7 @@ interface SurfaceFeed {
 
     /** 앱 시작 이후 받은 그룹 이벤트(최신 먼저, 실제 수신 시각 포함). 그룹이 바뀌면 비운다 */
     val recentEvents: StateFlow<List<ReceivedGroupEvent>>
+
+    /** 서버 시계 기준 지금(T31 ClockSync) — 이벤트 신선도·"N초 전"([SurfaceEvents]). 기본 = 로컬 시계 */
+    fun serverNow(): Long = System.currentTimeMillis()
 }

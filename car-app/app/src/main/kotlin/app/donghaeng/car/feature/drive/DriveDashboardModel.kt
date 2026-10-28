@@ -118,6 +118,8 @@ data class DriveDashboardUi(
     val ptt: PttUi = PttUi(),
     val connected: Boolean = true,
     val latencyMs: Int? = null,
+    /** T31 지연 문구("이벤트 12 ms · 상태 30 ms") — 있으면 [latencyMs] 대신 쓴다 */
+    val latencyText: String? = null,
     /** 순정 내비가 같은 화면(2분할)에 보이는가 — 보이면 제한속도·회전 줄을 숨기고 휴식 추천 줄을 쓴다 */
     val naviVisible: Boolean = true,
     /** 정차(P) — 추가 블록(프리셋·이벤트 목록·보내지 않은 무전·그룹 관리·설정) 표시 */

@@ -5,6 +5,7 @@ import app.donghaeng.car.feature.groupdrive.ConnState
 import app.donghaeng.car.feature.groupdrive.GroupDriveUiState
 import app.donghaeng.car.feature.groupdrive.MemberUi
 import app.donghaeng.car.surface.FloatingPanelMapper
+import app.donghaeng.car.surface.SurfaceEvents
 import app.donghaeng.car.surface.SurfaceMode
 import app.donghaeng.protocol.MemberStatus
 import java.time.ZoneId
@@ -18,10 +19,12 @@ import kotlin.math.roundToInt
  * - 그룹 도착 = 멤버 eta.destTs 최댓값과 그 차, 내 도착 = 내 eta.
  * - 다음 정차 카드는 경유지가 있을 때만(이름·내 위치에서 직선거리, 차별 ETA·주유/충전·도달 가능 여부는 아직 모름 → 생략·"—").
  * - 내 주행 줄: 제한속도 = 내비, 연속 주행 = 그룹 합류부터(2시간 이상 경고), 휴식 추천 = 경유지.
- * - 이벤트 띠 = 10초 안의 가장 최근 이벤트(없으면 숨김), 지난 소식 = 최근 5개. 프리셋(F8)·보내지 않은 무전(F16)은 아직 없어 비운다.
+ * - 이벤트 띠·지난 소식은 플로팅 패널과 같은 규칙([SurfaceEvents]): 내 차 출처 제외, 띠 = 받은 지 10초 안 + 서버 시계로 60초 안에 생긴 가장 최근 이벤트(없으면 숨김 —
+ *   재접속 때 브로커가 다시 보낸 옛 이벤트는 빠진다), 지난 소식 = 발생 시각(봉투 ts) 최신 5개, "N초 전" = 서버 시계 − 봉투 ts. 프리셋(F8)·보내지 않은 무전(F16)은 아직 없어 비운다.
+ * - 하단 지연 = T31 문구 그대로("이벤트 N ms · 상태 N ms", 표시 꺼짐이면 없음).
  */
 object DriveDashboardMapper {
-    const val EVENT_WINDOW_MS = 10_000L
+    const val EVENT_WINDOW_MS = SurfaceEvents.BANNER_WINDOW_MS
     const val RECENT_COUNT = 5
     const val LONG_DRIVE_S = 2 * 3_600L
     const val WARN_GAP_M = 3_000
@@ -91,12 +94,11 @@ object DriveDashboardMapper {
             restSuggestionText = stop?.let { "다음 휴식 추천: ${it.name}" },
         )
 
-        val event = s.recentEvents
-            .filter { now - it.receivedAtMs <= EVENT_WINDOW_MS }
-            .maxByOrNull { it.receivedAtMs }
-            ?.let { EventBannerUi(DriveFormat.eventText(it.event.type, it.event.speech), DriveFormat.eventTone(it.event.type), ((now - it.receivedAtMs).coerceAtLeast(0) / 1_000).toInt()) }
-        val recent = s.recentEvents.sortedByDescending { it.receivedAtMs }.take(RECENT_COUNT).map {
-            RecentEventUi(DriveFormat.eventText(it.event.type, it.event.speech), DriveFormat.eventTone(it.event.type), DriveFormat.ago(now - it.receivedAtMs))
+        val serverNow = s.serverNowMs ?: now
+        val myId = s.myVehicleId ?: me?.vehicleId
+        val event = SurfaceEvents.bannerUi(s.recentEvents, myId, now, serverNow)
+        val recent = SurfaceEvents.recent(s.recentEvents, myId, RECENT_COUNT).map {
+            RecentEventUi(DriveFormat.eventText(it.event.type, it.event.speech), DriveFormat.eventTone(it.event.type), DriveFormat.ago(SurfaceEvents.ageMs(it, serverNow)))
         }
 
         return DriveDashboardUi(
@@ -109,6 +111,7 @@ object DriveDashboardMapper {
             ptt = PttUi(),
             connected = s.connection == ConnState.CONNECTED,
             latencyMs = s.latencyMs,
+            latencyText = s.latencyText,
             // 동행 화면이 앞에 있으면 순정 내비는 뒤에 있다 → 제한속도·연속 주행·휴식 추천을 이 화면이 보여 준다
             naviVisible = false,
             parked = !s.isDriving,

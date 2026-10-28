@@ -108,6 +108,10 @@ data class GroupDriveUiState(
     val surfaceMode: SurfaceMode = SurfaceMode.OFF,
     /** 실제 수신 시각이 붙은 최근 그룹 이벤트(최신 먼저) — 대시보드 이벤트 띠(10초)·지난 소식 */
     val recentEvents: List<ReceivedGroupEvent> = emptyList(),
+    /** 서버 시계 기준 지금(T31 ClockSync) — 이벤트 신선도·"N초 전". null = [nowMs] 로 대신 */
+    val serverNowMs: Long? = null,
+    /** 내 차 id(페어링 자격 증명) — 대시보드도 패널·카드처럼 내 차 출처 이벤트를 뺀다. null = [me] 의 id */
+    val myVehicleId: String? = null,
 ) {
     val hasSnapshot: Boolean get() = members.isNotEmpty()
     val proposalRemainingS: Long? get() = proposal?.let { ((it.expiresAtMs - nowMs) / 1_000).coerceAtLeast(0) }
@@ -215,6 +219,8 @@ class GroupDriveViewModel @Inject constructor(
             speedLimitKph = extra.speedLimitKph,
             surfaceMode = extra.surfaceMode,
             recentEvents = extra.recentEvents,
+            serverNowMs = surface.serverNow(),
+            myVehicleId = core.myVehicleId,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), GroupDriveUiState())
 
