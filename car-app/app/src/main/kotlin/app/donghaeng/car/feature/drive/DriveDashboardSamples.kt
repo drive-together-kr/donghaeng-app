@@ -62,7 +62,7 @@ object DriveDashboardSamples {
     val past = listOf(
         PastPttUi("v3", "아빠 차 무전 0:05", BLUE, "1분 전"),
         PastPttUi("v2", "삼촌 차 무전 0:11", PURPLE, "4분 전", statusText = "못 들음", tone = Tone.INFO),
-        PastPttUi("v1", "둘째 차 무전 0:03", GREEN, "9분 전", statusText = "끊김", tone = Tone.INFO),
+        PastPttUi("v1", "둘째 차 무전 0:03", GREEN, "9분 전", statusText = "다 못 들음", tone = Tone.INFO),
     )
 
     /** 가로 2창: 순정 내비가 옆에 보인다 → 휴식 추천 줄 */

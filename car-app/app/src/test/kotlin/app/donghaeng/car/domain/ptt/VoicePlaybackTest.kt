@@ -64,7 +64,8 @@ class VoicePlaybackTest {
     private fun member(vid: String, nick: String, color: String) =
         MemberState(vid, nick, color, true, null, null, null, null, null, null, null, null, MemberStatus.DRIVING)
 
-    private inner class Rig(scope: TestScope) {
+    /** [withCache] = 내려받는 폴더를 캐시 폴더로도 넘긴다(그룹 종료 때 비우는지 본다) */
+    private inner class Rig(scope: TestScope, withCache: Boolean = false, resumeMaxWaitMs: Long = VoicePlayback.RESUME_MAX_WAIT_MS) {
         val scheduler = scope.testScheduler
         val events = MutableSharedFlow<ReceivedGroupEvent>(extraBufferCapacity = 16)
         val session = MutableStateFlow<GroupSession?>(GroupSession("grp_1", "귀성길", "veh_A", Place(37.0, 127.0, "집"), GroupTopics("s", "e"), 0L))
@@ -87,7 +88,9 @@ class VoicePlaybackTest {
                 if (fetchFails) null else File(dir, "$voiceId.m4a").apply { writeBytes(ByteArray(10)) }
             },
             player = player, voice = voice, announceEnabled = { announce },
+            cacheDir = if (withCache) dir else null,
             dispatcher = StandardTestDispatcher(scheduler),
+            resumeMaxWaitMs = resumeMaxWaitMs,
         )
         var seq = 0
         val state get() = playback.state.value
@@ -346,6 +349,211 @@ class VoicePlaybackTest {
         assertEquals(0xFF2E7DFFL, ui.fromColorArgb)
         assertEquals("0:07", ui.durationText)
         assertEquals(2, ui.seconds)
+        r.playback.stop()
+    }
+
+    // ---------------------------------------------------------------- 지난 무전 20개·그룹 종료 (사용자 결정 2026-10-28)
+
+    @Test
+    fun `지난 무전은 들은 것도 남기고 최근 20개만 — 넘치면 오래된 것부터 캐시 파일과 함께 버린다`() = runTest {
+        val r = Rig(this)
+        r.playback.start(); runCurrent()
+        repeat(21) { i ->
+            r.emit(r.voiceEvent("vm_$i"))
+            advanceTimeBy(3_100); runCurrent()
+        }
+        assertEquals(21, r.player.played.size)
+        val past = r.state.past
+        assertEquals(VoicePlayback.MAX_PAST, past.size)
+        assertEquals(20, past.size)
+        assertEquals("최신 먼저", "vm_20", past.first().voiceId)
+        assertEquals("vm_1", past.last().voiceId)
+        assertTrue(past.all { it.status == PastStatus.PLAYED })
+        assertFalse("버린 것의 캐시 파일도 지운다", File(r.dir, "vm_0.m4a").exists())
+        assertTrue(File(r.dir, "vm_1.m4a").exists())
+        assertTrue(File(r.dir, "vm_20.m4a").exists())
+        r.playback.stop()
+    }
+
+    @Test
+    fun `그룹이 바뀌면(그리고 끝나면) 지난 무전 목록과 캐시 폴더를 모두 지운다`() = runTest {
+        val r = Rig(this, withCache = true)
+        r.playback.start(); runCurrent()
+        r.emit(r.voiceEvent("vm_1"))
+        advanceTimeBy(3_100); runCurrent()
+        r.emit(r.voiceEvent("vm_2", ageMs = 70_000))   // 못 들음(파일 없음)
+        File(r.dir, "stray.m4a").writeBytes(ByteArray(3))
+        assertEquals(2, r.state.past.size)
+        r.session.value = GroupSession("grp_2", "새 그룹", "veh_A", Place(37.0, 127.0, "집"), GroupTopics("s2", "e2"), 0L)
+        runCurrent()
+        assertTrue(r.state.past.isEmpty())
+        assertTrue("캐시 폴더가 빈다", r.dir.listFiles().isNullOrEmpty())
+
+        r.emit(r.voiceEvent("vm_3"))
+        advanceTimeBy(3_100); runCurrent()
+        assertEquals(1, r.state.past.size)
+        r.session.value = null
+        runCurrent()
+        assertTrue(r.state.past.isEmpty())
+        assertTrue(r.dir.listFiles().isNullOrEmpty())
+        r.playback.stop()
+    }
+
+    // ---------------------------------------------------------------- 끊긴 무전 → 내 흐름이 끝나면 처음부터 (사용자 결정 2026-10-28)
+
+    @Test
+    fun `끊긴 무전 — 다 못 들음으로 표시, 흐름 동안(안내 중 포함) 기다렸다가 풀리면 알림부터 처음부터, 다 들으면 들음`() = runTest {
+        val r = Rig(this)
+        r.playback.start(); runCurrent()
+        r.emit(r.voiceEvent("vm_1"))
+        advanceTimeBy(1_000); runCurrent()
+        assertEquals(1_000L, r.state.playing!!.positionMs)
+        // 무전 버튼 → 끊고 녹음(보내기 바쁨)
+        r.playback.interrupt("ptt-press", resumeAfterFlow = true)
+        r.playback.setHeld(true)
+        runCurrent()
+        val shown = r.state.past.single()
+        assertEquals(PastStatus.INTERRUPTED, shown.status)
+        assertEquals(1, r.state.queued)
+        assertTrue(r.state.resumeWaiting)
+        advanceTimeBy(20_000); runCurrent()
+        assertEquals("녹음·확인 중에는 다시 틀지 않는다", listOf("vm_1.m4a"), r.player.played)
+
+        // 보냄·안내 3초(바쁨 아님) — 아직 흐름이 IDLE 로 끝나지 않았다
+        r.playback.setHeld(false)
+        advanceTimeBy(3_000); runCurrent()
+        assertEquals(listOf("vm_1.m4a"), r.player.played)
+        assertEquals(PastStatus.INTERRUPTED, r.state.past.single().status)
+
+        // IDLE → 처음부터(알림부터)
+        r.playback.resumeInterrupted("test")
+        runCurrent()
+        assertEquals(listOf("vm_1.m4a", "vm_1.m4a"), r.player.played)
+        assertEquals("알림도 다시", listOf("아빠 차 무전", "아빠 차 무전"), r.voice.waited)
+        assertEquals("처음부터", 0L, r.state.playing!!.positionMs)
+        assertFalse(r.state.resumeWaiting)
+        assertTrue("다시 트는 동안은 지난 무전에서 뺀다", r.state.past.none { it.voiceId == "vm_1" })
+        advanceTimeBy(3_000); runCurrent()
+        val done = r.state.past.single()
+        assertEquals("다 들으면 들음", PastStatus.PLAYED, done.status)
+        assertEquals(1, r.state.played)
+        assertEquals(0, r.state.queued)
+
+        // 한 번 풀린 뒤에는 더 틀지 않는다
+        r.playback.resumeInterrupted("again")
+        advanceTimeBy(10_000); runCurrent()
+        assertEquals(2, r.player.played.size)
+        r.playback.stop()
+    }
+
+    @Test
+    fun `흐름 중 도착한 무전은 끊긴 무전 뒤 — 풀리면 끊긴 것 먼저, 그다음 새 무전`() = runTest {
+        val r = Rig(this)
+        r.playback.start(); runCurrent()
+        r.emit(r.voiceEvent("vm_1"))
+        advanceTimeBy(500); runCurrent()
+        r.playback.interrupt("ptt-press", resumeAfterFlow = true)
+        r.playback.setHeld(true)
+        runCurrent()
+        r.emit(r.voiceEvent("vm_2", from = "veh_C", speech = null))
+        advanceTimeBy(5_000); runCurrent()
+        assertEquals(2, r.state.queued)
+        r.playback.setHeld(false)
+        advanceTimeBy(3_000); runCurrent()
+        assertEquals("새 무전도 끊긴 무전 뒤에서 기다린다", listOf("vm_1.m4a"), r.player.played)
+
+        r.playback.resumeInterrupted("test")
+        runCurrent()
+        assertEquals(listOf("vm_1.m4a", "vm_1.m4a"), r.player.played)
+        advanceTimeBy(3_000 + VoicePlayback.GAP_MS); runCurrent()
+        assertEquals(listOf("vm_1.m4a", "vm_1.m4a", "vm_2.m4a"), r.player.played)
+        advanceTimeBy(3_000); runCurrent()
+        assertEquals(listOf("vm_2", "vm_1"), r.state.past.map { it.voiceId })
+        assertTrue(r.state.past.all { it.status == PastStatus.PLAYED })
+        r.playback.stop()
+    }
+
+    @Test
+    fun `끊긴 무전을 기다리는 중 그룹이 끝나면 버린다 — 파일도, 새 그룹 무전은 바로 재생`() = runTest {
+        val r = Rig(this)
+        r.playback.start(); runCurrent()
+        r.emit(r.voiceEvent("vm_1"))
+        advanceTimeBy(500); runCurrent()
+        r.playback.interrupt("ptt-press", resumeAfterFlow = true)
+        runCurrent()
+        assertTrue(r.state.resumeWaiting)
+        val file = File(r.dir, "vm_1.m4a")
+        assertTrue(file.exists())
+        r.session.value = GroupSession("grp_2", "새 그룹", "veh_A", Place(37.0, 127.0, "집"), GroupTopics("s2", "e2"), 0L)
+        runCurrent()
+        assertTrue(r.state.past.isEmpty())
+        assertEquals(0, r.state.queued)
+        assertFalse(r.state.resumeWaiting)
+        assertFalse(file.exists())
+        r.playback.resumeInterrupted("late")
+        advanceTimeBy(5_000); runCurrent()
+        assertEquals(listOf("vm_1.m4a"), r.player.played)
+
+        r.emit(r.voiceEvent("vm_new"))
+        advanceTimeBy(100); runCurrent()
+        assertEquals(listOf("vm_1.m4a", "vm_new.m4a"), r.player.played)
+        r.playback.stop()
+    }
+
+    @Test
+    fun `끊긴 무전 상한 — 넘겨 풀리면 다시 틀지 않고 다 못 들음으로 남김, 끝내 안 풀려도 뒤의 무전은 상한 뒤 재생`() = runTest {
+        val r = Rig(this, resumeMaxWaitMs = 10_000)
+        r.playback.start(); runCurrent()
+        r.emit(r.voiceEvent("vm_1"))
+        advanceTimeBy(500); runCurrent()
+        r.playback.interrupt("ptt-press", resumeAfterFlow = true)
+        runCurrent()
+        r.emit(r.voiceEvent("vm_2", from = "veh_C"))
+        advanceTimeBy(9_000); runCurrent()
+        assertEquals("상한 전 — 둘 다 기다린다", listOf("vm_1.m4a"), r.player.played)
+        advanceTimeBy(1_500); runCurrent()
+        // 상한이 지나 문이 스스로 열렸다 → 끊긴 것은 건너뛰고(다 못 들음 그대로) 새 무전 재생
+        assertEquals(listOf("vm_1.m4a", "vm_2.m4a"), r.player.played)
+        assertEquals(PastStatus.INTERRUPTED, r.state.past.first { it.voiceId == "vm_1" }.status)
+        assertTrue("탭 다시 듣기용 파일은 남는다", File(r.dir, "vm_1.m4a").exists())
+        r.playback.stop()
+    }
+
+    @Test
+    fun `기다리던 끊긴 무전을 탭 다시 듣기가 대신한다 — 두 번 나오지 않는다`() = runTest {
+        val r = Rig(this)
+        r.playback.start(); runCurrent()
+        r.emit(r.voiceEvent("vm_1"))
+        advanceTimeBy(500); runCurrent()
+        r.playback.interrupt("ptt-press", resumeAfterFlow = true)
+        runCurrent()
+        val replay = async { r.playback.replay("vm_1") }
+        runCurrent()
+        assertTrue(replay.await())
+        advanceTimeBy(VoicePlayback.GAP_MS + 100); runCurrent()
+        assertEquals("탭 재생은 흐름 끝을 기다리지 않는다", listOf("vm_1.m4a", "vm_1.m4a"), r.player.played)
+        assertFalse(r.state.resumeWaiting)
+        advanceTimeBy(3_000); runCurrent()
+        r.playback.resumeInterrupted("test")
+        advanceTimeBy(10_000); runCurrent()
+        assertEquals(2, r.player.played.size)
+        assertEquals(PastStatus.PLAYED, r.state.past.single().status)
+        r.playback.stop()
+    }
+
+    @Test
+    fun `끊기만 하고 다시 틀지 않는 interrupt(기본)는 그대로 — 다 못 들음만`() = runTest {
+        val r = Rig(this)
+        r.playback.start(); runCurrent()
+        r.emit(r.voiceEvent("vm_1"))
+        advanceTimeBy(500); runCurrent()
+        r.playback.interrupt("stop")
+        runCurrent()
+        r.playback.resumeInterrupted("test")
+        advanceTimeBy(10_000); runCurrent()
+        assertEquals(listOf("vm_1.m4a"), r.player.played)
+        assertEquals(PastStatus.INTERRUPTED, r.state.past.single().status)
+        assertFalse(r.state.resumeWaiting)
         r.playback.stop()
     }
 }

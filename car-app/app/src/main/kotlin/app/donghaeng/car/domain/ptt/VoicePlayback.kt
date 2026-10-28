@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -69,7 +70,10 @@ enum class PastStatus {
     /** 60초 넘게 지나 자동 재생하지 않았다(재연결 뒤 밀려 온 것) — 정차 대시보드에서 탭 재생 */
     STALE,
 
-    /** 재생 중 무전 버튼을 눌러 끊었다 */
+    /**
+     * '다 못 들음' — 재생(또는 "○○ 무전" 알림) 중 무전 버튼을 눌러 끊었다. 내 녹음·확인 흐름이 끝나면(IDLE) 처음부터 자동으로 다시 틀고,
+     * 다 들으면 [PLAYED] 가 된다(사용자 결정 2026-10-28). 다시 틀기 전·상한([VoicePlayback.RESUME_MAX_WAIT_MS])을 넘겨 건너뛴 것은 탭 재생
+     */
     INTERRUPTED,
     DOWNLOAD_FAILED,
     PLAY_FAILED,
@@ -85,11 +89,16 @@ data class PlayingVoice(
 
 data class VoicePlaybackState(
     val playing: PlayingVoice? = null,
-    /** 재생을 기다리는 수(내려받는 중 포함) */
+    /** 재생을 기다리는 수(내려받는 중·끊겨 다시 틀 차례를 기다리는 것 포함) */
     val queued: Int = 0,
     /** 무전 보내기(녹음·확인·전송) 중이라 재생을 미루는 중 */
     val held: Boolean = false,
-    /** '지난 무전'(최신 먼저, 최대 [VoicePlayback.MAX_PAST]) — 재생한 것·60초 넘은 것·끊은 것 */
+    /** 끊긴 무전이 내 무전 흐름이 끝나기(IDLE)를 기다리는 중 — [VoicePlayback.resumeInterrupted] 가 푼다 */
+    val resumeWaiting: Boolean = false,
+    /**
+     * '지난 무전'(최신 먼저, 최근 [VoicePlayback.MAX_PAST]개 — 넘치면 오래된 것부터 캐시 파일과 함께 버린다) — 다 들은 것도 남긴다(다시 듣기)·
+     * 60초 넘은 것·끊은 것(다 못 들음)·실패. 그룹이 끝나거나 바뀌면 캐시와 함께 지운다
+     */
     val past: List<ReceivedVoice> = emptyList(),
     val received: Int = 0,
     val played: Int = 0,
@@ -115,13 +124,19 @@ fun interface VoiceFetcher {
  * 4. 재생 전 짧은 알림 — 서버 speech "{닉네임} 무전"(없으면 [PttPrompts.incoming])을 TTS 로 끝까지 읽고(엔진이 없으면 즉시) →
  *    [VoiceClipPlayer](MediaPlayer + `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`). VoiceAnnouncer 는 같은 문구를 읽지 않는다.
  * 5. 재생 중 [state].playing(보낸 차·위치/길이) → 끝나면 큐가 비었을 때 [lingerMs](3초) 머문 뒤 사라진다.
- * 6. 재생 중 무전 버튼을 누르면 [interrupt] — 멈추고 INTERRUPTED 로 '지난 무전'에 둔다(탭 다시 듣기). "○○ 무전" 알림을 읽는 중·재생 준비 중이어도 멈춘다
+ * 6. 재생 중 무전 버튼을 누르면 [interrupt] — 멈추고 INTERRUPTED('다 못 들음')로 '지난 무전'에 둔다. "○○ 무전" 알림을 읽는 중·재생 준비 중이어도 멈춘다
  *    (알림+재생 한 덩어리를 코루틴 하나로 돌려 취소한다. 알림을 읽다 끊기면 TTS 큐를 비운다 — Android TTS 는 문장 하나만 지울 수 없다).
- * 7. 그룹이 바뀌거나 끝나면 큐·목록·캐시 파일을 지우고 재생 중(알림 포함)인 것도 멈춘다(서버도 그룹 종료 때 지운다).
+ *    `resumeAfterFlow` 면(무전 버튼 누름 — 사용자 결정 2026-10-28) 끊긴 무전을 큐 맨 앞에 '다시 틀 것'으로 세우고, 내 녹음·확인 흐름이 IDLE 로 끝나
+ *    [resumeInterrupted] 가 불릴 때까지(PttRuntime 이 부른다) **다른 대기 무전보다 먼저** 기다렸다가 알림부터 처음부터 다시 튼다 → 다 들으면 PLAYED.
+ *    60초 신선도는 보지 않고 대신 끊긴 때부터 [RESUME_MAX_WAIT_MS](2분) 상한 — 넘으면 다시 틀지 않고 '다 못 들음'으로 남긴다(탭 재생).
+ *    상한이 지나도록 풀리지 않으면 스스로 연다(뒤의 무전이 영영 막히지 않게).
+ * 7. 그룹이 바뀌거나 끝나면 큐(다시 틀 것 포함)·목록·캐시 파일을 지우고 재생 중(알림 포함)인 것도 멈춘다(서버도 그룹 종료 때 지운다).
  *    내려받는 중이던 항목은 버리고 워커는 계속 돈다 — 새 그룹의 무전은 그대로 재생된다.
+ * 8. '지난 무전'은 다 들은 것도 남기고 최근 [MAX_PAST](20)개만 — 넘치면 오래된 것부터 캐시 파일과 함께 버린다.
  *
- * 로그: `ptt: voice received voiceId=… age=…s dur=…ms`, `ptt: playing from=<vehicleId 끝 4자리> voiceId=… dur=…`, `ptt: voice stale …`, `ptt: voice skip own|not-for-me`.
- * 닉네임·오디오 내용은 남기지 않는다(규칙 8).
+ * 로그: `ptt: voice received voiceId=… age=…s dur=…ms`, `ptt: play start voiceId=… manual=… resume=…`, `ptt: playing from=<vehicleId 끝 4자리> voiceId=… dur=…`,
+ * `ptt: playback interrupted voiceId=… why=… status=INTERRUPTED resume=after-flow`, `ptt: resume released why=…`, `ptt: resume voiceId=… waited=…s → 처음부터`,
+ * `ptt: voice stale …`, `ptt: voice skip own|not-for-me`. 닉네임·오디오 내용은 남기지 않는다(규칙 8).
  */
 class VoicePlayback(
     private val events: Flow<ReceivedGroupEvent>,
@@ -141,8 +156,18 @@ class VoicePlayback(
     val lingerMs: Long = LINGER_MS,
     private val gapMs: Long = GAP_MS,
     private val announceTimeoutMs: Long = ANNOUNCE_TIMEOUT_MS,
+    private val resumeMaxWaitMs: Long = RESUME_MAX_WAIT_MS,
 ) {
-    private class Item(val voice: ReceivedVoice, val file: Deferred<File?>, val manual: Boolean)
+    /**
+     * 큐 항목. [manual] = 탭 다시 듣기(신선도 안 봄), [resume] = 무전 버튼으로 끊겨 내 흐름이 끝나면 처음부터 다시 틀 것([interruptedAtMs] = 끊긴 때, 서버 시계)
+     */
+    private class Item(
+        val voice: ReceivedVoice,
+        val file: Deferred<File?>,
+        val manual: Boolean,
+        val resume: Boolean = false,
+        val interruptedAtMs: Long = 0,
+    )
 
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private var job: Job? = null
@@ -151,8 +176,14 @@ class VoicePlayback(
     private val signal = Channel<Unit>(Channel.CONFLATED)
     private val seen = LinkedHashSet<String>()
     private val held = MutableStateFlow(false)
+    /** 끊긴 무전을 다시 틀어도 되는가 — [interrupt](resumeAfterFlow) 가 닫고 [resumeInterrupted]·그룹 변경·상한이 연다 */
+    private val resumeGate = MutableStateFlow(true)
+    /** 큐 맨 앞이 바뀔 수 있는 변경(탭 다시 듣기·그룹 변경·다시 틀 것 넣기)마다 올린다 — 문 앞에서 기다리는 워커를 깨운다 */
+    private val queueVersion = MutableStateFlow(0L)
     @Volatile private var playingNow: Item? = null
     @Volatile private var interruptedBy: String? = null
+    /** 지금 끊는 것이 '흐름이 끝나면 다시 틀 것'인가 — [interrupt] 가 세우고 [playOne] 이 지운다 */
+    @Volatile private var resumeRequested = false
     /** 지금 무전 한 개의 알림+재생 코루틴 — [interrupt]·그룹 변경이 취소한다 */
     @Volatile private var currentPlay: Job? = null
 
@@ -186,10 +217,30 @@ class VoicePlayback(
     /** 실제로 소리를 내는 중인가(머무는 3초 제외) */
     val isPlaying: Boolean get() = playingNow != null && _state.value.playing?.ended == false
 
-    /** 재생 중인 무전을 끊는다(무전 버튼을 눌러 녹음을 시작할 때) — 알림을 읽는 중·재생 준비 중이어도. '지난 무전'에 INTERRUPTED 로 남는다 */
-    fun interrupt(why: String) {
+    /**
+     * 재생 중인 무전을 끊는다(무전 버튼을 눌러 녹음을 시작할 때) — 알림을 읽는 중·재생 준비 중이어도. '지난 무전'에 INTERRUPTED('다 못 들음')로 남는다.
+     * [resumeAfterFlow] 면 내 무전 흐름이 끝나 [resumeInterrupted] 가 불릴 때 처음부터 다시 튼다(다른 대기 무전보다 먼저).
+     */
+    fun interrupt(why: String, resumeAfterFlow: Boolean = false) {
         if (playingNow == null) return
+        if (resumeAfterFlow) {
+            // 문을 먼저 닫는다 — 끊긴 무전이 큐에 다시 서는 순간 바로 재생되지 않게(누름이 상태 기계에 닿기 전일 수 있다)
+            resumeRequested = true
+            resumeGate.value = false
+        }
         stopCurrent(why)
+    }
+
+    /**
+     * 끊긴 무전을 다시 틀어도 된다 — 내 녹음·확인 흐름이 IDLE 로 끝났다(보냄·취소·보관·짧음·실패 어느 쪽이든, PttRuntime 이 사이클 번호로 가려 부른다).
+     * 기다리는 것이 없으면 아무 일도 하지 않는다.
+     */
+    fun resumeInterrupted(why: String) {
+        if (resumeGate.value) return
+        resumeGate.value = true
+        _state.update { it.copy(resumeWaiting = false) }
+        DhLog.i("ptt: resume released why=$why")
+        signal.trySend(Unit)
     }
 
     /** 알림+재생 코루틴을 취소한다 — 순서: 사유 먼저(playOne 이 코루틴을 세운 뒤 사유를 다시 본다), 그다음 취소 */
@@ -204,11 +255,21 @@ class VoicePlayback(
         val v = _state.value.past.firstOrNull { it.voiceId == voiceId } ?: return@withLock false
         val file = v.file?.takeIf { it.isFile }
         val deferred: Deferred<File?> = if (file != null) CompletableDeferred(file) else scope.async { fetchSafely(v) }
+        // 끊겨 다시 틀 차례를 기다리던 무전이면 그 자리를 탭 재생이 대신한다(두 번 나오지 않게)
+        queue.removeAll { it.voice.voiceId == voiceId }
         queue.addFirst(Item(v.copy(status = PastStatus.QUEUED), deferred, manual = true))
-        _state.update { s -> s.copy(queued = queue.size, past = s.past.filterNot { it.voiceId == voiceId }) }
+        queueVersion.value++
+        _state.update { s -> s.copy(past = s.past.filterNot { it.voiceId == voiceId }) }
+        publishQueue()
         DhLog.i("ptt: replay voiceId=$voiceId cached=${file != null}")
         signal.trySend(Unit)
         true
+    }
+
+    /** [mutex] 안에서 — 대기 수·끊긴 무전 대기 여부를 상태에 */
+    private fun publishQueue() {
+        val waiting = !resumeGate.value && queue.any { it.resume }
+        _state.update { it.copy(queued = queue.size, resumeWaiting = waiting) }
     }
 
     /** 이벤트 한 건(테스트·디버그 리시버가 직접 부를 수 있다) — 큐에 넣었거나 '지난 무전'에 둔 voiceId, 무시면 null */
@@ -275,7 +336,22 @@ class VoicePlayback(
             while (true) {
                 // 무전 보내기 중이면 끝날 때까지 기다린다
                 held.first { !it }
-                val item = mutex.withLock { queue.firstOrNull() } ?: break
+                val (item, version) = mutex.withLock { queue.firstOrNull() to queueVersion.value }
+                if (item == null) break
+                if (item.resume && !resumeGate.value) {
+                    // 끊긴 무전 — 내 무전 흐름이 IDLE 로 끝날 때까지(뒤의 다른 대기 무전도 그 뒤에). 문이 열리거나 큐 맨 앞이 바뀌면 다시 본다.
+                    // 상한까지 풀리지 않으면 스스로 연다 — 뒤의 무전이 영영 막히지 않게(그 끊긴 무전은 아래에서 상한으로 건너뛴다)
+                    val left = (item.interruptedAtMs + resumeMaxWaitMs - serverNow()).coerceAtLeast(0)
+                    val woke = withTimeoutOrNull(left + 1) {
+                        combine(resumeGate, queueVersion) { open, v -> open || v != version }.first { it }
+                    }
+                    if (woke == null && !resumeGate.value) {
+                        resumeGate.value = true
+                        _state.update { it.copy(resumeWaiting = false) }
+                        DhLog.w("ptt: resume gate timeout (${resumeMaxWaitMs / 1000}s) → 엶")
+                    }
+                    continue
+                }
                 val file = try {
                     item.file.await()
                 } catch (e: CancellationException) {
@@ -283,21 +359,20 @@ class VoicePlayback(
                     currentCoroutineContext().ensureActive()
                     mutex.withLock {
                         queue.remove(item)
-                        _state.update { it.copy(queued = queue.size) }
+                        publishQueue()
                     }
                     DhLog.i("ptt: voice dropped (download cancelled) voiceId=${item.voice.voiceId}")
                     continue
                 }
-                mutex.withLock {
-                    queue.remove(item)
-                    _state.update { it.copy(queued = queue.size) }
-                }
+                // 기다리는 사이 탭 다시 듣기가 이 항목을 대신했으면(같은 파일) 큐에 없다
+                val stillQueued = mutex.withLock { queue.remove(item).also { publishQueue() } }
                 if (item.voice.groupId != session.value?.groupId) {
                     // 내려받기가 끝나는 사이 그룹이 바뀌었다 — 끝난 그룹의 무전은 재생하지 않는다
                     file?.delete()
                     DhLog.i("ptt: voice dropped (group changed) voiceId=${item.voice.voiceId}")
                     continue
                 }
+                if (!stillQueued) continue
                 if (file == null) {
                     DhLog.w("ptt: voice download failed voiceId=${item.voice.voiceId}")
                     mutex.withLock { addPast(item.voice.copy(status = PastStatus.DOWNLOAD_FAILED)) }
@@ -306,15 +381,31 @@ class VoicePlayback(
                 }
                 if (held.value) {
                     // 내려받는 사이 무전 보내기가 시작됐다 — 맨 앞에 다시 세우고 기다린다
-                    mutex.withLock { queue.addFirst(Item(item.voice, CompletableDeferred(file), item.manual)); _state.update { it.copy(queued = queue.size) } }
+                    mutex.withLock {
+                        queue.addFirst(Item(item.voice, CompletableDeferred(file), item.manual, item.resume, item.interruptedAtMs))
+                        publishQueue()
+                    }
                     continue
                 }
-                val age = serverNow() - item.voice.envelopeTsMs
-                if (!item.manual && age > freshnessMs) {
-                    DhLog.i("ptt: voice stale at play voiceId=${item.voice.voiceId} age=${age / 1000}s → 지난 무전")
-                    mutex.withLock { addPast(item.voice.copy(status = PastStatus.STALE, file = file)) }
-                    _state.update { it.copy(stale = it.stale + 1) }
-                    continue
+                if (item.resume) {
+                    // 끊긴 무전 — 60초 신선도 대신 끊긴 때부터 상한(2분). 넘으면 '다 못 들음'으로 남긴다(탭 재생)
+                    val waited = serverNow() - item.interruptedAtMs
+                    if (waited > resumeMaxWaitMs) {
+                        DhLog.i("ptt: resume skipped voiceId=${item.voice.voiceId} waited=${waited / 1000}s (> ${resumeMaxWaitMs / 1000}s) → 지난 무전(다 못 들음)")
+                        mutex.withLock { if (_state.value.past.none { it.voiceId == item.voice.voiceId }) file.delete() }
+                        continue
+                    }
+                    DhLog.i("ptt: resume voiceId=${item.voice.voiceId} waited=${waited / 1000}s → 처음부터")
+                    // 다시 트는 동안은 '지난 무전'에서 뺀다(끝나면 결과 상태로 다시 들어간다)
+                    mutex.withLock { _state.update { s -> s.copy(past = s.past.filterNot { it.voiceId == item.voice.voiceId }) } }
+                } else {
+                    val age = serverNow() - item.voice.envelopeTsMs
+                    if (!item.manual && age > freshnessMs) {
+                        DhLog.i("ptt: voice stale at play voiceId=${item.voice.voiceId} age=${age / 1000}s → 지난 무전")
+                        mutex.withLock { addPast(item.voice.copy(status = PastStatus.STALE, file = file)) }
+                        _state.update { it.copy(stale = it.stale + 1) }
+                        continue
+                    }
                 }
                 playOne(item, file)
                 val more = mutex.withLock { queue.isNotEmpty() }
@@ -333,8 +424,10 @@ class VoicePlayback(
     private suspend fun playOne(item: Item, file: File) {
         val v = item.voice
         interruptedBy = null
+        resumeRequested = false
         playingNow = item
         _state.update { it.copy(playing = PlayingVoice(v, 0, ended = false)) }
+        DhLog.i("ptt: play start voiceId=${v.voiceId} manual=${item.manual} resume=${item.resume}")
         val outcome = try {
             coroutineScope {
                 // LAZY: 코루틴을 [currentPlay] 에 걸어 둔 뒤 시작한다 — 그 사이 온 interrupt 는 아래 사유 확인이 받는다
@@ -351,7 +444,7 @@ class VoicePlayback(
             currentPlay = null
             playingNow = null
         }
-        finishPlay(v, file, outcome)
+        finishPlay(item, file, outcome)
     }
 
     /** "○○ 무전" 알림(엔진이 없으면 즉시) → 재생. 취소되면 알림 TTS 도 멈춘다 */
@@ -371,30 +464,45 @@ class VoicePlayback(
             }
         }
         if (interruptedBy != null) return PlayOutcome.Stopped
-        DhLog.i("ptt: playing from=${tail(v.fromVehicleId)} voiceId=${v.voiceId} dur=${v.durationMs}ms manual=${item.manual}")
+        DhLog.i("ptt: playing from=${tail(v.fromVehicleId)} voiceId=${v.voiceId} dur=${v.durationMs}ms manual=${item.manual} resume=${item.resume}")
         return player.play(file) { pos ->
             _state.update { s -> if (s.playing?.voice?.voiceId == v.voiceId) s.copy(playing = s.playing.copy(positionMs = pos)) else s }
         }
     }
 
-    private suspend fun finishPlay(v: ReceivedVoice, file: File, outcome: PlayOutcome) {
+    private suspend fun finishPlay(item: Item, file: File, outcome: PlayOutcome) {
+        val v = item.voice
         val status = when (outcome) {
             PlayOutcome.Completed -> PastStatus.PLAYED
             PlayOutcome.Stopped -> PastStatus.INTERRUPTED
             is PlayOutcome.Failed -> PastStatus.PLAY_FAILED
         }
+        val sameGroup = session.value?.groupId == v.groupId
+        // 무전 버튼으로 끊었다 → 내 흐름이 끝나면 처음부터 다시(그룹이 끝나 멈춘 것은 아니다)
+        val resume = outcome == PlayOutcome.Stopped && resumeRequested && sameGroup
         when (outcome) {
-            PlayOutcome.Completed -> DhLog.i("ptt: playback done voiceId=${v.voiceId}")
-            PlayOutcome.Stopped -> DhLog.i("ptt: playback interrupted voiceId=${v.voiceId} why=${interruptedBy ?: "stop"}")
+            PlayOutcome.Completed -> DhLog.i("ptt: playback done voiceId=${v.voiceId} resume=${item.resume}")
+            PlayOutcome.Stopped -> DhLog.i(
+                "ptt: playback interrupted voiceId=${v.voiceId} why=${interruptedBy ?: "stop"} status=INTERRUPTED" + if (resume) " resume=after-flow" else "",
+            )
             is PlayOutcome.Failed -> DhLog.w("ptt: playback failed voiceId=${v.voiceId} reason=${outcome.reason}")
         }
-        if (session.value?.groupId != v.groupId) {
+        if (!sameGroup) {
             // 재생하는 사이 그룹이 끝났다 — 목록에 남기지 않는다
             file.delete()
             _state.update { it.copy(playing = null) }
             return
         }
-        mutex.withLock { addPast(v.copy(status = status, file = file)) }
+        mutex.withLock {
+            addPast(v.copy(status = status, file = file))
+            if (resume) {
+                // '다 못 들음'으로 목록에 두고, 같은 파일로 큐 맨 앞에 '다시 틀 것'을 세운다 — 문([resumeGate])은 interrupt 가 이미 닫았다
+                queue.removeAll { it.voice.voiceId == v.voiceId }
+                queue.addFirst(Item(v.copy(status = PastStatus.QUEUED), CompletableDeferred(file), manual = true, resume = true, interruptedAtMs = serverNow()))
+                queueVersion.value++
+                publishQueue()
+            }
+        }
         _state.update {
             it.copy(
                 played = it.played + if (status == PastStatus.PLAYED) 1 else 0,
@@ -404,10 +512,12 @@ class VoicePlayback(
         }
     }
 
-    /** [mutex] 안에서 부른다(past 는 mutex 안에서만 바뀐다) */
+    /** [mutex] 안에서 부른다(past 는 mutex 안에서만 바뀐다). 최근 [MAX_PAST]개 — 넘친 것은 캐시 파일도 지운다(큐가 아직 쓰는 파일은 남긴다) */
     private fun addPast(v: ReceivedVoice) {
         val list = listOf(v) + _state.value.past.filterNot { it.voiceId == v.voiceId }
-        list.drop(MAX_PAST).forEach { it.file?.delete() }
+        val over = list.drop(MAX_PAST)
+        over.forEach { old -> if (queue.none { it.voice.voiceId == old.voiceId }) old.file?.delete() }
+        if (over.isNotEmpty()) DhLog.i("ptt: past over ${MAX_PAST} → 오래된 ${over.size}개 버림(캐시 파일 포함)")
         _state.update { it.copy(past = list.take(MAX_PAST)) }
     }
 
@@ -416,6 +526,9 @@ class VoicePlayback(
             val q = queue.toList()
             queue.clear()
             seen.clear()
+            // 끊겨 다시 틀 차례를 기다리던 것도 버린다 — 문을 열어 기다리는 워커를 깨운다
+            resumeGate.value = true
+            queueVersion.value++
             val p = _state.value.past
             // 재생 중인 것은 finishPlay 가 정리한다(그룹이 다르면 목록에 남기지 않는다), 끝나 머무는 것은 바로 지운다
             _state.update { VoicePlaybackState(held = it.held, playing = it.playing?.takeIf { p -> !p.ended }) }
@@ -426,7 +539,9 @@ class VoicePlayback(
         if (playingNow != null) stopCurrent("group-changed") else player.stop()
         past.forEach { it.file?.delete() }
         cacheDir?.listFiles()?.forEach { it.delete() }
-        if (dropped.isNotEmpty() || past.isNotEmpty()) DhLog.i("ptt: group changed → voice queue=${dropped.size} past=${past.size} cleared")
+        if (dropped.isNotEmpty() || past.isNotEmpty()) {
+            DhLog.i("ptt: group changed → voice queue=${dropped.size}(resume=${dropped.count { it.resume }}) past=${past.size} cleared (cache 포함)")
+        }
     }
 
     private fun tail(vehicleId: String?): String = vehicleId?.takeLast(4) ?: "?"
@@ -436,7 +551,10 @@ class VoicePlayback(
         const val LINGER_MS = 3_000L
         const val GAP_MS = 500L
         const val ANNOUNCE_TIMEOUT_MS = 4_000L
-        const val MAX_PAST = 10
+        /** '지난 무전' 상한 — 최근 20개(사용자 결정 2026-10-28, 다 들은 것 포함) */
+        const val MAX_PAST = 20
         const val MAX_SEEN = 128
+        /** 끊긴 무전을 다시 트는 상한 — 끊긴 때부터 2분(녹음 15 s + 확인 5~6.5 s + 전송 + 안내 3 s 를 몇 번 이어 눌러도 넉넉) */
+        const val RESUME_MAX_WAIT_MS = 120_000L
     }
 }

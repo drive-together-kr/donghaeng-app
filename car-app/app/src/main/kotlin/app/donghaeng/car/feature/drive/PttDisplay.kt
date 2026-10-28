@@ -63,8 +63,8 @@ object PttDisplay {
         PttNotice.KEPT_UNSENT, PttNotice.SEND_FAILED, PttNotice.RECORD_FAILED, PttNotice.MIC_PERMISSION -> Tone.CAUTION
     }
 
-    /** 대시보드 '지난 무전'에 보이는 개수 */
-    const val PAST_COUNT = 5
+    /** 대시보드 '지난 무전'에 보이는 개수 — 들고 있는 최근 20개 전부(정차 블록은 스크롤된다, 사용자 결정 2026-10-28) */
+    const val PAST_COUNT = app.donghaeng.car.domain.ptt.VoicePlayback.MAX_PAST
 
     /** '보내지 않은 무전' → 화면 줄(최신 먼저 그대로). 시각은 벽시계 "14:03" */
     fun unsentRows(list: List<UnsentVoice>, zone: ZoneId): List<UnsentPttUi> = list.map {
@@ -81,7 +81,8 @@ object PttDisplay {
 
     /**
      * '지난 무전' → 화면 줄(최신 먼저, 최대 [PAST_COUNT]). 재생 대기(QUEUED)는 빼고, 다 들은 것(PLAYED)도 다시 듣기용으로 남긴다
-     * (명세는 60초 넘은 것만 요구했지만 방금 들은 무전을 다시 들을 길도 같은 목록으로 준다 — docs/05 § 무전).
+     * (사용자 결정 2026-10-28 — 들은 것도 유지, 최근 20개, 그룹 종료 때 삭제).
+     * 꼬리표: 60초 넘어 자동 재생 안 함 = "못 들음", 무전 버튼으로 끊음 = "다 못 들음"(내 흐름이 끝나면 처음부터 다시 틀고, 다 들으면 꼬리표 없음).
      * "N분 전" = 서버 시계 − 봉투 ts.
      */
     fun pastRows(list: List<ReceivedVoice>, serverNowMs: Long): List<PastPttUi> = list
@@ -96,7 +97,7 @@ object PttDisplay {
                 whenText = DriveFormat.ago(serverNowMs - v.envelopeTsMs),
                 statusText = when (v.status) {
                     PastStatus.STALE -> "못 들음"
-                    PastStatus.INTERRUPTED -> "끊김"
+                    PastStatus.INTERRUPTED -> "다 못 들음"
                     PastStatus.DOWNLOAD_FAILED -> "받기 실패"
                     PastStatus.PLAY_FAILED -> "재생 실패"
                     PastStatus.PLAYED, PastStatus.QUEUED -> null

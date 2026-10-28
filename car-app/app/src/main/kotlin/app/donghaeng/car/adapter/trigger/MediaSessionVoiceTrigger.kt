@@ -28,8 +28,10 @@ import kotlinx.coroutines.withContext
 
 /**
  * MediaSession 무전 트리거 (F16 ④ — 그룹 주행 중 백그라운드). 2026-10-28 Pleos AVD 실측(F16Probes `media_on`)과 같은 방법:
- * 활성 `MediaSession`(STATE_PLAYING, ACTION_PLAY_PAUSE) + **짧은 무음 재생(USAGE_MEDIA 400 ms)** → 미디어 버튼 라우팅이 '최근 재생한 앱'의 세션을 고르므로
- * 우리 세션이 Media button session 이 되고, 순정 내비가 앞에 있어도 HEADSETHOOK·MEDIA_PLAY_PAUSE·MEDIA_PLAY 가 [onMediaButtonEvent] 로 온다.
+ * 활성 `MediaSession`(재생 상태 [PttSessionPlayback] = **STATE_PAUSED**, ACTION_PLAY_PAUSE) + **짧은 무음 재생(USAGE_MEDIA 400 ms)** →
+ * 미디어 버튼 라우팅이 '최근 재생한 앱'의 세션을 고르므로 우리 세션이 Media button session 이 되고, 순정 내비가 앞에 있어도
+ * HEADSETHOOK·MEDIA_PLAY_PAUSE·MEDIA_PLAY 가 [onMediaButtonEvent] 로 온다. 재생 상태를 PLAYING 으로 두면 Pleos 미디어 프레임워크가 동행을
+ * '재생 중' 미디어로 잡는다 — 근거 표는 [PttSessionPlayback].
  *
  * - 켜는 조건은 [TriggerPolicy.sessionActive]: 그룹 있음 + '핸들 버튼으로 무전' + 다른 앱 미디어 재생 없음(+ 멈춘 뒤 15초).
  * - 다른 앱 미디어 감지: `AudioManager.AudioPlaybackCallback` 의 활성 재생 구성 중 용도가 MEDIA·GAME 인 것. 우리 무음 재생 창(직후 1.5초) 안의 MEDIA 는
@@ -141,10 +143,11 @@ class MediaSessionVoiceTrigger(
                     override fun onPlay() = Unit
                     override fun onPause() = Unit
                 }, main)
+                // 재생 상태 PAUSED·속도 0, 메타데이터(제목·아트)는 넣지 않는다 — Pleos 미디어 위젯·AI 비서가 동행을 '재생 중' 미디어로 잡지 않게([PttSessionPlayback])
                 setPlaybackState(
                     PlaybackState.Builder()
-                        .setActions(PlaybackState.ACTION_PLAY_PAUSE or PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE)
-                        .setState(PlaybackState.STATE_PLAYING, 0, 1f)
+                        .setActions(PttSessionPlayback.ACTIONS)
+                        .setState(PttSessionPlayback.STATE, 0, PttSessionPlayback.SPEED)
                         .build(),
                 )
                 isActive = true
@@ -155,8 +158,8 @@ class MediaSessionVoiceTrigger(
             return
         }
         session = s
-        _status.update { it.copy(sessionActive = true, detail = null) }
-        DhLog.i("ptt: media session active (HEADSETHOOK·MEDIA_PLAY_PAUSE·MEDIA_PLAY → 무전)")
+        _status.update { it.copy(sessionActive = true, sessionState = PttSessionPlayback.stateName(PttSessionPlayback.STATE), detail = null) }
+        DhLog.i("ptt: media session active (HEADSETHOOK·MEDIA_PLAY_PAUSE·MEDIA_PLAY → 무전) ${PttSessionPlayback.describe()}")
         playSilence()
     }
 
@@ -166,7 +169,7 @@ class MediaSessionVoiceTrigger(
         session = null
         runCatching { s.isActive = false }
         runCatching { s.release() }
-        _status.update { it.copy(sessionActive = false, detail = why) }
+        _status.update { it.copy(sessionActive = false, sessionState = null, detail = why) }
         DhLog.i("ptt: media session released why=$why")
     }
 
@@ -215,4 +218,47 @@ class MediaSessionVoiceTrigger(
         /** 창이 끝나고 다시 읽기까지 여유 */
         const val RECHECK_MARGIN_MS = 100L
     }
+}
+
+/**
+ * 무전 MediaSession 의 재생 상태(순수 상수, F16 — 사용자 지시 2026-10-28 '미디어 위젯에 재생 중으로 보이면 노출되지 않게').
+ *
+ * 통합 담당 실측(2026-10-28, Pleos AVD, 순정 내비 전면, debug 프로브로 재생 상태만 바꿔 봄):
+ * | 세션 재생 상태 | 미디어 버튼 세션 | HEADSETHOOK 수신 | Pleos 미디어 프레임워크(MediaDataProvider·GleoMediaSession) isPlaying |
+ * |---|---|---|---|
+ * | PLAYING(옛 코드) | 동행 | 예 | **true** |
+ * | PAUSED | 동행 | 예 | false |
+ * | STOPPED | 동행 | 예 | false |
+ * | NONE | 동행 | 예 | false |
+ *
+ * 왼쪽 미디어 위젯 화면은 PLAYING 일 때도 '재생 중인 항목 없음'(메타데이터가 없어서)이었지만, 프레임워크 로그
+ * `MediaDataProvider: onSessionChanged: SessionInfo(appName=app.donghaeng.car, … isPlaying=true …)`·`[GleoMediaSession] connected package=app.donghaeng.car, isPlaying=true`
+ * 처럼 동행을 '재생 중' 미디어로 잡아 AI 비서(Gleo)의 '다음 곡' 같은 명령이 동행으로 올 위험이 있었다.
+ * → **PAUSED**(동작 PLAY_PAUSE·PLAY·PAUSE 그대로, 속도 0, 메타데이터 없음). 미디어 버튼 우선순위는 짧은 무음 재생이 맡으므로 키는 그대로 온다.
+ * 바꾸려면 위 표를 다시 재고 단위 테스트(`PttSessionPlaybackTest` — PLAYING 아님)를 같이 고친다.
+ */
+object PttSessionPlayback {
+    /** `PlaybackState.STATE_PAUSED` — PLAYING 이 아니다(단위 테스트로 고정) */
+    const val STATE: Int = PlaybackState.STATE_PAUSED
+
+    /** 재생/정지 동작 — 미디어 버튼(HEADSETHOOK·MEDIA_PLAY_PAUSE·MEDIA_PLAY)을 받으려고 둔다 */
+    const val ACTIONS: Long = PlaybackState.ACTION_PLAY_PAUSE or PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE
+
+    /** 멈춤 상태라 0 */
+    const val SPEED: Float = 0f
+
+    /** 메타데이터(제목·앨범 아트)를 넣지 않는다 — 미디어 위젯에 항목이 생기지 않게 */
+    const val SETS_METADATA: Boolean = false
+
+    /** 로그·상태 줄 이름 */
+    fun stateName(state: Int): String = when (state) {
+        PlaybackState.STATE_NONE -> "NONE"
+        PlaybackState.STATE_STOPPED -> "STOPPED"
+        PlaybackState.STATE_PAUSED -> "PAUSED"
+        PlaybackState.STATE_PLAYING -> "PLAYING"
+        else -> "STATE_$state"
+    }
+
+    /** `state=PAUSED speed=0.0 metadata=none` — 세션을 켤 때 로그 한 줄 */
+    fun describe(): String = "state=${stateName(STATE)} speed=$SPEED metadata=${if (SETS_METADATA) "set" else "none"}"
 }

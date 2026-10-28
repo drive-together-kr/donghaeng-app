@@ -39,6 +39,8 @@ data class VoiceTriggerStatus(
     /** 다른 앱이 미디어를 재생 중 — 세션을 내려 재생/정지 키를 음악 앱에 돌려준다 */
     val otherMediaActive: Boolean = false,
     val sessionActive: Boolean = false,
+    /** 켜 둔 MediaSession 의 재생 상태 이름(`PAUSED` — [PttSessionPlayback]), 세션이 없으면 null */
+    val sessionState: String? = null,
     val presses: Int = 0,
     val consumedKeys: Int = 0,
     val lastSource: PttTriggerSource? = null,
@@ -46,8 +48,8 @@ data class VoiceTriggerStatus(
     val detail: String? = null,
 ) {
     override fun toString(): String =
-        "group=$groupActive handleButton=$handleButton otherMedia=$otherMediaActive session=$sessionActive presses=$presses consumed=$consumedKeys " +
-            "last=${lastSource ?: "-"}/${lastKey ?: "-"}${detail?.let { " detail=$it" } ?: ""}"
+        "group=$groupActive handleButton=$handleButton otherMedia=$otherMediaActive session=$sessionActive sessionState=${sessionState ?: "-"} " +
+            "presses=$presses consumed=$consumedKeys last=${lastSource ?: "-"}/${lastKey ?: "-"}${detail?.let { " detail=$it" } ?: ""}"
 }
 
 /**

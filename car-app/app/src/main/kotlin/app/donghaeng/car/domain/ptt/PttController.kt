@@ -50,10 +50,18 @@ import kotlinx.coroutines.withTimeoutOrNull
  * 주행·정차와 무관하게 동작한다(입력은 버튼·핸들 키뿐). '보내지 않은 무전' 다시 보내기·지우기([resend]·[deleteUnsent])는 **정차 중에만**.
  * 녹음 내용·인식 원문·닉네임은 로그에 남기지 않는다 — `ptt: …` 줄은 단계·길이·바이트·판정·근거만(규칙 8).
  *
+ * '보내지 않은 무전'은 [store](기기: 앱 내부 저장소 `files/ptt_unsent/`)에 오디오 + 메타로 둔다(사용자 결정 2026-10-28) — 앱 재시작·프로세스 종료 뒤
+ * [start] 가 읽어 두고(`ptt: unsent restored …`) 그룹 세션이 복원되면 **같은 그룹 것만** 목록에 다시 보인다(다른 그룹 것은 지움). 시작 뒤
+ * [PttTimings.restoreGraceMs] 안에 그룹이 오지 않으면(그룹 없음) 지운다. 다시 보냄 성공·지우기·그룹 종료(바뀜) 때 파일도 지운다.
+ *
+ * 사이클마다 번호를 매긴다([PttState.cycleSeq]·[PttState.idleCycleSeq]) — `PttRuntime` 이 받은 무전을 끊은 누름 뒤의 흐름이
+ * IDLE 로 끝났는지(보냄·취소·보관·짧음·실패 어느 쪽이든) 가려 끊긴 무전을 처음부터 다시 틀게 한다.
+ *
  * @param recipients 받는 차 수(나 제외, 모르면 null → 0)
  * @param micGranted 마이크 권한을 다시 읽는다(누를 때마다)
  * @param clock 단조 시계(기기: SystemClock.elapsedRealtime) — 녹음 길이·카운트다운
  * @param wallClock 벽시계 — '보내지 않은 무전' 시각 표시
+ * @param store '보내지 않은 무전' 저장소(기본 메모리 — 기기 DI 는 파일)
  */
 class PttController(
     private val recorder: VoiceRecorder,
@@ -69,12 +77,19 @@ class PttController(
     private val clock: () -> Long = System::currentTimeMillis,
     private val wallClock: () -> Long = System::currentTimeMillis,
     private val maxUnsent: Int = MAX_UNSENT,
+    private val store: UnsentVoiceStore = InMemoryUnsentVoiceStore(),
 ) {
     private sealed interface Command {
         data class Press(val source: String) : Command
         data class Resend(val id: String, val done: CompletableDeferred<Boolean>) : Command
         data class Delete(val id: String, val done: CompletableDeferred<Boolean>) : Command
         data class GroupChanged(val groupId: String?) : Command
+
+        /** 시작 — 저장소의 '보내지 않은 무전'을 읽어 그룹 확인까지 들고 있는다 */
+        data object Restore : Command
+
+        /** 시작 뒤 [PttTimings.restoreGraceMs] — 아직 그룹이 없으면 읽어 둔 것을 지운다 */
+        data object RestoreTimeout : Command
     }
 
     /** 사이클 하나가 쥔 녹음 파일 — 보냈거나 목록으로 넘기면 null(사이클이 끝날 때 남아 있으면 지운다) */
@@ -95,6 +110,12 @@ class PttController(
     private var cycle: Job? = null
     private var currentGroup: String? = null
     private var unsentSeq = 0
+    /** 저장소에서 읽었지만 그룹을 아직 모르는 '보내지 않은 무전'(액터 안에서만) — null = 기다리는 것 없음 */
+    private var restored: List<UnsentVoice>? = null
+    /** 사이클 번호(액터 안에서만 올린다) */
+    private var cycleCounter = 0
+    /** 지금 도는 사이클의 번호 — 사이클은 한 번에 하나라(cancelAndJoin 뒤 올림) toIdle 이 자기 번호를 읽는다 */
+    @Volatile private var runningCycle = 0
 
     private val _state = MutableStateFlow(PttState())
     val state: StateFlow<PttState> = _state.asStateFlow()
@@ -107,7 +128,13 @@ class PttController(
     fun start() {
         if (actor?.isActive == true) return
         _state.update { it.copy(micGranted = safeMic()) }
+        // 그룹 세션보다 먼저 처리된다(같은 inbox, 먼저 넣음)
+        inbox.trySend(Command.Restore)
         actor = scope.launch {
+            launch {
+                delay(timings.restoreGraceMs)
+                inbox.trySend(Command.RestoreTimeout)
+            }
             for (c in inbox) handle(c)
         }
     }
@@ -145,8 +172,12 @@ class PttController(
     fun describe(): String {
         val s = _state.value
         return "stage=${s.stage} remaining=${s.remainingS}s listening=${s.listening} countdown=${s.countdownMode} notice=${s.notice ?: "-"} " +
-            "mic=${s.micGranted} unsent=${_unsent.value.size} last=${s.lastAnswer ?: "-"}/${s.lastRecognizer ?: "-"} recognizers=[${listener.describe()}] ${s.stats}"
+            "mic=${s.micGranted} unsent=${_unsent.value.size} persisted=${persistedCount()} cycle=${s.cycleSeq}/${s.idleCycleSeq} " +
+            "last=${s.lastAnswer ?: "-"}/${s.lastRecognizer ?: "-"} recognizers=[${listener.describe()}] ${s.stats}"
     }
+
+    /** 저장소(앱 내부 저장소 파일)에 있는 '보내지 않은 무전' 수 — 디버그 `persisted=`(읽기 실패면 -1) */
+    fun persistedCount(): Int = runCatching { store.count() }.getOrDefault(-1)
 
     // ---------------------------------------------------------------- 명령 처리(액터 — 한 번에 하나씩)
 
@@ -156,7 +187,45 @@ class PttController(
             is Command.Resend -> c.done.complete(onResend(c.id))
             is Command.Delete -> c.done.complete(onDelete(c.id))
             is Command.GroupChanged -> onGroup(c.groupId)
+            Command.Restore -> onRestore()
+            Command.RestoreTimeout -> onRestoreTimeout()
         }
+    }
+
+    private fun onRestore() {
+        val loaded = runCatching { store.load() }.getOrElse {
+            DhLog.w("ptt: unsent restore 실패 ${it.javaClass.simpleName}")
+            emptyList()
+        }
+        if (loaded.isEmpty()) return
+        val gid = currentGroup
+        if (gid != null) {
+            applyRestore(loaded, gid)
+        } else {
+            restored = loaded
+            DhLog.i("ptt: unsent restored n=${loaded.size} (그룹 확인 대기 — 같은 그룹이면 목록으로, 아니면 지움)")
+        }
+    }
+
+    private fun onRestoreTimeout() {
+        val r = restored ?: return
+        if (currentGroup != null) return
+        DhLog.i("ptt: unsent restore — 시작 뒤 ${timings.restoreGraceMs / 1000}s 동안 그룹 없음 → 지움")
+        applyRestore(r, null)
+    }
+
+    /** 읽어 둔 것 중 [gid] 그룹 것만 목록으로(최신 먼저, 상한), 나머지(다른 그룹·그룹 없음)는 저장소에서 지운다. 로그에는 수만 */
+    private fun applyRestore(r: List<UnsentVoice>, gid: String?) {
+        restored = null
+        val keep = if (gid == null) emptyList() else r.filter { it.groupId == gid && it.file.isFile }
+        val drop = r.filterNot { k -> keep.any { it.id == k.id } }
+        drop.forEach { runCatching { store.remove(it.id) } }
+        if (keep.isNotEmpty()) {
+            val list = (_unsent.value + keep).distinctBy { it.id }.sortedByDescending { it.createdAtMs }
+            list.drop(maxUnsent).forEach { runCatching { store.remove(it.id) }; it.file.delete() }
+            _unsent.value = list.take(maxUnsent)
+        }
+        DhLog.i("ptt: unsent restored kept=${keep.size} dropped=${drop.size} (${if (gid == null) "그룹 없음" else "같은 그룹만"}) n=${_unsent.value.size} persisted=${persistedCount()}")
     }
 
     private suspend fun onPress(source: String) {
@@ -214,21 +283,29 @@ class PttController(
         if (gid == currentGroup) return
         val had = currentGroup
         currentGroup = gid
-        if (had == null && _unsent.value.isEmpty() && !_state.value.stage.busy) return
-        // 옛 사이클의 정리(finally)가 끝난 뒤 다음 명령을 받는다 — 바로 이어진 누름의 새 녹음을 옛 정리가 풀지 않게
-        cycle?.cancelAndJoin(); cycle = null
-        recorder.cancel()
-        val dropped = _unsent.value
-        dropped.forEach { it.file.delete() }
-        _unsent.value = emptyList()
-        _state.update { PttState(micGranted = it.micGranted, stats = it.stats) }
-        DhLog.i("ptt: group changed → reset (unsent dropped=${dropped.size})")
+        if (had != null || _unsent.value.isNotEmpty() || _state.value.stage.busy) {
+            // 옛 사이클의 정리(finally)가 끝난 뒤 다음 명령을 받는다 — 바로 이어진 누름의 새 녹음을 옛 정리가 풀지 않게
+            cycle?.cancelAndJoin(); cycle = null
+            recorder.cancel()
+            val dropped = _unsent.value
+            dropped.forEach { runCatching { store.remove(it.id) }; it.file.delete() }
+            // 그룹이 끝났거나 바뀌었다 — 저장소도 비운다(그룹을 아직 몰라 읽어만 둔 것은 아래 applyRestore 가 가린다)
+            val cleared = if (had != null) runCatching { store.clear() }.getOrDefault(0) else 0
+            _unsent.value = emptyList()
+            _state.update { PttState(micGranted = it.micGranted, stats = it.stats, cycleSeq = it.cycleSeq, idleCycleSeq = it.idleCycleSeq) }
+            DhLog.i("ptt: group changed → reset (unsent dropped=${dropped.size} persisted cleared=$cleared)")
+        }
+        restored?.let { applyRestore(it, gid) }
     }
 
     private suspend fun launchCycle(block: suspend () -> Unit) {
         // 옛 사이클이 끝날 때까지 기다린다(녹음기 start 가 동기라 그 안에서는 취소를 못 알아챈다) — 두 사이클이 녹음기 하나를 같이 쓰지 않게
         cycle?.cancelAndJoin()
         drainPresses()
+        // 옛 사이클이 완전히 끝난 뒤 번호를 올린다 — 옛 사이클의 toIdle 은 옛 번호로만 남는다
+        val seq = ++cycleCounter
+        runningCycle = seq
+        _state.update { it.copy(cycleSeq = seq) }
         cycle = scope.launch {
             try {
                 block()
@@ -428,6 +505,7 @@ class PttController(
                 _state.update { it.copy(stats = it.stats.copy(sendFailed = it.stats.sendFailed + 1)) }
                 if (unsentId != null) {
                     _unsent.update { list -> list.map { if (it.id == unsentId) it.copy(reason = UnsentReason.SEND_FAILED, failure = outcome.reason) else it } }
+                    _unsent.value.firstOrNull { it.id == unsentId }?.let { runCatching { store.update(it) } }
                 } else {
                     addUnsent(gid, holder, UnsentReason.SEND_FAILED, outcome.reason)
                 }
@@ -466,25 +544,43 @@ class PttController(
         toIdle()
     }
 
+    /** 사이클이 끝났다 — 이 사이클 번호를 [PttState.idleCycleSeq] 에 남긴다(PttRuntime 이 끊긴 무전을 다시 트는 때) */
     private fun toIdle() {
-        _state.update { it.copy(stage = PttStage.IDLE, notice = null, remainingS = 0, totalS = 0, level = 0f, listening = false, countdownMode = false, sentTo = 0) }
+        val seq = runningCycle
+        _state.update {
+            it.copy(
+                stage = PttStage.IDLE, notice = null, remainingS = 0, totalS = 0, level = 0f, listening = false, countdownMode = false, sentTo = 0,
+                idleCycleSeq = maxOf(it.idleCycleSeq, seq),
+            )
+        }
     }
 
     // ---------------------------------------------------------------- 보내지 않은 무전
 
     private fun addUnsent(gid: String, holder: ClipHolder, reason: UnsentReason, failure: String?) {
         val clip = holder.clip ?: return
-        holder.clip = null   // 이제 목록이 파일을 쥔다
-        val item = UnsentVoice("u${++unsentSeq}", gid, clip.file, clip.mime, clip.durationMs, wallClock(), reason, failure)
+        holder.clip = null   // 이제 목록(과 저장소)이 파일을 쥔다
+        val now = wallClock()
+        var id: String
+        do {
+            id = "u$now-${++unsentSeq}"
+        } while (_unsent.value.any { it.id == id })
+        val draft = UnsentVoice(id, gid, clip.file, clip.mime, clip.durationMs, now, reason, failure)
+        // 앱 내부 저장소로 옮긴다(재시작 뒤에도 남게). 실패하면 이번 프로세스 동안 캐시 파일로 들고 있는다
+        val stored = runCatching { store.add(draft) }.getOrNull()
+        val item = stored ?: draft
         val list = listOf(item) + _unsent.value
-        list.drop(maxUnsent).forEach { it.file.delete() }
+        list.drop(maxUnsent).forEach { runCatching { store.remove(it.id) }; it.file.delete() }
         _unsent.value = list.take(maxUnsent)
-        DhLog.i("ptt: kept unsent reason=$reason n=${_unsent.value.size}")
+        DhLog.i("ptt: kept unsent reason=$reason n=${_unsent.value.size} persisted=${if (stored != null) "yes" else "no"} total=${persistedCount()}")
     }
 
     private fun removeUnsent(id: String, deleteFile: Boolean): Boolean {
         val item = _unsent.value.firstOrNull { it.id == id } ?: return false
-        if (deleteFile) item.file.delete()
+        if (deleteFile) {
+            runCatching { store.remove(id) }
+            item.file.delete()
+        }
         _unsent.update { list -> list.filterNot { it.id == id } }
         return true
     }

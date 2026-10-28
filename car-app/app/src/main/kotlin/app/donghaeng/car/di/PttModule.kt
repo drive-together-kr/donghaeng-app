@@ -18,8 +18,10 @@ import app.donghaeng.car.core.common.MicPermission
 import app.donghaeng.car.core.network.ApiResult
 import app.donghaeng.car.core.network.VoiceApi
 import app.donghaeng.car.core.network.VoiceMessageClient
+import app.donghaeng.car.domain.ptt.FileUnsentVoiceStore
 import app.donghaeng.car.domain.ptt.PttController
 import app.donghaeng.car.domain.ptt.PttRuntime
+import app.donghaeng.car.domain.ptt.UnsentVoiceStore
 import app.donghaeng.car.domain.ptt.PttSettings
 import app.donghaeng.car.domain.ptt.SendOutcome
 import app.donghaeng.car.domain.ptt.SharedPrefsPttSettingsStore
@@ -89,9 +91,16 @@ object PttModule {
     @Singleton
     fun provideVoiceTrigger(@ApplicationContext context: Context, settings: PttSettings): VoiceTriggerAdapter = MediaSessionVoiceTrigger(context, settings)
 
+    /** '보내지 않은 무전' 저장소 — 앱 내부 저장소 `files/ptt_unsent/`(재시작·프로세스 종료 뒤에도 남는다, 그룹이 끝나면 지운다) */
+    @Provides
+    @Singleton
+    fun provideUnsentVoiceStore(@ApplicationContext context: Context): UnsentVoiceStore =
+        FileUnsentVoiceStore(File(context.filesDir, FileUnsentVoiceStore.DIR_NAME))
+
     @Provides
     @Singleton
     fun providePttController(
+        store: UnsentVoiceStore,
         recorder: VoiceRecorder,
         chain: RecognizerChain,
         voice: VoiceAdapter,
@@ -118,6 +127,7 @@ object PttModule {
         // '보내지 않은 무전' 다시 보내기·지우기는 정차 중에만
         isDriving = { surfaceState.isDriving.value },
         clock = SystemClock::elapsedRealtime,
+        store = store,
     )
 
     @Provides

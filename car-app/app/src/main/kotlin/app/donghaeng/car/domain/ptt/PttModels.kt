@@ -56,7 +56,11 @@ enum class PttNotice {
 /** 보내지 않은 무전이 된 이유 */
 enum class UnsentReason { NO_ANSWER, SEND_FAILED }
 
-/** '보내지 않은 무전' 한 개 — 정차 대시보드에서 다시 보내기/지우기. 파일은 `cache/ptt/out`, 그룹이 바뀌면 지운다 */
+/**
+ * '보내지 않은 무전' 한 개 — 정차 대시보드에서 다시 보내기/지우기. 오디오·메타는 [UnsentVoiceStore](기기: 앱 내부 저장소 `files/ptt_unsent/`)에 두어
+ * 앱 재시작·프로세스 종료 뒤에도 남는다(같은 그룹일 때만 다시 보인다). 다시 보냄 성공·지우기·그룹 종료(바뀜) 때 지운다.
+ * [id] 는 `u<만든 시각 ms>-<순번>`(파일 이름으로도 쓴다 — 영숫자·`-` 만).
+ */
 data class UnsentVoice(
     val id: String,
     val groupId: String,
@@ -92,6 +96,10 @@ data class PttState(
     val lastAnswer: YesNo? = null,
     val lastRecognizer: RecognizerKind? = null,
     val stats: PttStats = PttStats(),
+    /** 마지막으로 시작한 사이클 번호(녹음·다시 보내기·안내 — 1부터) */
+    val cycleSeq: Int = 0,
+    /** IDLE 로 끝난 마지막 사이클 번호 — `PttRuntime` 이 '재생을 끊은 누름 뒤의 흐름이 끝났다'를 가린다([ResumeAfterFlow]) */
+    val idleCycleSeq: Int = 0,
 )
 
 /** 누적 수 — 디버그 `ptt_status` 한 줄 */
@@ -137,6 +145,11 @@ data class PttTimings(
     val promptTimeoutMs: Long = 6_000,
     /** 인식기가 정리(stop 뒤 마지막 결과)하는 여유 — 확인 5초 + 이만큼 지나면 무응답 */
     val listenGraceMs: Long = 1_500,
+    /**
+     * 앱 시작 때 저장소에서 읽은 '보내지 않은 무전'을 그룹 세션 복원까지 기다리는 상한 — 이 안에 그룹이 오면 같은 그룹 것만 보이고,
+     * 끝까지 그룹이 없으면(그룹 없음) 지운다. 세션 저장소(DataStore)는 시작 직후 몇 ms 안에 읽힌다
+     */
+    val restoreGraceMs: Long = 30_000,
 )
 
 /** 무전 음성 문구(TTS) — 화면 문구는 strings.xml(UI 담당). 닉네임이 들어간 문장은 로그에 남기지 않는다 */

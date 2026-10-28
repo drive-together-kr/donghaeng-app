@@ -132,13 +132,20 @@ object DemoPttActions {
         }
     }
 
-    /** '보내지 않은 무전' 목록 한 줄 + 선택 동작(`--es op resend|delete --es id <u1|first>`) — 정차 중에만(PttController 가 판단) */
+    /**
+     * '보내지 않은 무전' 목록 한 줄 + 선택 동작(`--es op resend|delete --es id <u…|first>`) — 정차 중에만(PttController 가 판단).
+     * `persisted=` = 앱 내부 저장소(`files/ptt_unsent/`)에 있는 항목 수 — 재시작 뒤에도 `n=`·`persisted=`·id 가 그대로면 파일에서 복원된 것이다.
+     * 각 줄 `stored=yes` = 오디오가 저장소 폴더 안에 있다(캐시가 아니라).
+     */
     private suspend fun unsent(d: DemoPttDeps, intent: Intent) {
         val c = d.pttController()
         val list = c.unsent.value
         val now = System.currentTimeMillis()
-        val rows = list.joinToString(", ") { "${it.id} dur=${it.durationMs}ms reason=${it.reason}${it.failure?.let { f -> " failure=$f" } ?: ""} age=${(now - it.createdAtMs) / 1000}s" }
-        DhLog.i("demo: ptt_unsent n=${list.size} [$rows]")
+        val rows = list.joinToString(", ") {
+            "${it.id} dur=${it.durationMs}ms reason=${it.reason}${it.failure?.let { f -> " failure=$f" } ?: ""} age=${(now - it.createdAtMs) / 1000}s " +
+                "stored=${if (it.file.parentFile?.name == app.donghaeng.car.domain.ptt.FileUnsentVoiceStore.DIR_NAME) "yes" else "no"}"
+        }
+        DhLog.i("demo: ptt_unsent n=${list.size} persisted=${c.persistedCount()} [$rows]")
         val op = intent.getStringExtra("op") ?: return
         val rawId = intent.getStringExtra("id") ?: "first"
         val id = if (rawId == "first") list.firstOrNull()?.id else rawId
@@ -214,7 +221,7 @@ object DemoPttActions {
     private fun playbackLine(p: VoicePlaybackState): String {
         val playing = p.playing?.let { "${it.voice.voiceId}${if (it.ended) "/ended" else ""} pos=${it.positionMs}ms" } ?: "-"
         val past = p.past.groupingBy { it.status }.eachCount().entries.joinToString(",") { "${it.key}=${it.value}" }
-        return "playing=$playing queued=${p.queued} held=${p.held} past=${p.past.size}[$past] received=${p.received} played=${p.played} stale=${p.stale} " +
+        return "playing=$playing queued=${p.queued} held=${p.held} resumeWaiting=${p.resumeWaiting} past=${p.past.size}[$past] received=${p.received} played=${p.played} stale=${p.stale} " +
             "own=${p.skippedOwn} notForMe=${p.skippedNotAudience} dlFail=${p.downloadFailed} playFail=${p.playFailed}"
     }
 
