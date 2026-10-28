@@ -26,10 +26,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.KSerializer
+import java.net.NoRouteToHostException
+import java.net.SocketException
+import java.net.UnknownHostException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -53,9 +55,12 @@ import kotlin.random.Random
  * - LWT: `dh/v1/vehicle/{vid}/presence` 에 `{"online":false}`(QoS 1, retained). 접속 직후 `{"online":true}` 를 같은 토픽에 retained 로 올린다.
  * - TLS: [MqttUriPolicy] — `ssl://` 이면 시스템 신뢰 저장소로 TLS, 서버가 https 인데 `tcp://` 면 접속을 거부한다(평문 차단).
  * - **전송 폴백**(T32, [MqttTransportFallback]): 서버가 https 면 기본 전송(`ssl://…:8883`)과 파생 `wss://{베이스 호스트}/mqtt`(443) 를 후보로 둔다.
- *   브로커에 닿지 못한 시도가 연속 2회면 재연결 직전에 `reconnector.transportConfig(…)` 로 전송을 바꾸고(같은 클라이언트·세션·백오프 유지),
- *   첫 연결이 10 s 안에 안 되면 다음 전송으로 클라이언트를 다시 만든다. 붙은 전송은 [MqttTransportMemory] 에 기억해 다음 시작에 먼저 시도하고,
- *   그 전송이 실패하면 같은 규칙으로 반대로 돌아간다. 로그 `mqtt transport fallback → wss`, 상태 [MqttStatus.transport]·[MqttStatus.transportFallbacks].
+ *   실패는 [mqttFailureKind] 로 가른다 — 브로커 응답(CONNACK)·망 없음(DNS 실패·ENETUNREACH)은 세지 않는다. 브로커에 닿지 못한 시도가 연속 2회면
+ *   재연결 직전에 `reconnector.transportConfig(…)` 로 전송을 바꾼다(같은 클라이언트·clientId·세션). 첫 연결이 10 s 안에 안 되면 다음 전송을 미리 정해 두고
+ *   매달린 시도가 끝난 뒤(실패 콜백) 또는 다음 시도 직전(gate 콜백)에 적용한다 — **클라이언트를 새로 만들지 않는다**(늦게 붙은 이전 연결이 새 연결의 세션을
+ *   빼앗아 LWT offline 이 나가는 일이 없다). 마지막 연결 뒤 후보를 한 바퀴 다 돌았으면 계속 번갈아 시도하되 정상 백오프를 쓴다.
+ *   '다른 전송이 실패한 뒤 붙은' 전송만 [MqttTransportMemory] 에 기억해 다음 시작에 먼저 시도하고, 그 전송이 실패하면 같은 규칙으로 반대로 돌아간다.
+ *   로그 `mqtt transport fallback → wss`, 상태 [MqttStatus.transport]·[MqttStatus.transportFallbacks].
  * - 주소: 브로커 = 숨은 메뉴 MQTT 주소 ?: 서버 응답 `mqtt.uri`, https 판정·WSS 파생 = [ServerConfig.publicBaseUrl](사용자 지정 ?: 빌드 기본값).
  * - 로그: 토픽의 차량 ID 는 마스킹, 본문은 찍지 않는다(CLAUDE.md 규칙 8).
  */
@@ -90,9 +95,13 @@ class HiveMqttGateway @Inject constructor(
     @Volatile
     private var connection: Connection? = null
 
+    /** 첫 연결 시간 초과(기본 [MqttTransportFallback.FIRST_CONNECT_TIMEOUT_MS]). 단위 테스트가 줄여 쓰는 손잡이 — 앱 코드는 바꾸지 않는다 */
+    @Volatile
+    internal var firstConnectTimeoutMs: Long = MqttTransportFallback.FIRST_CONNECT_TIMEOUT_MS
+
     /**
      * 클라이언트 하나의 수명. retired 가 되면 그 클라이언트의 남은 재연결은 취소된다.
-     * [fallback]·[serverKey] 는 connect 한 번 동안 공유된다(전송 시간 초과로 클라이언트를 다시 만들어도 같은 것).
+     * [fallback] = 이 접속의 전송 폴백 상태(다음 시도에 쓸 전송), [endpoint] = 이 클라이언트에 **실제로 건** 전송(진행 중이거나 다음 시도).
      */
     private class Connection(
         val vehicleId: String,
@@ -185,12 +194,13 @@ class HiveMqttGateway @Inject constructor(
         }
         val conn = startClientLocked(credentials, fallback, serverKey)
         if (fallback.hasAlternative) {
-            // 소켓 연결이 매달려 실패 콜백이 늦는 망(8883 SYN 차단 등) — 10 s 안에 못 붙으면 실패 2회를 기다리지 않고 바꾼다
-            timer.schedule({ onFirstConnectTimeout(conn) }, MqttTransportFallback.FIRST_CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            // 소켓 연결이 매달려 실패 콜백이 늦는 망(8883 SYN 차단 등) — 10 s 안에 못 붙으면 실패 2회를 기다리지 않고 다음 전송을 정해 둔다
+            val timeoutMs = firstConnectTimeoutMs
+            timer.schedule({ onFirstConnectTimeout(conn, timeoutMs) }, timeoutMs, TimeUnit.MILLISECONDS)
         }
     }
 
-    /** [fallback] 의 지금 전송으로 클라이언트를 만들어 붙기 시작한다. 전송 전환(첫 연결 시간 초과)에도 같은 [fallback] 으로 다시 부른다 */
+    /** [fallback] 의 지금 전송으로 클라이언트를 만들어 붙기 시작한다. 이후 전송 전환은 같은 클라이언트의 reconnector 로만 한다 */
     private fun startClientLocked(credentials: StoredCredentials, fallback: MqttTransportFallback, serverKey: String): Connection {
         val vid = credentials.vehicleId
         val endpoint = fallback.current
@@ -216,9 +226,9 @@ class HiveMqttGateway @Inject constructor(
                 }
                 conn.awaitingAuth = false
                 conn.up = true
-                val ep = conn.fallback.onConnected()
-                conn.endpoint = ep
-                transportMemory.remember(conn.serverKey, ep.transport)
+                val ep = conn.endpoint
+                // 기억은 '다른 전송이 실제로 실패한 뒤 이 전송으로 붙었을 때' 만 바뀐다(망 없음·인증 거부·한 바퀴 다 실패로는 안 바뀜)
+                conn.fallback.onConnected(ep)?.let { transportMemory.remember(conn.serverKey, it.transport) }
                 val wasReconnect = _status.value.connectedAtMs != null
                 _status.update {
                     it.copy(
@@ -269,24 +279,27 @@ class HiveMqttGateway @Inject constructor(
     }
 
     /**
-     * 게이트웨이 타이머에서 불린다(T32). 첫 연결이 아직이면 다음 전송으로 **클라이언트를 다시 만든다** — 매달린 시도는 retired 로 버린다
-     * (늦게 붙으면 connected 리스너가 끊고, 실패하면 disconnected 리스너가 재연결을 멈춘다).
+     * 게이트웨이 타이머에서 불린다(T32). 첫 연결이 아직이면 **다음 전송을 정해 둔다** — 적용은 매달린 시도가 끝난 뒤([onDisconnected])나
+     * 다음 시도 직전(gate 콜백). 같은 클라이언트에서 바꾸므로 같은 clientId 로 두 연결이 겹치지 않는다(T32 리뷰).
+     * 인증 거부 뒤 새 토큰을 기다리는 중이면(브로커에 닿은 것 — 전송은 멀쩡하다) 바꾸지 않는다. 판단은 [MqttTransportFallback.onFirstConnectTimeout].
      */
-    private fun onFirstConnectTimeout(conn: Connection) {
-        runBlocking {
-            mutex.withLock {
-                if (connection !== conn || conn.retired) return@withLock
-                val creds = credentials?.takeIf { it.vehicleId == conn.vehicleId } ?: return@withLock
-                val from = conn.endpoint
-                val next = conn.fallback.onFirstConnectTimeout() ?: return@withLock
-                DhLog.w(
-                    "mqtt transport fallback → ${next.transport.label} (from ${from.transport.label}: not connected in " +
-                        "${MqttTransportFallback.FIRST_CONNECT_TIMEOUT_MS / 1000}s) broker=${next.host}:${next.port}",
-                )
-                conn.retired = true
-                conn.release()
-                startClientLocked(creds, conn.fallback, conn.serverKey)
-            }
+    private fun onFirstConnectTimeout(conn: Connection, timeoutMs: Long) {
+        if (connection !== conn || conn.retired || conn.up || conn.awaitingAuth) return
+        val from = conn.endpoint
+        val next = conn.fallback.onFirstConnectTimeout() ?: return
+        DhLog.w(
+            "mqtt transport fallback → ${next.transport.label} (from ${from.transport.label}: not connected in " +
+                "${timeoutMs / 1000}s — applied at next attempt) broker=${next.host}:${next.port}",
+        )
+        _status.update { it.copy(transportFallbacks = conn.fallback.switches) }
+    }
+
+    /** 다음 재연결의 전송을 [to] 로 바꾼다. 이벤트 루프(disconnected 리스너·gate 콜백)에서만 */
+    private fun applyTransport(reconnector: Mqtt5ClientReconnector, conn: Connection, to: BrokerEndpoint) {
+        conn.endpoint = to
+        reconnector.transportConfig(transportConfigFor(to))
+        _status.update {
+            it.copy(brokerUri = to.displayUri(), tls = to.tls, transport = to.transport, transportFallbacks = conn.fallback.switches)
         }
     }
 
@@ -305,26 +318,29 @@ class HiveMqttGateway @Inject constructor(
         val latest = latestFor(conn) ?: initial
         applyAuth(reconnector, latest, conn)
 
-        // T32 전송 폴백: 붙어 있다가 끊긴 건 실패가 아니다. 브로커에 닿지 못한 시도가 연속 2회면 다음 재연결부터 다른 전송(같은 클라이언트)
+        // T32 전송 폴백: 붙어 있다가 끊긴 건 실패가 아니다. 브로커 응답·망 없음은 세지 않는다. 브로커에 닿지 못한 시도가 연속 2회면(또는 첫 연결 시간 초과가
+        // 미리 정해 두었으면) 다음 재연결부터 다른 전송(같은 클라이언트)
         val wasUp = conn.up
         conn.up = false
-        val switchedTo = if (wasUp) {
+        val attempted = conn.endpoint
+        val switch = if (wasUp) {
             conn.fallback.onConnectionLost()
             null
         } else {
-            conn.fallback.onAttemptFailed(reachedBroker = reachedBroker(ctx.cause))
+            conn.fallback.onAttemptFailed(mqttFailureKind(ctx.cause), attempted)
         }
-        if (switchedTo != null) {
-            val from = conn.endpoint
-            conn.endpoint = switchedTo
-            reconnector.transportConfig(transportConfigFor(switchedTo))
-            _status.update {
-                it.copy(brokerUri = switchedTo.displayUri(), tls = switchedTo.tls, transport = switchedTo.transport, transportFallbacks = conn.fallback.switches)
+        if (switch != null) {
+            val from = attempted
+            val to = switch.to
+            applyTransport(reconnector, conn, to)
+            if (switch.decidedNow) {
+                val line = "mqtt transport fallback → ${to.transport.label} (from ${from.transport.label}: ${MqttTransportFallback.FAILURE_THRESHOLD} failed attempts " +
+                    "cause=${ctx.cause.message ?: ctx.cause.javaClass.simpleName}) broker=${to.host}:${to.port}"
+                // 한 바퀴를 다 돌았으면 망·서버 문제일 가능성이 크다 — 정상 백오프로 번갈아 시도하고 WARN 은 줄인다
+                if (switch.quick) DhLog.w(line) else DhLog.i("$line — all transports failed since last connect, normal backoff")
+            } else {
+                DhLog.i("mqtt transport ${to.transport.label} applied after the hung ${from.transport.label} attempt ended")
             }
-            DhLog.w(
-                "mqtt transport fallback → ${switchedTo.transport.label} (from ${from.transport.label}: ${MqttTransportFallback.FAILURE_THRESHOLD} failed attempts " +
-                    "cause=${ctx.cause.message ?: ctx.cause.javaClass.simpleName}) broker=${switchedTo.host}:${switchedTo.port}",
-            )
         }
 
         val authCode = authFailureCode(ctx.cause)
@@ -332,7 +348,7 @@ class HiveMqttGateway @Inject constructor(
         val rejectedLatest = authCode != null && (usedToken == null || usedToken == latest.vehicleAccessToken)
         val waitMs = when {
             rejectedLatest -> maxOf(backoffMs(reconnector.attempts), AUTH_WAIT_MS)
-            switchedTo != null -> SWITCH_DELAY_MS   // 새 전송은 바로 시도(백오프는 다음 실패부터 다시 자란다)
+            switch?.quick == true -> SWITCH_DELAY_MS   // 한 바퀴 안의 새 전송은 바로 시도(백오프는 다음 실패부터 다시 자란다)
             else -> backoffMs(reconnector.attempts)
         }
         conn.awaitingAuth = rejectedLatest
@@ -345,6 +361,13 @@ class HiveMqttGateway @Inject constructor(
                 reconnector.reconnect(false)
             } else {
                 latestFor(conn)?.let { applyAuth(reconnector, it, conn) }
+                // 기다리는 사이 첫 연결 시간 초과가 다음 전송을 정했으면 이번 시도부터(이벤트 루프 — transportConfig 를 부를 수 있다)
+                val desired = conn.fallback.current
+                if (desired != conn.endpoint) {
+                    val from = conn.endpoint
+                    applyTransport(reconnector, conn, desired)
+                    DhLog.i("mqtt transport ${desired.transport.label} applied before the next attempt (from ${from.transport.label})")
+                }
             }
         }
         timer.schedule({ conn.release(gate) }, waitMs, TimeUnit.MILLISECONDS)
@@ -363,7 +386,7 @@ class HiveMqttGateway @Inject constructor(
             DhLog.w("mqtt auth rejected reason=$authCode latest=$rejectedLatest attempt=${reconnector.attempts} → retry in ${waitMs / 1000}s")
             if (rejectedLatest) _authFailures.tryEmit(MqttAuthFailure(authCode, now, usedToken ?: latest.vehicleAccessToken))
         } else {
-            DhLog.w("mqtt disconnected source=${ctx.source} transport=${conn.endpoint.transport.label} cause=$reason attempt=${reconnector.attempts} → retry in ${waitMs}ms")
+            DhLog.w("mqtt disconnected source=${ctx.source} transport=${attempted.transport.label} cause=$reason attempt=${reconnector.attempts} → retry in ${waitMs}ms")
         }
     }
 
@@ -471,10 +494,6 @@ class HiveMqttGateway @Inject constructor(
         /** 전송을 바꾼 직후 다음 시도까지 */
         const val SWITCH_DELAY_MS = 1_000L
 
-        /** 브로커가 CONNACK 으로 답한 실패인가(인증 거부 등 — 전송은 살아 있다) */
-        fun reachedBroker(cause: Throwable): Boolean =
-            generateSequence(cause) { it.cause?.takeIf { c -> c !== it } }.take(4).any { it is Mqtt5ConnAckException }
-
         /** 인증 거부 뒤 새 토큰을 기다리는 최대 시간 — 갱신이 실패하면 이 뒤에 가진 토큰으로 다시 시도한다 */
         const val AUTH_WAIT_MS = 15_000L
         const val BACKOFF_INITIAL_MS = 1_000L
@@ -498,6 +517,28 @@ class HiveMqttGateway @Inject constructor(
             if (seg.startsWith("veh_") || seg.startsWith("grp_")) TextMasking.maskVehicleId(seg) else seg
         }
     }
+}
+
+/**
+ * 연결 시도 실패 분류 (T32 리뷰) — HiveMQ 는 `ConnectionFailedException(원인)` 등으로 감싸 주므로 원인 사슬을 본다.
+ * - CONNACK 응답(`Mqtt5ConnAckException`, 인증 거부 등) → [AttemptFailure.BROKER_ANSWERED]
+ * - DNS 실패(`UnknownHostException`)·`ENETUNREACH`("Network is unreachable") → [AttemptFailure.NETWORK_DOWN] — 망이 없으면 어느 전송이든 같다
+ * - 그 밖 → [AttemptFailure.UNREACHABLE]. `EHOSTUNREACH`(`NoRouteToHostException`, "No route to host")는 망 없음으로 치지 않는다 —
+ *   방화벽이 포트를 ICMP host-prohibited 로 거절해도(firewalld 기본) 이 오류가 나서 8883 차단 신호일 수 있다.
+ * internal 은 단위 테스트용.
+ */
+internal fun mqttFailureKind(cause: Throwable): AttemptFailure {
+    val chain = generateSequence(cause) { it.cause?.takeIf { c -> c !== it } }.take(6).toList()
+    return when {
+        chain.any { it is Mqtt5ConnAckException } -> AttemptFailure.BROKER_ANSWERED
+        chain.any { it is UnknownHostException || (it is SocketException && it !is NoRouteToHostException && it.isNetworkUnreachable()) } -> AttemptFailure.NETWORK_DOWN
+        else -> AttemptFailure.UNREACHABLE
+    }
+}
+
+private fun SocketException.isNetworkUnreachable(): Boolean {
+    val m = message ?: return false
+    return m.contains("ENETUNREACH") || m.contains("Network is unreachable", ignoreCase = true)
 }
 
 /** WebSocket 서브프로토콜 — EMQX 가 요구한다(HiveMQ 기본값과 같지만 명시) */
