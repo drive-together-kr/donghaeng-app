@@ -2,7 +2,10 @@ package app.donghaeng.car.feature.pairing
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.donghaeng.car.core.common.AlwaysParkedDrivingStateMonitor
 import app.donghaeng.car.core.common.DhLog
+import app.donghaeng.car.core.common.DrivingStateMonitor
+import app.donghaeng.car.core.common.TokenClearReason
 import app.donghaeng.car.core.network.ApiResult
 import app.donghaeng.car.domain.pairing.PairingRepository
 import app.donghaeng.car.domain.pairing.VehicleIdUnavailableException
@@ -13,14 +16,16 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/** 오류 원인 — 문구는 strings.xml 에서 고른다. */
-enum class PairingErrorReason { NETWORK, SERVER, VEHICLE_ID_UNAVAILABLE, TOO_MANY_CODES }
+/** 오류 원인 — 문구는 strings.xml 에서 고른다. STORAGE_UNAVAILABLE = 토큰 저장소를 읽지 못함(T33 — 새 코드를 받지 않는다) */
+enum class PairingErrorReason { NETWORK, SERVER, VEHICLE_ID_UNAVAILABLE, TOO_MANY_CODES, STORAGE_UNAVAILABLE }
 
 /**
  * 페어링 화면 상태 (docs/08 T12).
@@ -60,13 +65,17 @@ class PairingViewModel internal constructor(
     /** 로컬 만료 판정용 시계(ms). 테스트는 가상 시간을 넣는다. */
     private val clock: () -> Long,
     autoStart: Boolean,
+    driving: DrivingStateMonitor = AlwaysParkedDrivingStateMonitor(),
 ) : ViewModel() {
 
     @Inject
-    constructor(repository: PairingRepository) : this(repository, { System.currentTimeMillis() }, autoStart = true)
+    constructor(repository: PairingRepository, driving: DrivingStateMonitor) : this(repository, { System.currentTimeMillis() }, autoStart = true, driving = driving)
 
     private val _state = MutableStateFlow<PairingState>(PairingState.Idle)
     val state: StateFlow<PairingState> = _state.asStateFlow()
+
+    /** T33: 주행 중이면 '연결 해제 후 다시 연결' 을 막는다(확인 창 포함) */
+    val isDriving: StateFlow<Boolean> = driving.isDriving().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     private val _events = Channel<PairingEvent>(capacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     val events: Flow<PairingEvent> = _events.receiveAsFlow()
@@ -83,17 +92,25 @@ class PairingViewModel internal constructor(
         job = viewModelScope.launch { checkStoredThenPair() }
     }
 
-    /** 오류 화면의 "다시 시도" — 코드 발급 횟수를 처음부터 센다. */
+    /** 오류 화면의 "다시 시도" — 코드 발급 횟수를 처음부터 센다. 저장소 오류였으면 저장소부터 다시 읽는다. */
     fun retry() {
         job?.cancel()
-        job = viewModelScope.launch { requestCodeAndPoll(firstAttempt = 1) }
+        val storageError = (_state.value as? PairingState.Error)?.reason == PairingErrorReason.STORAGE_UNAVAILABLE
+        job = viewModelScope.launch { if (storageError) checkStoredThenPair() else requestCodeAndPoll(firstAttempt = 1) }
     }
 
-    /** 이미 연결된 상태에서 "연결 해제 후 다시 연결" — 저장 토큰을 지우고 새 코드를 받는다(반복 시연용). */
+    /**
+     * 이미 연결된 상태에서 "연결 해제 후 다시 연결" — 저장 토큰을 지우고 새 코드를 받는다(반복 시연용).
+     * 화면은 확인 창("이 차량의 연결과 현재 그룹이 지워집니다") 뒤에만 부르고, 주행 중에는 무시한다(T33, docs/10 R13).
+     */
     fun disconnectAndRepair() {
+        if (isDriving.value) {
+            DhLog.w("pairing repair ignored while driving")
+            return
+        }
         job?.cancel()
         job = viewModelScope.launch {
-            repository.disconnect()
+            repository.disconnect(TokenClearReason.USER_REPAIR)
             requestCodeAndPoll(firstAttempt = 1)
         }
     }
@@ -103,6 +120,11 @@ class PairingViewModel internal constructor(
         val stored = repository.storedCredentials()
         if (stored != null) {
             setState(PairingState.Connected(stored.vehicleId, stored.nickname))
+            return
+        }
+        // 읽기 실패는 미페어링이 아니다 — 새 코드를 받으면 서버가 같은 차의 refresh 를 폐기하므로 여기서 멈춘다(T33)
+        repository.storeUnavailableReason()?.let { reason ->
+            setState(PairingState.Error(PairingErrorReason.STORAGE_UNAVAILABLE, retryable = true, detail = reason))
             return
         }
         requestCodeAndPoll(firstAttempt = 1)

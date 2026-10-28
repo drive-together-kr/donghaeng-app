@@ -34,7 +34,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.donghaeng.car.R
 import app.donghaeng.car.adapter.sdk.ProbeLine
 import app.donghaeng.car.core.common.LocationPermissions
+import androidx.compose.ui.text.font.FontFamily
 import app.donghaeng.car.core.common.TextMasking
+import app.donghaeng.car.core.common.TokenStoreState
+import app.donghaeng.car.ui.components.clearRecordText
+import app.donghaeng.car.ui.components.formatShortTime
 import app.donghaeng.car.domain.capability.CapabilityReport
 import app.donghaeng.car.domain.model.CapabilityDomain
 import app.donghaeng.car.domain.model.CapabilityEntry
@@ -48,6 +52,7 @@ fun DiagnosticsRoute(
     viewModel: DiagnosticsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val t33 by viewModel.t33State.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { viewModel.onPermissionResult(it) }
     DiagnosticsScreen(
@@ -61,6 +66,7 @@ fun DiagnosticsRoute(
         onRestartVehicleSignals = viewModel::restartVehicleSignals,
         onVoiceAction = viewModel::onVoiceAction,
         onRouteSyncAction = viewModel::onRouteSyncAction, onResyncClock = viewModel::resyncClock,
+        t33 = t33,
     )
 }
 
@@ -78,6 +84,7 @@ fun DiagnosticsScreen(
     onVoiceAction: (VoiceDebugAction) -> Unit = {},
     onRouteSyncAction: (RouteSyncDebugAction) -> Unit = {},
     onResyncClock: () -> Unit = {},
+    t33: T33DiagState = T33DiagState(),
 ) {
     Scaffold { innerPadding ->
         Column(
@@ -95,6 +102,8 @@ fun DiagnosticsScreen(
             }
 
             VehicleCard(state)
+            TokenCard(t33, state)
+            RecentLogCard(t33)
             CapabilityCard(state.report?.capabilities)
             ProbeCard(state.probe)
             MqttCard(state)
@@ -126,6 +135,71 @@ private fun VehicleCard(state: DiagnosticsUiState) {
             }
             LabelRow(stringResource(R.string.diag_vehicle_id_masked), vehicleIdText)
             LabelRow(stringResource(R.string.diag_paired), state.pairedVehicleIdMasked ?: stringResource(R.string.diag_paired_none))
+        }
+    }
+}
+
+/**
+ * T33 — 저장소 상태·토큰 만료·갱신 결과·마지막 삭제 사유(토큰/그룹 세션)·저장소 재시도·MQTT 인증 거부.
+ * R13 같은 '조용한 해제' 를 결과만 캡처해 붙여넣으면 원인을 알 수 있게 한다.
+ */
+@Composable
+private fun TokenCard(t33: T33DiagState, state: DiagnosticsUiState) {
+    Card {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(stringResource(R.string.t33_diag_section_tokens), style = MaterialTheme.typography.titleMedium)
+            HorizontalDivider()
+            val storeText = when (val t = t33.tokens) {
+                TokenStoreState.Loading -> "LOADING"
+                TokenStoreState.Empty -> "EMPTY"
+                is TokenStoreState.Present -> "PRESENT ${TextMasking.maskVehicleId(t.credentials.vehicleId)}"
+                is TokenStoreState.Unavailable -> "UNAVAILABLE ${t.reason}"
+            }
+            LabelRow(stringResource(R.string.t33_diag_store_state), storeText)
+            val r = t33.refresh
+            val now = if (t33.nowMs > 0) t33.nowMs else System.currentTimeMillis()
+            LabelRow(
+                stringResource(R.string.t33_diag_token_exp),
+                r.accessExpiresAtMs?.let { exp -> "${formatShortTime(exp)}  (${(exp - now) / 60_000}분 남음)" } ?: "-",
+            )
+            LabelRow(
+                stringResource(R.string.t33_diag_refresh),
+                "성공 ${r.refreshes} / 실패 ${r.failures}" + (r.lastResult?.let { "   마지막 $it" } ?: "") + (r.lastAttemptAtMs?.let { "  @${formatShortTime(it)}" } ?: "") + (if (r.running) "" else "  (중지)"),
+            )
+            LabelRow(stringResource(R.string.t33_diag_last_token_clear), clearRecordText(t33.lastTokenClear))
+            LabelRow(stringResource(R.string.t33_diag_last_session_clear), clearRecordText(t33.lastSessionClear))
+            val retry = t33.storeRetry
+            LabelRow(stringResource(R.string.t33_diag_store_retry), "${retry.attempts}/${retry.maxAttempts}" + if (retry.exhausted) "  (소진)" else "")
+            val m = state.mqtt
+            LabelRow(stringResource(R.string.t33_diag_mqtt_auth), "${m.authFailures}회" + (m.lastAuthFailureAtMs?.let { "  마지막 ${formatShortTime(it)}" } ?: ""))
+        }
+    }
+}
+
+/** T33 — DhLog 링 버퍼 마지막 30줄(I/W/E, 이미 마스킹됨). 전체는 files/dh_log.txt */
+@Composable
+private fun RecentLogCard(t33: T33DiagState) {
+    Card {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(stringResource(R.string.t33_diag_section_logs), style = MaterialTheme.typography.titleMedium)
+            HorizontalDivider()
+            if (t33.recentLogs.isEmpty()) {
+                Text(stringResource(R.string.t33_diag_logs_empty), style = MaterialTheme.typography.bodyMedium)
+            } else {
+                t33.recentLogs.forEach { line ->
+                    Text(
+                        line,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = when {
+                            line.contains(" E ") -> MaterialTheme.colorScheme.error
+                            line.contains(" W ") -> MaterialTheme.colorScheme.tertiary
+                            else -> MaterialTheme.colorScheme.onSurface
+                        },
+                    )
+                }
+            }
+            Text(stringResource(R.string.t33_diag_logs_hint), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

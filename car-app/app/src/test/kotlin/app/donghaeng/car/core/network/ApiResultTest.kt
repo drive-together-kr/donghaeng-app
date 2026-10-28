@@ -44,6 +44,20 @@ class ApiResultTest {
     }
 
     @Test
+    fun `401 은 Unauthorized 이고 INVALID_TOKEN 코드를 파싱한다 (T33)`() = runTest {
+        val r = safeApiCall { error<Unit>(401, envelope(ErrorCodes.INVALID_TOKEN)) }
+        assertTrue(r is ApiResult.HttpFailure.Unauthorized)
+        assertEquals(401, (r as ApiResult.HttpFailure).status)
+        assertEquals(ErrorCodes.INVALID_TOKEN, r.code)
+        assertEquals("HTTP 401 INVALID_TOKEN", r.summary)
+        // 본문 없는 401(Spring 기본)도 Unauthorized
+        val bare = safeApiCall { error<Unit>(401, "".toResponseBody(json)) }
+        assertTrue(bare is ApiResult.HttpFailure.Unauthorized)
+        // 403 은 그대로 Other (폐기된 차량 토큰 — 갱신 대상 아님)
+        assertTrue(safeApiCall { error<Unit>(403, envelope(ErrorCodes.FORBIDDEN)) } is ApiResult.HttpFailure.Other)
+    }
+
+    @Test
     fun `오류 본문이 봉투 모양이 아니면 error 는 null 이고 상태만 남는다`() = runTest {
         val r = safeApiCall { error<Unit>(404, "<html>Not Found</html>".toResponseBody("text/html".toMediaType())) }
         assertTrue(r is ApiResult.HttpFailure.NotFound)

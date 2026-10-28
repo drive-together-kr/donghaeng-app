@@ -4,7 +4,9 @@ import app.donghaeng.car.BuildConfig
 import app.donghaeng.car.adapter.vehicle.VehicleAdapter
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.core.common.StoredCredentials
+import app.donghaeng.car.core.common.TokenClearReason
 import app.donghaeng.car.core.common.TokenStore
+import app.donghaeng.car.core.common.TokenStoreState
 import app.donghaeng.car.core.common.VehicleIdFallback
 import app.donghaeng.car.core.network.ApiResult
 import app.donghaeng.car.core.network.IdentityApi
@@ -74,6 +76,15 @@ class PairingRepository @Inject constructor(
         return credentials
     }
 
-    /** 연결 해제(설정 화면 / 반복 시연). 서버 측 폐기(`DELETE /me/vehicles/{id}`)는 폰 쪽 일이다. */
-    suspend fun disconnect() = tokenStore.clear()
+    /**
+     * 연결 해제(설정 화면 / 반복 시연 / 저장소 초기화). 서버 측 폐기(`DELETE /me/vehicles/{id}`)는 폰 쪽 일이다.
+     * 사유는 진단 기록(`dh_diag`)에 남는다 — 화면은 확인 창을 거친 뒤에만 부른다(T33, docs/10 R13).
+     */
+    suspend fun disconnect(reason: TokenClearReason) {
+        DhLog.i("pairing disconnect requested reason=$reason")
+        tokenStore.clear(reason)
+    }
+
+    /** 저장소를 읽을 수 없는 상태인가(T33) — 페어링 화면이 새 코드를 받지 않고 오류를 보인다 */
+    fun storeUnavailableReason(): String? = (tokenStore.state.value as? TokenStoreState.Unavailable)?.reason
 }

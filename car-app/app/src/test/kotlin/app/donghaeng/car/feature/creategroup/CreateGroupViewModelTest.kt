@@ -9,6 +9,8 @@ import app.donghaeng.car.domain.group.GroupRepository
 import app.donghaeng.car.domain.session.GroupSession
 import app.donghaeng.car.domain.session.InMemoryGroupSessionStore
 import app.donghaeng.car.domain.session.MqttSessionManager
+import app.donghaeng.car.core.common.TokenClearReason
+import app.donghaeng.car.testing.testRefresher
 import app.donghaeng.protocol.GroupTopics
 import app.donghaeng.protocol.Place
 import app.donghaeng.protocol.rest.GroupCreateRequest
@@ -78,7 +80,7 @@ class CreateGroupViewModelTest {
         tokens = InMemoryTokenStore(creds)
         sessions = InMemoryGroupSessionStore()
         gateway = InMemoryMqttGateway()
-        manager = MqttSessionManager(tokens, gateway, sessions)
+        manager = MqttSessionManager(tokens, gateway, sessions, testRefresher(tokens))
         manager.start(dispatcher)
     }
 
@@ -157,7 +159,7 @@ class CreateGroupViewModelTest {
 
     @Test
     fun `without pairing the form is blocked`() = runTest(dispatcher) {
-        tokens.clear(); runCurrent()
+        tokens.clear(TokenClearReason.USER_SETTINGS_DISCONNECT); runCurrent()
         val vm = viewModel()
         runCurrent()
         val form = vm.state.value as CreateGroupState.Form

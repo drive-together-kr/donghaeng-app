@@ -25,7 +25,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,6 +41,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.donghaeng.car.R
 import app.donghaeng.car.core.common.TextMasking
+import app.donghaeng.car.ui.components.DestructiveConfirmDialog
 import app.donghaeng.car.ui.theme.DongHaengTheme
 import kotlinx.coroutines.delay
 
@@ -50,6 +53,7 @@ fun PairingRoute(
     viewModel: PairingViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val isDriving by viewModel.isDriving.collectAsStateWithLifecycle()
     LaunchedEffect(viewModel) {
         viewModel.events.collect { event ->
             if (event is PairingEvent.Paired) onPaired()
@@ -60,13 +64,14 @@ fun PairingRoute(
         onBack = onBack,
         onRetry = viewModel::retry,
         onRepair = viewModel::disconnectAndRepair,
+        isDriving = isDriving,
     )
 }
 
 /**
  * 페어링 화면 (T12). 서버 `POST /v1/device/code` 응답의 verifyUri 를 QR 로, userCode 를 `KQ7-4MZ` 로 크게 보여 주고
  * interval 마다 `/device/token` 을 폴링한다. QR 문자열은 서버 응답 그대로(docs/05 §7).
- * 주행 중 입력 제한(T29)은 아직 없다 — 버튼은 그대로 둔다.
+ * T33: '연결 해제 후 다시 연결' 은 확인 창 뒤로, 주행 중에는 비활성(docs/10 R13).
  */
 @Composable
 fun PairingScreen(
@@ -74,6 +79,7 @@ fun PairingScreen(
     onBack: () -> Unit,
     onRetry: () -> Unit,
     onRepair: () -> Unit,
+    isDriving: Boolean = false,
 ) {
     Scaffold { innerPadding ->
         Column(
@@ -95,7 +101,7 @@ fun PairingScreen(
                 PairingState.Idle, PairingState.Checking -> ProgressSection(stringResource(R.string.pairing_checking))
                 PairingState.RequestingCode -> ProgressSection(stringResource(R.string.pairing_requesting))
                 is PairingState.CodeIssued -> CodeIssuedSection(state)
-                is PairingState.Connected -> ConnectedSection(state, onBack = onBack, onRepair = onRepair)
+                is PairingState.Connected -> ConnectedSection(state, onBack = onBack, onRepair = onRepair, isDriving = isDriving)
                 is PairingState.Error -> ErrorSection(state, onRetry = onRetry, onBack = onBack)
             }
         }
@@ -168,7 +174,18 @@ private fun CodeDetails(state: PairingState.CodeIssued, remaining: String) {
 }
 
 @Composable
-private fun ConnectedSection(state: PairingState.Connected, onBack: () -> Unit, onRepair: () -> Unit) {
+private fun ConnectedSection(state: PairingState.Connected, onBack: () -> Unit, onRepair: () -> Unit, isDriving: Boolean) {
+    var confirmRepair by rememberSaveable { mutableStateOf(false) }
+    if (confirmRepair) {
+        DestructiveConfirmDialog(
+            title = stringResource(R.string.t33_disconnect_confirm_title),
+            message = stringResource(R.string.t33_disconnect_confirm_message),
+            confirmText = stringResource(R.string.t33_repair_confirm_ok),
+            isDriving = isDriving,
+            onConfirm = { confirmRepair = false; onRepair() },
+            onDismiss = { confirmRepair = false },
+        )
+    }
     Text(
         stringResource(R.string.pairing_connected, state.nickname),
         style = MaterialTheme.typography.headlineMedium,
@@ -184,7 +201,11 @@ private fun ConnectedSection(state: PairingState.Connected, onBack: () -> Unit, 
     Spacer(Modifier.height(24.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Button(onClick = onBack, modifier = Modifier.heightIn(min = 64.dp)) { Text(stringResource(R.string.pairing_back)) }
-        OutlinedButton(onClick = onRepair, modifier = Modifier.heightIn(min = 64.dp)) { Text(stringResource(R.string.pairing_btn_repair)) }
+        OutlinedButton(onClick = { confirmRepair = true }, enabled = !isDriving, modifier = Modifier.heightIn(min = 64.dp)) { Text(stringResource(R.string.pairing_btn_repair)) }
+    }
+    if (isDriving) {
+        Spacer(Modifier.height(8.dp))
+        Text(stringResource(R.string.t33_driving_disabled), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.tertiary)
     }
 }
 
@@ -195,6 +216,7 @@ private fun ErrorSection(state: PairingState.Error, onRetry: () -> Unit, onBack:
         PairingErrorReason.SERVER -> stringResource(R.string.pairing_error_server)
         PairingErrorReason.VEHICLE_ID_UNAVAILABLE -> stringResource(R.string.pairing_error_vehicle_id)
         PairingErrorReason.TOO_MANY_CODES -> stringResource(R.string.pairing_error_too_many)
+        PairingErrorReason.STORAGE_UNAVAILABLE -> stringResource(R.string.t33_pairing_error_storage)
     }
     Text(message, style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.error)
     if (state.detail != null) {

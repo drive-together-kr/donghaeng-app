@@ -21,6 +21,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -30,6 +33,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.donghaeng.car.R
 import app.donghaeng.car.core.common.TextMasking
 import app.donghaeng.car.core.common.TokenStoreState
+import app.donghaeng.car.ui.components.DestructiveConfirmDialog
+import app.donghaeng.car.ui.components.clearReasonLabel
+import app.donghaeng.car.ui.components.formatShortTime
+
+private const val CONFIRM_DISCONNECT = "disconnect"
+private const val CONFIRM_RESET = "reset"
 
 @Composable
 fun SettingsRoute(
@@ -38,10 +47,13 @@ fun SettingsRoute(
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    SettingsScreen(state = state, onBack = onBack, onDisconnect = viewModel::disconnect, onOpenDiagnostics = onOpenDiagnostics, onVoiceEnabled = viewModel::setVoiceEnabled, onAutoFollow = viewModel::setAutoFollow, onLatencyOverlay = viewModel::setLatencyOverlay)
+    SettingsScreen(state = state, onBack = onBack, onDisconnect = viewModel::disconnect, onOpenDiagnostics = onOpenDiagnostics, onVoiceEnabled = viewModel::setVoiceEnabled, onAutoFollow = viewModel::setAutoFollow, onLatencyOverlay = viewModel::setLatencyOverlay, onResetStore = viewModel::resetStore)
 }
 
-/** 설정 화면 — 연결 상태·연결 해제(T12), 진단 진입(T11). 닉네임은 폰 쪽(`PATCH /me/vehicles`)에서 바꾼다. */
+/**
+ * 설정 화면 — 연결 상태·연결 해제(T12), 진단 진입(T11). 닉네임은 폰 쪽(`PATCH /me/vehicles`)에서 바꾼다.
+ * T33: '연결 해제'·'저장소 초기화' 는 확인 창 뒤로, 주행 중 비활성. 마지막 해제 사유·시각을 보여 준다(docs/10 R13).
+ */
 @Composable
 fun SettingsScreen(
     state: SettingsUiState,
@@ -51,7 +63,27 @@ fun SettingsScreen(
     onVoiceEnabled: (Boolean) -> Unit = {},
     onAutoFollow: (Boolean) -> Unit = {},
     onLatencyOverlay: (Boolean) -> Unit = {},
+    onResetStore: () -> Unit = {},
 ) {
+    var confirm by rememberSaveable { mutableStateOf<String?>(null) }
+    when (confirm) {
+        CONFIRM_DISCONNECT -> DestructiveConfirmDialog(
+            title = stringResource(R.string.t33_disconnect_confirm_title),
+            message = stringResource(R.string.t33_disconnect_confirm_message),
+            confirmText = stringResource(R.string.t33_disconnect_confirm_ok),
+            isDriving = state.isDriving,
+            onConfirm = { confirm = null; onDisconnect() },
+            onDismiss = { confirm = null },
+        )
+        CONFIRM_RESET -> DestructiveConfirmDialog(
+            title = stringResource(R.string.t33_reset_confirm_title),
+            message = stringResource(R.string.t33_reset_confirm_message),
+            confirmText = stringResource(R.string.t33_settings_btn_reset_store),
+            isDriving = state.isDriving,
+            onConfirm = { confirm = null; onResetStore() },
+            onDismiss = { confirm = null },
+        )
+    }
     Scaffold { innerPadding ->
         Column(
             modifier = Modifier
@@ -74,6 +106,7 @@ fun SettingsScreen(
                     val statusText = when (tokens) {
                         TokenStoreState.Loading -> stringResource(R.string.home_connection_checking)
                         TokenStoreState.Empty -> stringResource(R.string.home_connection_disconnected)
+                        is TokenStoreState.Unavailable -> stringResource(R.string.t33_settings_store_unavailable, tokens.reason)
                         is TokenStoreState.Present ->
                             if (tokens.credentials.nickname.isBlank()) stringResource(R.string.home_connection_connected)
                             else stringResource(R.string.home_connection_connected_nick, tokens.credentials.nickname)
@@ -86,12 +119,31 @@ fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    state.lastClear?.let { record ->
+                        Text(
+                            stringResource(R.string.t33_settings_last_clear, formatShortTime(record.atMs), clearReasonLabel(record.reason)),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Spacer(Modifier.height(4.dp))
-                    Button(
-                        onClick = onDisconnect,
-                        enabled = tokens is TokenStoreState.Present,
-                        modifier = Modifier.heightIn(min = 56.dp),
-                    ) { Text(stringResource(R.string.settings_btn_disconnect)) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(
+                            onClick = { confirm = CONFIRM_DISCONNECT },
+                            enabled = tokens is TokenStoreState.Present && !state.isDriving,
+                            modifier = Modifier.heightIn(min = 56.dp),
+                        ) { Text(stringResource(R.string.settings_btn_disconnect)) }
+                        if (tokens is TokenStoreState.Unavailable) {
+                            OutlinedButton(
+                                onClick = { confirm = CONFIRM_RESET },
+                                enabled = !state.isDriving,
+                                modifier = Modifier.heightIn(min = 56.dp),
+                            ) { Text(stringResource(R.string.t33_settings_btn_reset_store)) }
+                        }
+                    }
+                    if (state.isDriving) {
+                        Text(stringResource(R.string.t33_driving_disabled), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.tertiary)
+                    }
                     if (state.justDisconnected && tokens is TokenStoreState.Empty) {
                         Text(
                             stringResource(R.string.settings_disconnected_notice),

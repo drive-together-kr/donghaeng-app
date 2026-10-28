@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- T33 안정화: 해제 확인 창·홈 상태 배너·저장소 오류·진단(토큰/로그). strings.xml 병합 충돌을 피하려고 따로 둔다. -->
+<resources>
+    <!-- 해제 확인 창 (설정 '연결 해제', 페어링 '연결 해제 후 다시 연결') -->
+    <string name="t33_disconnect_confirm_title">연결을 해제할까요?</string>
+    <string name="t33_disconnect_confirm_message">이 차량의 연결과 현재 그룹이 지워집니다. 계속할까요?</string>
+    <string name="t33_disconnect_confirm_ok">연결 해제</string>
+    <string name="t33_repair_confirm_ok">해제하고 다시 연결</string>
+    <string name="t33_confirm_cancel">취소</string>
+    <string name="t33_driving_disabled">주행 중에는 연결을 해제할 수 없어요. 정차한 뒤 다시 시도하세요.</string>
+
+    <!-- 저장소 초기화 -->
+    <string name="t33_settings_btn_reset_store">저장소 초기화</string>
+    <string name="t33_reset_confirm_title">저장소를 초기화할까요?</string>
+    <string name="t33_reset_confirm_message">읽을 수 없는 연결 정보 파일을 지웁니다. 이 차량의 연결과 현재 그룹이 지워지고, 폰에서 다시 연결해야 해요. 계속할까요?</string>
+    <string name="t33_settings_store_unavailable">연결 정보를 읽을 수 없어요 (%1$s)</string>
+    <string name="t33_settings_last_clear">마지막 해제: %1$s · %2$s</string>
+    <string name="t33_pairing_error_storage">저장된 연결 정보를 읽지 못했어요. 다시 시도하거나 설정에서 \'저장소 초기화\' 후 다시 연결하세요.</string>
+
+    <!-- 홈 상태 배너 -->
+    <string name="t33_home_connection_unavailable">저장소 오류</string>
+    <string name="t33_banner_storage_title">연결 정보를 읽을 수 없어요</string>
+    <string name="t33_banner_storage_body">토큰 저장소 오류(%1$s). 그룹 정보는 지우지 않았어요. 자동으로 다시 읽는 중 (%2$d/%3$d).</string>
+    <string name="t33_banner_storage_exhausted">토큰 저장소 오류(%1$s). 자동 재시도를 마쳤어요. \'다시 시도\'를 누르거나 설정에서 저장소를 초기화하세요.</string>
+    <string name="t33_banner_retry">다시 시도</string>
+    <string name="t33_banner_repair_title">다시 연결이 필요해요</string>
+    <string name="t33_banner_repair_revoked">폰에서 이 차량의 연결이 해제됐어요. 폰에서 다시 연결해 주세요.</string>
+    <string name="t33_banner_repair_rejected">차량 연결이 만료됐어요. 폰에서 다시 연결해 주세요.</string>
+    <string name="t33_banner_server_title">서버 연결이 끊겼어요</string>
+    <string name="t33_banner_server_body">%1$d초째 다시 연결하는 중이에요. %2$s</string>
+    <string name="t33_banner_server_auth">인증이 거부돼 토큰을 갱신하고 있어요.</string>
+
+    <!-- 삭제 사유 표시 -->
+    <string name="t33_reason_user_settings_disconnect">설정에서 연결 해제</string>
+    <string name="t33_reason_user_repair">페어링 화면에서 다시 연결</string>
+    <string name="t33_reason_token_revoked_cmd">폰에서 연결 해제(서버 알림)</string>
+    <string name="t33_reason_refresh_rejected">토큰 갱신 거부</string>
+    <string name="t33_reason_server_changed">서버 주소 변경</string>
+    <string name="t33_reason_store_reset">저장소 초기화</string>
+    <string name="t33_reason_unpaired">연결 해제로 함께 삭제</string>
+    <string name="t33_reason_group_ended">그룹 종료</string>
+    <string name="t33_reason_member_left_me">폰에서 그룹 나가기</string>
+    <string name="t33_reason_left_locally">이 차에서 나가기·종료</string>
+    <string name="t33_reason_store_corrupt">저장 파일 손상</string>
+
+    <!-- 진단 -->
+    <string name="t33_diag_section_tokens">토큰·저장소 (T33)</string>
+    <string name="t33_diag_store_state">저장소 상태</string>
+    <string name="t33_diag_token_exp">토큰 만료</string>
+    <string name="t33_diag_refresh">토큰 갱신</string>
+    <string name="t33_diag_last_token_clear">마지막 토큰 삭제</string>
+    <string name="t33_diag_last_session_clear">마지막 그룹 세션 삭제</string>
+    <string name="t33_diag_store_retry">저장소 재시도</string>
+    <string name="t33_diag_mqtt_auth">인증 거부</string>
+    <string name="t33_diag_section_logs">최근 로그 (T33, 마지막 30줄)</string>
+    <string name="t33_diag_logs_empty">아직 남은 로그가 없어요</string>
+    <string name="t33_diag_logs_hint">전체(최대 64 KB): adb shell run-as app.donghaeng.car cat files/dh_log.txt</string>
+</resources>

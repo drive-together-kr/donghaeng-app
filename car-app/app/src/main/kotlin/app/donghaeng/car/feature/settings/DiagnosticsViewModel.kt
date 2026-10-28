@@ -40,7 +40,14 @@ import app.donghaeng.car.domain.vehicle.VehicleSignals
 import app.donghaeng.car.domain.model.Place
 import app.donghaeng.car.domain.navi.NaviEventMonitor
 import app.donghaeng.car.domain.navi.NaviMonitorState
+import app.donghaeng.car.core.common.ClearRecord
+import app.donghaeng.car.domain.pairing.TokenRefreshState
+import app.donghaeng.car.domain.pairing.TokenRefresher
+import app.donghaeng.car.domain.session.GroupSessionStore
+import app.donghaeng.car.domain.session.StoreRetryState
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -98,6 +105,18 @@ data class DiagnosticsUiState(
     val clockSync: app.donghaeng.car.domain.time.ClockSyncState = app.donghaeng.car.domain.time.ClockSyncState(),
 )
 
+/** T33 진단 — 토큰·저장소·갱신·삭제 기록·최근 로그(토큰 원문 없음) */
+data class T33DiagState(
+    val tokens: TokenStoreState = TokenStoreState.Loading,
+    val refresh: TokenRefreshState = TokenRefreshState(),
+    val lastTokenClear: ClearRecord? = null,
+    val lastSessionClear: ClearRecord? = null,
+    val storeRetry: StoreRetryState = StoreRetryState(),
+    /** DhLog 링 버퍼 마지막 30줄(이미 마스킹됨) */
+    val recentLogs: List<String> = emptyList(),
+    val nowMs: Long = 0L,
+)
+
 /** 진단 화면의 경로 동기화 확인용 동작(T28) */
 enum class RouteSyncDebugAction { PUBLISH_TEST, ACCEPT, DECLINE, TOGGLE_AUTO }
 
@@ -135,6 +154,8 @@ class DiagnosticsViewModel @Inject constructor(
     drivingMonitor: DrivingStateMonitor,
     private val clockSync: app.donghaeng.car.domain.time.ClockSync,
     latency: app.donghaeng.car.domain.latency.LatencyMeter,
+    tokenRefresher: TokenRefresher,
+    sessionStore: GroupSessionStore,
 ) : ViewModel() {
 
     private val naviActionResult = MutableStateFlow<String?>(null)
@@ -142,6 +163,24 @@ class DiagnosticsViewModel @Inject constructor(
     init {
         viewModelScope.launch { tokenStore.load() }
     }
+
+    /** 최근 로그·만료까지 남은 시간을 2초마다 다시 읽는다 */
+    private val logTicker = flow {
+        while (true) {
+            emit(System.currentTimeMillis())
+            delay(2_000L)
+        }
+    }
+
+    /** T33 토큰·저장소·로그 카드 */
+    val t33State: StateFlow<T33DiagState> = combine(
+        combine(tokenStore.state, tokenRefresher.state, tokenStore.lastClear) { t, r, c -> Triple(t, r, c) },
+        sessionStore.lastClear,
+        sessionManager.storeRetry,
+        logTicker,
+    ) { head, sessionClear, retry, now ->
+        T33DiagState(head.first, head.second, head.third, sessionClear, retry, DhLog.recent(30), now)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), T33DiagState(tokens = tokenStore.state.value))
 
     val uiState: StateFlow<DiagnosticsUiState> = combine(reporter.report, sdkProbe.report, tokenStore.state, combine(combine(mqtt.status, naviMonitor.state, naviActionResult, voiceAnnouncer.state, voiceAdapter.status) { m, n, a, vo, tt -> SideState(m, n, a, LocationFeedState(), VehicleSignalState(), TelemetryState(), false, EventEngineState(), vo, tt) }, combine(locationFeed.state, vehicleSignals.state, telemetryCollector.state, driveSessionController.serviceRunning, eventEngine.state) { l, v, t, r, ev -> SideState(MqttStatus(), NaviMonitorState(), null, l, v, t, r, ev) }, routeSync.state, drivingMonitor.status, drivingMonitor.isDriving().onStart { emit(false) }) { head, side, rs, ds, isDriving -> side.copy(mqtt = head.mqtt, navi = head.navi, naviAction = head.naviAction, voice = head.voice, tts = head.tts, routeSync = rs, driving = ds, isDriving = isDriving) }, combine(sessionManager.session, sessionManager.lastCommand, sessionManager.groupState, sessionManager.groupStateAt, combine(latency.state, clockSync.state) { l, cs -> l to cs }) { s, c, g, t, lc -> SessionSide(s, c, g, t, lc.first, lc.second) }) { report, probe, tokens, side, sess ->
         DiagnosticsUiState(

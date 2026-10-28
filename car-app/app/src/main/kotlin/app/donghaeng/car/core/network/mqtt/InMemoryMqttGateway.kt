@@ -27,6 +27,9 @@ class InMemoryMqttGateway : MqttGateway {
     private val _inbound = MutableSharedFlow<InboundMessage>(extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     override val inbound: SharedFlow<InboundMessage> = _inbound.asSharedFlow()
 
+    private val _authFailures = MutableSharedFlow<MqttAuthFailure>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    override val authFailures: SharedFlow<MqttAuthFailure> = _authFailures.asSharedFlow()
+
     val connectedWith = mutableListOf<StoredCredentials>()
     var disconnectCount = 0
     val subscriptions = linkedSetOf<String>()
@@ -37,12 +40,18 @@ class InMemoryMqttGateway : MqttGateway {
 
     override suspend fun connect(credentials: StoredCredentials) {
         connectedWith += credentials
-        _status.update { it.copy(state = MqttState.CONNECTED, brokerUri = credentials.mqttUri, tls = credentials.mqttUri.startsWith("ssl://"), connectedAtMs = 1L) }
+        _status.update { it.copy(state = MqttState.CONNECTED, brokerUri = credentials.mqttUri, tls = credentials.mqttUri.startsWith("ssl://"), connectedAtMs = 1L, lastError = null, notConnectedSinceMs = null) }
     }
 
     override suspend fun disconnect() {
         disconnectCount++
-        _status.update { it.copy(state = MqttState.DISCONNECTED, connectedAtMs = null) }
+        _status.update { it.copy(state = MqttState.DISCONNECTED, connectedAtMs = null, notConnectedSinceMs = null) }
+    }
+
+    /** 브로커가 [accessToken] 을 인증 거부한 것처럼 흘려보낸다(T33). 상태는 RECONNECTING 으로 */
+    fun emitAuthFailure(accessToken: String, reasonCode: String = "NOT_AUTHORIZED", atMs: Long = 1_700_000_000_000L) {
+        _status.update { it.copy(state = MqttState.RECONNECTING, lastError = "auth rejected: $reasonCode", authFailures = it.authFailures + 1, lastAuthFailureAtMs = atMs, notConnectedSinceMs = it.notConnectedSinceMs ?: atMs) }
+        _authFailures.tryEmit(MqttAuthFailure(reasonCode, atMs, accessToken))
     }
 
     override suspend fun subscribe(topics: Collection<String>) {
@@ -62,9 +71,9 @@ class InMemoryMqttGateway : MqttGateway {
         return true
     }
 
-    /** 브로커에서 메시지가 온 것처럼 흘려보낸다. [data] 는 본문 객체 */
-    fun <T> emitInbound(topic: String, type: String, vid: String, data: T, serializer: KSerializer<T>, seq: Long = 1) {
-        val raw = DhJson.encode(Envelope(type = type, vid = vid, ts = 1_700_000_000_000L, seq = seq, data = data), serializer)
+    /** 브로커에서 메시지가 온 것처럼 흘려보낸다. [data] 는 본문 객체, [ts] 는 봉투의 서버 발행 시각 */
+    fun <T> emitInbound(topic: String, type: String, vid: String, data: T, serializer: KSerializer<T>, seq: Long = 1, ts: Long = 1_700_000_000_000L) {
+        val raw = DhJson.encode(Envelope(type = type, vid = vid, ts = ts, seq = seq, data = data), serializer)
         _inbound.tryEmit(InboundMessage(topic, DhJson.peek(raw), 1_700_000_000_000L))
         _status.update { it.copy(inboundCount = it.inboundCount + 1) }
     }

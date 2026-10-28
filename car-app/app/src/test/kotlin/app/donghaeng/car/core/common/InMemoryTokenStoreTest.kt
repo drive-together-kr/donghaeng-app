@@ -22,14 +22,71 @@ class InMemoryTokenStoreTest {
     }
 
     @Test
-    fun `save 후 Present, clear 후 Empty`() = runTest {
-        val store = InMemoryTokenStore()
+    fun `save 후 Present, clear 후 Empty 이고 사유·시각·마스킹 vehicleId 가 남는다`() = runTest {
+        val store = InMemoryTokenStore(clock = { 1_234L })
         store.save(creds)
         assertEquals(TokenStoreState.Present(creds), store.state.value)
         assertEquals(creds, store.load())
-        store.clear()
+        assertNull(store.lastClear.value)
+        store.clear(TokenClearReason.USER_SETTINGS_DISCONNECT)
         assertEquals(TokenStoreState.Empty, store.state.value)
         assertNull(store.load())
+        assertEquals(ClearRecord("USER_SETTINGS_DISCONNECT", 1_234L, "veh_…ST"), store.lastClear.value)
+    }
+
+    @Test
+    fun `읽기 실패는 Unavailable 이고 저장된 값은 지우지 않는다 — 다음 load 에서 다시 읽는다 (T33)`() = runTest {
+        val store = InMemoryTokenStore(creds)
+        store.unavailableReason = "SecurityException<AEADBadTagException"
+        assertNull(store.load())
+        assertEquals(TokenStoreState.Unavailable("SecurityException<AEADBadTagException"), store.state.value)
+        store.unavailableReason = null
+        assertEquals(creds, store.load())
+        assertEquals(TokenStoreState.Present(creds), store.state.value)
+        assertTrue(store.clearReasons.isEmpty())
+    }
+
+    @Test
+    fun `updateTokens 는 저장된 refresh 가 기대값일 때만 두 토큰을 바꾼다`() = runTest {
+        val store = InMemoryTokenStore(creds)
+        store.load()
+        assertNull(store.updateTokens(expectedRefreshToken = "다른 값", accessToken = "new", refreshToken = "r2"))
+        assertEquals(creds, (store.state.value as TokenStoreState.Present).credentials)
+        val updated = store.updateTokens(expectedRefreshToken = "opaque", accessToken = "new", refreshToken = "r2")
+        assertEquals(creds.copy(vehicleAccessToken = "new", refreshToken = "r2"), updated)
+        assertEquals(TokenStoreState.Present(updated!!), store.state.value)
+        store.clear(TokenClearReason.USER_REPAIR)
+        assertNull(store.updateTokens(expectedRefreshToken = "r2", accessToken = "x", refreshToken = "y"))
+        assertEquals(TokenStoreState.Empty, store.state.value)
+    }
+
+    @Test
+    fun `JWT exp·iat 를 서명 없이 읽고, 형식이 다르면 null`() {
+        val enc = java.util.Base64.getUrlEncoder().withoutPadding()
+        val payload = enc.encodeToString("""{"sub":"veh_1","iat":1700000000,"exp":1700086400}""".toByteArray())
+        val jwt = "eyJhbGciOiJSUzI1NiJ9.$payload.c2ln"
+        assertEquals(1_700_086_400_000L, JwtClaims.expiresAtMs(jwt))
+        assertEquals(1_700_000_000L, JwtClaims.issuedAtSeconds(jwt))
+        assertNull(JwtClaims.expiresAtMs("jwt-1"))
+        assertNull(JwtClaims.expiresAtMs("a.!!!.c"))
+        assertNull(JwtClaims.issuedAtSeconds(null))
+        assertEquals(TokenClearReason.REFRESH_REJECTED, TokenClearReason.fromName("REFRESH_REJECTED"))
+        assertTrue(TokenClearReason.TOKEN_REVOKED_CMD.needsRepairFromPhone && !TokenClearReason.USER_REPAIR.needsRepairFromPhone)
+    }
+
+    @Test
+    fun `DhLog 는 I·W·E 를 링 버퍼에 남기고 keep=false·D 는 남기지 않는다`() {
+        DhLog.i("t33-ring-keep marker")
+        DhLog.i("t33-ring-skip marker", keep = false)
+        DhLog.d("t33-ring-debug marker")
+        DhLog.w("t33-ring-warn marker", IllegalStateException("secret message"))
+        val recent = DhLog.recent(DhLog.RING_CAPACITY)
+        assertTrue(recent.any { it.contains(" I t33-ring-keep marker") })
+        assertTrue(recent.none { it.contains("t33-ring-skip") || it.contains("t33-ring-debug") })
+        val warn = recent.last { it.contains("t33-ring-warn") }
+        assertTrue("예외는 클래스 이름만: $warn", warn.endsWith("(IllegalStateException)") && !warn.contains("secret message"))
+        repeat(DhLog.RING_CAPACITY + 5) { DhLog.i("t33-ring-fill $it") }
+        assertEquals(DhLog.RING_CAPACITY, DhLog.recent(DhLog.RING_CAPACITY + 50).size)
     }
 
     @Test

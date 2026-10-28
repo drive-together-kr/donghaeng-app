@@ -1,11 +1,16 @@
 package app.donghaeng.car.domain.session
 
 import app.donghaeng.car.core.common.DhLog
+import app.donghaeng.car.core.common.JwtClaims
 import app.donghaeng.car.core.common.TextMasking
+import app.donghaeng.car.core.common.TokenClearReason
 import app.donghaeng.car.core.common.TokenStore
 import app.donghaeng.car.core.common.TokenStoreState
 import app.donghaeng.car.core.network.mqtt.InboundMessage
+import app.donghaeng.car.core.network.mqtt.MqttAuthFailure
 import app.donghaeng.car.core.network.mqtt.MqttGateway
+import app.donghaeng.car.domain.pairing.RefreshTrigger
+import app.donghaeng.car.domain.pairing.TokenRefresher
 import app.donghaeng.protocol.CmdType
 import app.donghaeng.protocol.DhJson
 import app.donghaeng.protocol.GroupEnded
@@ -16,18 +21,21 @@ import app.donghaeng.protocol.GroupState
 import app.donghaeng.protocol.MessageTypes
 import app.donghaeng.protocol.RouteFollowProposal
 import app.donghaeng.protocol.Topics
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
@@ -45,21 +53,31 @@ data class ReceivedGroupEvent(val event: GroupEvent, val envelopeTsMs: Long, val
 /** 그룹 STATE 스냅샷의 봉투 ts(서버 발행)·수신 시각 — T31 지연 측정용 */
 data class ReceivedGroupState(val envelopeTsMs: Long, val receivedAtMs: Long, val members: Int)
 
+/** 토큰 저장소 읽기 재시도 상태 (T33) — 진단·홈 배너용 */
+data class StoreRetryState(val attempts: Int = 0, val maxAttempts: Int = MqttSessionManager.STORE_RETRY_MAX, val exhausted: Boolean = false)
+
 /**
  * 페어링 상태 ↔ MQTT 연결 ↔ 그룹 세션을 잇는다 (T16; 호출 순서는 docs/03 §4·§5.5).
  *
- * - [TokenStore] 에 자격 증명이 있으면 [MqttGateway.connect] + 자기 `cmd` 토픽(+ 저장된 그룹 토픽) 구독. 없어지면(연결 해제) 끊고 그룹 세션도 지운다.
- * - cmd `GROUP_JOINED` → [GroupSessionStore] 에 저장하고 그룹 `state/event` 구독. `GROUP_ENDED` 또는 내 차의 그룹 이벤트 `MEMBER_LEFT`(폰이 내보냄) → 세션 삭제·구독 해제. `TOKEN_REVOKED` → 자격 증명 삭제.
+ * - [TokenStore] 에 자격 증명이 있으면 [MqttGateway.connect] + 자기 `cmd` 토픽(+ 저장된 그룹 토픽) 구독. **Empty**(연결 해제)면 끊고 그룹 세션도
+ *   [SessionClearReason.UNPAIRED] 로 지운다. **Unavailable**(저장소 읽기 실패, T33)은 미페어링이 아니다 — 세션을 지우지 않고 연결도 하지 않으며
+ *   [STORE_RETRY_INTERVAL_MS](30 s) 마다 최대 [STORE_RETRY_MAX] 회 다시 읽는다(docs/10 R13).
+ * - cmd `GROUP_JOINED` → [GroupSessionStore] 에 저장하고 그룹 `state/event` 구독. `GROUP_ENDED` 또는 내 차의 그룹 이벤트 `MEMBER_LEFT`(폰이 내보냄) → 세션 삭제·구독 해제.
+ *   `TOKEN_REVOKED` → 자격 증명 삭제([TokenClearReason.TOKEN_REVOKED_CMD]) — 단 **지금 토큰보다 먼저 발행된 것**(봉투 ts ≤ JWT iat, 둘 다 서버 시계)은
+ *   재페어링 전 MQTT 영속 세션에 쌓였다 늦게 온 것이라 무시한다.
+ * - 브로커 인증 거부([MqttGateway.authFailures]) → [TokenRefresher] 로 갱신. 성공하면 저장소가 새 토큰을 내고, 그 토큰으로 [MqttGateway.connect] 가 즉시 다시 붙는다.
  * - 그룹 토픽 수신은 [groupEvents]/[groupState] 로 내보낸다(T25 주행 화면·T27 음성이 구독).
  *
  * 앱 프로세스가 살아 있는 동안 페어링만 돼 있으면 연결을 유지한다 — 폰이 이 차를 그룹에 넣는 순간(`GROUP_JOINED`)을 받으려면
  * 그룹 전에도 cmd 를 듣고 있어야 하기 때문이다(T18). 백그라운드 지속은 T23 의 DriveSessionService 가 맡는다.
+ * 코루틴 예외는 [CoroutineExceptionHandler] 로 로그만 남기고, 메시지 하나의 처리 실패가 수신 루프를 끊지 않게 한다.
  */
 @Singleton
 class MqttSessionManager @Inject constructor(
     private val tokenStore: TokenStore,
     private val gateway: MqttGateway,
     private val sessionStore: GroupSessionStore,
+    private val refresher: TokenRefresher,
 ) {
     private val started = AtomicBoolean(false)
     private lateinit var scope: CoroutineScope
@@ -95,36 +113,73 @@ class MqttSessionManager @Inject constructor(
     private val _lastCommand = MutableStateFlow<LastCommand?>(null)
     val lastCommand: StateFlow<LastCommand?> = _lastCommand.asStateFlow()
 
+    /** 토큰 저장소 Unavailable 재시도 (T33) */
+    private val _storeRetry = MutableStateFlow(StoreRetryState())
+    val storeRetry: StateFlow<StoreRetryState> = _storeRetry.asStateFlow()
+    private var storeRetryJob: Job? = null
+
     @Volatile
     private var vehicleId: String? = null
 
     /** 한 번만 시작한다(Application.onCreate). [dispatcher] 는 테스트에서 바꿔 끼운다 */
     fun start(dispatcher: CoroutineDispatcher = Dispatchers.Default) {
         if (!started.compareAndSet(false, true)) return
-        scope = CoroutineScope(SupervisorJob() + dispatcher)
+        val handler = CoroutineExceptionHandler { _, e -> DhLog.e("mqtt session manager coroutine failed", e) }
+        scope = CoroutineScope(SupervisorJob() + dispatcher + handler)
         scope.launch {
-            sessionStore.load()
-            tokenStore.load()
-            tokenStore.state.collect { state -> onTokenState(state) }
+            // 세션 저장소가 깨져도 토큰 처리는 계속돼야 한다
+            guarded("group session load") { sessionStore.load() }
+            guarded("token store load") { tokenStore.load() }
+            tokenStore.state.collect { state -> guarded("token state $state") { onTokenState(state) } }
         }
-        scope.launch { gateway.inbound.collect { onInbound(it) } }
+        scope.launch { gateway.inbound.collect { message -> guarded("inbound ${message.envelope.type}") { onInbound(message) } } }
+        scope.launch { gateway.authFailures.collect { failure -> guarded("auth failure") { onAuthFailure(failure) } } }
         DhLog.i("mqtt session manager started")
+    }
+
+    /** 홈 '다시 시도'(저장소 오류 배너) — 재시도 횟수를 처음부터 센다 */
+    fun retryTokenStore() {
+        if (!started.get()) return
+        storeRetryJob?.cancel()
+        storeRetryJob = null
+        _storeRetry.value = StoreRetryState()
+        scope.launch {
+            guarded("token store retry") { tokenStore.load() }
+            if (tokenStore.state.value is TokenStoreState.Unavailable) scheduleStoreRetry()
+        }
     }
 
     private suspend fun onTokenState(state: TokenStoreState) {
         when (state) {
             TokenStoreState.Loading -> Unit
+            is TokenStoreState.Unavailable -> {
+                // 읽기 실패는 미페어링이 아니다 — 세션은 그대로, 연결만 하지 않는다
+                if (vehicleId != null) {
+                    vehicleId = null
+                    gateway.disconnect()
+                }
+                DhLog.w("token store unavailable reason=${state.reason} → keep group session, retry every ${STORE_RETRY_INTERVAL_MS / 1000}s")
+                scheduleStoreRetry()
+            }
             TokenStoreState.Empty -> {
-                val wasConnected = vehicleId != null
+                cancelStoreRetry()
+                val previousVehicleId = vehicleId
                 vehicleId = null
-                if (wasConnected) gateway.disconnect()
-                if (sessionStore.session.value != null) {
-                    sessionStore.clear()
+                if (previousVehicleId != null) {
+                    // 게이트웨이는 구독 목록을 기억해 다음 접속 때 다시 건다 — 다른 차량으로 다시 페어링될 수 있으니 옛 cmd 토픽은 뺀다
+                    gateway.unsubscribe(listOf(Topics.vehicleCmd(previousVehicleId)))
+                    gateway.disconnect()
+                }
+                val current = sessionStore.session.value
+                if (current != null) {
+                    gateway.unsubscribe(current.subscribeTopics)
+                    sessionStore.clear(SessionClearReason.UNPAIRED)
                     _groupState.value = null
-                    DhLog.i("group session cleared (unpaired)")
+                    DhLog.i("group session cleared (unpaired, last token clear=${tokenStore.lastClear.value?.reason ?: "?"})")
                 }
             }
             is TokenStoreState.Present -> {
+                cancelStoreRetry()
                 val creds = state.credentials
                 vehicleId = creds.vehicleId
                 val topics = buildList {
@@ -135,6 +190,38 @@ class MqttSessionManager @Inject constructor(
                 gateway.connect(creds)
             }
         }
+    }
+
+    private fun scheduleStoreRetry() {
+        if (storeRetryJob?.isActive == true || _storeRetry.value.exhausted) return
+        storeRetryJob = scope.launch {
+            while (_storeRetry.value.attempts < STORE_RETRY_MAX) {
+                delay(STORE_RETRY_INTERVAL_MS)
+                if (tokenStore.state.value !is TokenStoreState.Unavailable) return@launch
+                val attempt = _storeRetry.value.attempts + 1
+                _storeRetry.value = _storeRetry.value.copy(attempts = attempt)
+                DhLog.i("token store retry #$attempt/$STORE_RETRY_MAX")
+                guarded("token store retry") { tokenStore.load() }
+                if (tokenStore.state.value !is TokenStoreState.Unavailable) return@launch
+            }
+            _storeRetry.value = _storeRetry.value.copy(exhausted = true)
+            DhLog.w("token store still unavailable after $STORE_RETRY_MAX retries — 홈 '다시 시도' 또는 설정 '저장소 초기화'")
+        }
+    }
+
+    private fun cancelStoreRetry() {
+        storeRetryJob?.cancel()
+        storeRetryJob = null
+        if (_storeRetry.value != StoreRetryState()) _storeRetry.value = StoreRetryState()
+    }
+
+    private suspend fun onAuthFailure(failure: MqttAuthFailure) {
+        if (tokenStore.state.value !is TokenStoreState.Present) return
+        DhLog.w("mqtt auth rejected reason=${failure.reasonCode} → token refresh")
+        val outcome = refresher.refreshAfterRejection(failure.accessToken, RefreshTrigger.MQTT_AUTH)
+        DhLog.i("mqtt auth recovery → $outcome")
+        // Refreshed: 저장소가 새 토큰을 냈고 onTokenState → gateway.connect(새 토큰) 이 대기 중인 재연결을 바로 연다.
+        // Rejected: 저장소가 Empty → 연결 해제·세션 정리. 나머지(Failed/Throttled)는 게이트웨이가 잠시 뒤 가진 토큰으로 다시 시도한다
     }
 
     private suspend fun onInbound(message: InboundMessage) {
@@ -151,7 +238,7 @@ class MqttSessionManager @Inject constructor(
                         // T30: 폰(공식 앱)·REST 가 이 차를 그룹에서 내보내면(MEMBER_LEFT, 내 차) 세션을 지운다 — GROUP_ENDED 와 같은 정리
                         if (event.type == GroupEventType.MEMBER_LEFT.name && event.sourceVehicleId == vid) {
                             gateway.unsubscribe(current.subscribeTopics)
-                            sessionStore.clear()
+                            sessionStore.clear(SessionClearReason.MEMBER_LEFT_ME)
                             _groupState.value = null
                             DhLog.i("MEMBER_LEFT (me) groupId=${TextMasking.maskVehicleId(current.groupId)} → session cleared")
                         }
@@ -202,15 +289,22 @@ class MqttSessionManager @Inject constructor(
                 note(type, cmd?.groupId)
                 if (current != null && (cmd == null || cmd.groupId == current.groupId)) {
                     gateway.unsubscribe(current.subscribeTopics)
-                    sessionStore.clear()
+                    sessionStore.clear(SessionClearReason.GROUP_ENDED)
                     _groupState.value = null
                     DhLog.i("GROUP_ENDED groupId=${TextMasking.maskVehicleId(current.groupId)} reason=${cmd?.reason} → session cleared")
                 }
             }
             CmdType.TOKEN_REVOKED -> {
                 note(type, null)
+                val creds = (tokenStore.state.value as? TokenStoreState.Present)?.credentials
+                val issuedAt = creds?.let { JwtClaims.issuedAtSeconds(it.vehicleAccessToken) }
+                if (issuedAt != null && message.envelope.ts / 1000 <= issuedAt) {
+                    // 재페어링 전에 발행돼 MQTT 영속 세션(같은 clientId)에 남아 있던 것 — 지금 토큰과 무관하다
+                    DhLog.w("TOKEN_REVOKED ignored — issued before the current token (ts=${message.envelope.ts / 1000} ≤ iat=$issuedAt)")
+                    return
+                }
                 DhLog.w("TOKEN_REVOKED → clearing credentials")
-                tokenStore.clear()
+                tokenStore.clear(TokenClearReason.TOKEN_REVOKED_CMD)
             }
             CmdType.ROUTE_FOLLOW_PROPOSAL -> {
                 note(type, null)
@@ -244,12 +338,28 @@ class MqttSessionManager @Inject constructor(
     suspend fun onGroupLeftLocally() {
         val current = sessionStore.session.value ?: return
         gateway.unsubscribe(current.subscribeTopics)
-        sessionStore.clear()
+        sessionStore.clear(SessionClearReason.LEFT_LOCALLY)
         _groupState.value = null
         DhLog.i("group session cleared (left/ended locally) groupId=${TextMasking.maskVehicleId(current.groupId)}")
     }
 
     private fun note(type: CmdType, groupId: String?) {
         _lastCommand.value = LastCommand(type.name, groupId?.let(TextMasking::maskVehicleId), System.currentTimeMillis())
+    }
+
+    /** 한 단계의 예외가 수집 루프 전체를 끊지 않게 — 취소는 그대로 전파 */
+    private inline fun guarded(what: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            DhLog.e("mqtt session manager: $what failed", e)
+        }
+    }
+
+    companion object {
+        const val STORE_RETRY_INTERVAL_MS = 30_000L
+        const val STORE_RETRY_MAX = 10
     }
 }

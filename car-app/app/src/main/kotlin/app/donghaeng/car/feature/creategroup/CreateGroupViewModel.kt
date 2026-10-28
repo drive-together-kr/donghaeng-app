@@ -239,7 +239,9 @@ class CreateGroupViewModel @Inject constructor(
     }
 
     private fun failureText(failure: ApiResult.Failure): String = when (failure) {
-        is ApiResult.HttpFailure -> failure.error?.message ?: "요청에 실패했어요 (HTTP ${failure.status})"
+        // T33: Authenticator 가 갱신·재시도까지 했는데 401 → refresh 도 거부된 상태
+        is ApiResult.HttpFailure.Unauthorized -> "차량 연결이 만료됐어요. 폰에서 다시 연결해 주세요"
+        is ApiResult.HttpFailure ->failure.error?.message ?: "요청에 실패했어요 (HTTP ${failure.status})"
         is ApiResult.NetworkFailure -> "서버에 연결할 수 없어요"
         is ApiResult.UnexpectedFailure -> "예상치 못한 오류가 났어요 (${failure.cause.javaClass.simpleName})"
     }

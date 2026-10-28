@@ -32,6 +32,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.donghaeng.car.R
 import app.donghaeng.car.adapter.sdk.ProbeLine
+import app.donghaeng.car.core.common.TokenClearReason
 import app.donghaeng.car.ui.theme.DongHaengTheme
 
 /** 홈 화면 진입점 — ViewModel 연결. */
@@ -51,6 +52,7 @@ fun HomeRoute(
         onStartGroup = { if (state.groupSession != null) onOpenGroup() else onStartGroup() },
         onOpenSettings = onOpenSettings,
         onOpenDiagnostics = onOpenDiagnostics,
+        onRetryStore = viewModel::retryTokenStore,
     )
 }
 
@@ -67,6 +69,7 @@ fun HomeScreen(
     onStartGroup: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenDiagnostics: () -> Unit,
+    onRetryStore: () -> Unit = {},
 ) {
     Scaffold { innerPadding ->
         BoxWithConstraints(
@@ -84,6 +87,7 @@ fun HomeScreen(
                 Row(modifier = contentModifier, horizontalArrangement = Arrangement.spacedBy(32.dp)) {
                     Column(modifier = Modifier.weight(1f)) {
                         HeaderSection(state)
+                        StatusBanner(state, onRetryStore)
                         Spacer(Modifier.height(24.dp))
                         ActionSection(state, onPairPhone, onStartGroup, onOpenSettings, onOpenDiagnostics)
                     }
@@ -98,6 +102,7 @@ fun HomeScreen(
             } else {
                 Column(modifier = contentModifier) {
                     HeaderSection(state)
+                    StatusBanner(state, onRetryStore)
                     Spacer(Modifier.height(24.dp))
                     ActionSection(state, onPairPhone, onStartGroup, onOpenSettings, onOpenDiagnostics)
                     Spacer(Modifier.height(24.dp))
@@ -124,6 +129,7 @@ private fun HeaderSection(state: HomeUiState) {
     val connectionText = when (state.connection) {
         VehicleConnection.CHECKING -> stringResource(R.string.home_connection_checking)
         VehicleConnection.DISCONNECTED -> stringResource(R.string.home_connection_disconnected)
+        VehicleConnection.UNAVAILABLE -> stringResource(R.string.t33_home_connection_unavailable)
         VehicleConnection.CONNECTED ->
             if (state.nickname.isNullOrBlank()) stringResource(R.string.home_connection_connected)
             else stringResource(R.string.home_connection_connected_nick, state.nickname)
@@ -152,6 +158,50 @@ private fun HeaderSection(state: HomeUiState) {
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/**
+ * T33 상태 배너 — 저장소 오류('다시 시도') / 다시 연결 필요 / 서버 연결 끊김(30초 이상). 주행 중엔 버튼 없이 문구만.
+ */
+@Composable
+private fun StatusBanner(state: HomeUiState, onRetryStore: () -> Unit) {
+    val banner = state.banner ?: return
+    val (title, body, action) = when (banner) {
+        // 세 번째 = 버튼 동작(없으면 null)
+        is HomeBanner.StorageUnavailable -> Triple<String, String, (() -> Unit)?>(
+            stringResource(R.string.t33_banner_storage_title),
+            if (banner.exhausted) stringResource(R.string.t33_banner_storage_exhausted, banner.reason)
+            else stringResource(R.string.t33_banner_storage_body, banner.reason, banner.attempts, banner.maxAttempts),
+            onRetryStore,
+        )
+        is HomeBanner.RepairNeeded -> Triple<String, String, (() -> Unit)?>(
+            stringResource(R.string.t33_banner_repair_title),
+            if (banner.reason == TokenClearReason.TOKEN_REVOKED_CMD) stringResource(R.string.t33_banner_repair_revoked) else stringResource(R.string.t33_banner_repair_rejected),
+            null,
+        )
+        is HomeBanner.ServerDisconnected -> Triple<String, String, (() -> Unit)?>(
+            stringResource(R.string.t33_banner_server_title),
+            stringResource(
+                R.string.t33_banner_server_body,
+                banner.seconds.toInt(),
+                if (banner.authRejected) stringResource(R.string.t33_banner_server_auth) else banner.lastError.orEmpty(),
+            ),
+            null,
+        )
+    }
+    Spacer(Modifier.height(16.dp))
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(title, style = MaterialTheme.typography.titleLarge)
+            Text(body, style = MaterialTheme.typography.bodyLarge)
+            if (action != null && !state.isDriving) {
+                Button(onClick = action, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.t33_banner_retry)) }
+            }
+        }
     }
 }
 
