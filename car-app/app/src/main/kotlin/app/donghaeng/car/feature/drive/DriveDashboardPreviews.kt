@@ -23,7 +23,8 @@ import app.donghaeng.car.ui.theme.DongHaengTheme
 /**
  * 시안 호스트 — 변형 이름으로 샘플을 고르고, 세로 변형은 폭 620 dp 로 좁혀 1창(세로) 배치를 보인다.
  * `panel_dark`/`panel_light`/`panel_full`/`panel_worst`: 플로팅 패널 단독(내비 지도 색 바탕의 오른쪽 위, 실제 서비스와 같은 여백 110/190 dp).
- * `panel_worst` = 폭 최악 조합(긴 닉네임·저잔량 아이콘·"뒤 9.9 km"·"앞 990 m"·"뒤 120 km").
+ * `panel_worst` = 폭 최악 조합(긴 닉네임·저잔량 아이콘·"뒤 9.9 km"·"앞 990 m"·"뒤 120 km" + 긴 그룹 이름 "아빠 차와 같이 가기" → 그룹 이름만 말줄임).
+ * `panel_longdest` = 아주 긴 목적지(기준 문구 상한 180 dp → 목적지 이름만 말줄임, " 도착" 남음) + 긴 그룹 이름.
  */
 @Composable
 fun DesignPreviewHost(variant: String) {
@@ -31,6 +32,7 @@ fun DesignPreviewHost(variant: String) {
         val ui = when (variant) {
             "panel_full" -> FloatingPanelSamples.full
             "panel_worst" -> FloatingPanelSamples.worst
+            "panel_longdest" -> FloatingPanelSamples.longDestination
             else -> FloatingPanelSamples.base
         }
         PanelPreviewHost(light = variant == "panel_light", ui = ui)
@@ -70,6 +72,14 @@ private fun PreviewPanelLight() = PanelPreviewHost(light = true, ui = FloatingPa
 @Preview(name = "플로팅 패널 5대(외 1대)", widthDp = 1707, heightDp = 1210)
 @Composable
 private fun PreviewPanelFull() = PanelPreviewHost(light = false, ui = FloatingPanelSamples.full)
+
+@Preview(name = "플로팅 패널 폭 최악(긴 그룹 이름)", widthDp = 1707, heightDp = 1210)
+@Composable
+private fun PreviewPanelWorst() = PanelPreviewHost(light = false, ui = FloatingPanelSamples.worst)
+
+@Preview(name = "플로팅 패널 긴 목적지", widthDp = 1707, heightDp = 1210)
+@Composable
+private fun PreviewPanelLongDestination() = PanelPreviewHost(light = false, ui = FloatingPanelSamples.longDestination)
 
 @Preview(name = "가로 주행", widthDp = 1700, heightDp = 1250, showBackground = true)
 @Composable

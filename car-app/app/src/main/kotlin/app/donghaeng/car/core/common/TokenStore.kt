@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * 페어링으로 받은 차량 자격 증명 (docs/03 §1.2 `POST /device/token` 200 응답을 그대로 보관).
- * 로그에는 [vehicleId] 만 남길 수 있다 — 토큰·닉네임 원문 금지(CLAUDE.md 규칙 8, [TextMasking]).
+ * 로그에는 마스킹한 값만 남긴다 — 토큰·닉네임 원문 금지(CLAUDE.md 규칙 8), [vehicleId] 도 `TextMasking.maskVehicleId`([TextMasking]).
  *
  * [toString] 은 **마스킹된 값만** 낸다(T33 리뷰) — 문자열 템플릿·예외 메시지·테스트 실패 메시지로 새어 나가도
  * logcat·링 버퍼·`files/dh_log.txt`(진단 화면 캡처)에 토큰·닉네임·소유자 ID 원문이 남지 않게 한다.

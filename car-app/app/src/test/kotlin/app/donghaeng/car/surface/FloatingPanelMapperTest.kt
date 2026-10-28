@@ -3,6 +3,7 @@ package app.donghaeng.car.surface
 import app.donghaeng.car.domain.session.GroupSession
 import app.donghaeng.car.domain.session.ReceivedGroupEvent
 import app.donghaeng.car.feature.drive.DriveFormat
+import app.donghaeng.car.feature.drive.FloatingPanelSamples
 import app.donghaeng.car.feature.drive.PttUi
 import app.donghaeng.car.feature.drive.Tone
 import app.donghaeng.protocol.Energy
@@ -57,6 +58,7 @@ class FloatingPanelMapperTest {
         )
         assertEquals("강릉 가족 여행", ui.groupName)
         assertEquals("경포해변 도착", ui.etaLabel)
+        assertEquals("목적지 이름만 따로 — 머리줄이 이름만 말줄임하고 ' 도착' 은 남긴다", "경포해변", ui.etaPlace)
         assertEquals(listOf("아빠", "삼촌", "둘째"), ui.cars.map { it.name })   // 내 차 제외, " 차" 뗌, 선두부터
         val (a, b, c) = ui.cars
         assertEquals("앞 1.2" to "km", a.gapText to a.gapUnit)
@@ -87,6 +89,19 @@ class FloatingPanelMapperTest {
         assertFalse(ui.cars[0].warn)
         assertTrue(ui.cars[1].offline); assertTrue(ui.cars[1].warn)
         assertTrue(ui.cars[2].offline); assertTrue(ui.cars[2].warn)
+    }
+
+    @Test
+    fun `the header keeps the whole group name and destination - only the panel layout ellipsizes the group name`() {
+        val long = session.copy(name = "아빠 차와 같이 가기", destination = Place(37.7719, 128.9479, "강릉 경포해변 중앙광장 공영주차장"))
+        val ui = FloatingPanelMapper.map(long, GroupState("grp_1", "veh_A", emptyList()), "veh_ME", emptyList(), PttUi(), connected = true, nowMs = now, zone = zone)
+        assertEquals("아빠 차와 같이 가기", ui.groupName)
+        assertEquals("강릉 경포해변 중앙광장 공영주차장", ui.etaPlace)
+        assertEquals("강릉 경포해변 중앙광장 공영주차장 도착", ui.etaLabel)
+        // 시안 변형: panel_worst = 시연 기본 그룹 이름, panel_longdest = 상한에 걸리는 긴 목적지
+        assertEquals("아빠 차와 같이 가기", FloatingPanelSamples.of("worst").groupName)
+        assertEquals("경포해변 도착", FloatingPanelSamples.of("worst").etaLabel)
+        assertTrue(FloatingPanelSamples.of("longdest").etaPlace.length > 10)
     }
 
     @Test

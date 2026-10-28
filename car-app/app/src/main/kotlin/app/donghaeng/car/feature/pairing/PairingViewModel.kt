@@ -160,7 +160,7 @@ class PairingViewModel internal constructor(
                 when (val r = repository.pollToken(issued.deviceCode)) {
                     is ApiResult.Success -> {
                         val creds = repository.saveCredentials(r.value)
-                        setState(PairingState.Connected(creds.vehicleId, creds.nickname), extra = "vehicleId=${creds.vehicleId}")
+                        setState(PairingState.Connected(creds.vehicleId, creds.nickname), extra = "vehicleId=${app.donghaeng.car.core.common.TextMasking.maskVehicleId(creds.vehicleId)}")
                         _events.trySend(PairingEvent.Paired)
                         return
                     }
