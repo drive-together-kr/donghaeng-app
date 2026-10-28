@@ -9,6 +9,7 @@ import app.donghaeng.car.core.network.mqtt.MqttGateway
 import app.donghaeng.car.core.network.mqtt.MqttState
 import app.donghaeng.car.domain.session.MqttSessionManager
 import app.donghaeng.car.domain.time.ClockSync
+import app.donghaeng.car.domain.voice.VoiceCueTracker
 import app.donghaeng.car.surface.AndroidCardPoster
 import app.donghaeng.car.surface.AppForegroundTracker
 import app.donghaeng.car.surface.DriveSurfaceController
@@ -56,6 +57,7 @@ object SurfaceModule {
         overlay: OverlayPermissionMonitor,
         tracker: AppForegroundTracker,
         positions: PanelPositionStore,
+        voiceCues: VoiceCueTracker,
     ): SurfaceState = SurfaceState(
         session = sessionManager.session,
         groupState = sessionManager.groupState,
@@ -70,6 +72,8 @@ object SurfaceModule {
         serverClock = { clockSync.serverNow() },
         // 연속 주행은 단조 시계로 잰다 — 부팅 뒤 시각 보정으로 벽시계가 뛰어도 주행 시간이 부풀거나 사라지지 않게
         driveClock = { android.os.SystemClock.elapsedRealtime() },
+        // 위험 이벤트(급제동·에어백) 강조: 음성 시작이 3초를 넘기면 소식 줄을 빨간 강조 + 깜빡임으로 먼저(docs/05 §5.2)
+        voiceCues = voiceCues.state,
     )
 
     @Provides

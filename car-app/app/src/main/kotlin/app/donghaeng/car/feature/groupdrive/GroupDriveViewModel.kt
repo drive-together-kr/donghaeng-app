@@ -115,6 +115,8 @@ data class GroupDriveUiState(
     val myVehicleId: String? = null,
     /** 연속 주행(ms) — 주행 구간 합, 15분 이상 쉬면 0(ContinuousDriveTimer). null = 모름 */
     val continuousDriveMs: Long? = null,
+    /** 음성 경로·지연·시작 신호 — 대시보드 띠의 위험 이벤트 강조(패널 소식 줄과 같은 값, docs/05 §5.2) */
+    val voiceCue: app.donghaeng.car.domain.voice.VoiceCue = app.donghaeng.car.domain.voice.VoiceCue(),
 ) {
     val hasSnapshot: Boolean get() = members.isNotEmpty()
     val proposalRemainingS: Long? get() = proposal?.let { ((it.expiresAtMs - nowMs) / 1_000).coerceAtLeast(0) }
@@ -230,6 +232,7 @@ class GroupDriveViewModel @Inject constructor(
             serverNowMs = surface.serverNow(),
             myVehicleId = core.myVehicleId,
             continuousDriveMs = surface.continuousDriveMs(),
+            voiceCue = surface.voiceCue(),
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), GroupDriveUiState())
 

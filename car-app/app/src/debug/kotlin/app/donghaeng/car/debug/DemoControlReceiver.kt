@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import app.donghaeng.car.adapter.navi.NaviAdapter
+import app.donghaeng.car.adapter.voice.debugTokens
 import app.donghaeng.car.core.common.DemoPrefs
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.core.common.TextMasking
@@ -50,6 +51,7 @@ import java.util.Base64
  * | `auto_follow` | `on`(ez) | 자동 따라가기 설정 |
  * | `speak` | `text` | 음성 큐에 문장 추가(NORMAL) |
  * | `voice` | `on`(ez) | 음성 안내 on/off |
+ * | `voice_sample` | | 진단 '예시 안내 듣기'와 같은 문장("아빠 차가 휴게소에 도착했어요.")을 음성 체인으로 — `demo: voice_sample tts=… ttsPath=…` |
  * | `navi_route` | | 그룹 목적지로 `requestRoute` |
  * | `gpx` | `role` = `lead`/`follow` | fake flavor GPX 역할 저장 — **앱 재시작 후 적용** |
  * | `is_me` | `vid`, `tag`(선택, 영숫자·`-` 16자) | 이 차의 vehicleId 인가 — `demo: is_me=true\|false tag=…` 만 남긴다(id 원문 없음). demo.py preflight 가 `GET /me/vehicles` 의 id 를 차마다 물어 차 A/B 를 맞춘다 |
@@ -153,6 +155,11 @@ class DemoControlReceiver : BroadcastReceiver() {
                 val on = intent.getBooleanExtra("on", true)
                 voice.setEnabled(on)
                 DhLog.i("demo: voice=$on")
+            }
+            "voice_sample" -> {
+                // 진단 '예시 안내 듣기'와 같은 문장을 체인으로 — 심사 환경 재현(docs/09 §1.4). release 는 진단 화면 버튼으로
+                voice.speakTest(app.donghaeng.car.feature.settings.DiagnosticsViewModel.SAMPLE_SENTENCE, type = "SAMPLE")
+                DhLog.i("demo: voice_sample ${voiceAdapter.status.value.debugTokens()}")
             }
             "navi_route" -> {
                 val dest = sessionStore.session.value?.destination
@@ -266,9 +273,8 @@ class DemoControlReceiver : BroadcastReceiver() {
                     "demo: status group=${s?.groupId?.let(TextMasking::maskVehicleId) ?: "없음"} leader=${s?.isLeader} dest=${s?.destination?.name} " +
                         "pending=${r.pending?.proposalId?.let(TextMasking::maskVehicleId) ?: "없음"} accepted=${r.accepted} declined=${r.declined} autoDeclined=${r.autoDeclined} " +
                         "autoFollow=${r.autoFollow} routeChangedSent=${r.routeChangedSent} voice=${voice.state.value.enabled} gpx=${DemoPrefs.gpxRole(context)} " +
-                        // 음성 엔진 준비 여부(2026-10-28 — demo.py preflight 가 본다): ready / init / off, 엔진 패키지(공백 없음)
-                        "tts=${voiceAdapter.status.value.let { v -> when (v.ready) { true -> "ready"; null -> "init"; false -> "off" } }} " +
-                        "ttsEngine=${voiceAdapter.status.value.engine?.replace(' ', '_') ?: "-"}",
+                        // 음성 체인(R19 — demo.py preflight 가 본다): tts=ready|init|off(ready = 어느 경로든 소리 경로 있음) ttsEngine=… ttsPath=ANDROID_TTS|PLEOS_TTS|DISPLAY_ONLY ttsSelecting=…
+                        voiceAdapter.status.value.debugTokens(),
                 )
             }
             "is_me" -> {

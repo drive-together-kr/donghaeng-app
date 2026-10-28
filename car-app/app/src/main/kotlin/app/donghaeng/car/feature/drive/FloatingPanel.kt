@@ -28,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -180,16 +181,18 @@ fun FloatingPanel(
                     Text(stringResource(R.string.surface_panel_more, ui.moreCount), color = p.muted, fontSize = s.sp(FloatingPanelSpec.HEADER_SP), lineHeight = s.sp(26f), modifier = Modifier.padding(start = s.dp(22f)))
                 }
             }
-            // 최근 이벤트 1줄(10초 이내, 없으면 생략)
+            // 최근 이벤트 1줄(10초 이내, 없으면 생략). 위험 이벤트의 음성이 늦으면 빨간 강조(+ 음성 시작 전까지 깜빡임) — EventHighlightPolicy
             ui.event?.let { e ->
                 val c = p.tone(e.tone)
+                val hl = EventHighlightStyle.isOn(e.highlight)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(s.dp(12f))).background(c.copy(alpha = p.eventAlpha)).padding(horizontal = s.dp(10f), vertical = s.dp(8f)),
+                    modifier = Modifier.fillMaxWidth().alpha(highlightAlpha(e.highlight)).clip(RoundedCornerShape(s.dp(12f)))
+                        .background(if (hl) p.danger else c.copy(alpha = p.eventAlpha)).padding(horizontal = s.dp(10f), vertical = s.dp(8f)),
                 ) {
-                    Icon(DriveTone.icon(e.tone), contentDescription = null, tint = c, modifier = Modifier.size(s.dp(26f)))
+                    Icon(DriveTone.icon(e.tone), contentDescription = null, tint = if (hl) Color.White else c, modifier = Modifier.size(s.dp(26f)))
                     Spacer(Modifier.width(s.dp(8f)))
-                    Text(e.text, color = p.text, fontSize = s.sp(FloatingPanelSpec.EVENT_SP), lineHeight = s.sp(28f), fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(e.text, color = if (hl) Color.White else p.text, fontSize = s.sp(FloatingPanelSpec.EVENT_SP), lineHeight = s.sp(28f), fontWeight = if (hl) FontWeight.Bold else FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
             PanelPttRow(ui.ptt, s, onPtt)

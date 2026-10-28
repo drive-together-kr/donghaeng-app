@@ -22,6 +22,7 @@ import kotlin.math.roundToInt
  * - 그룹 도착의 마지막 차가 나면 "마지막: 내 차".
  * - 이벤트 띠·지난 소식은 플로팅 패널과 같은 규칙([SurfaceEvents]): 내 차 출처 제외, 띠 = 받은 지 10초 안 + 서버 시계로 60초 안에 생긴 가장 최근 이벤트(없으면 숨김 —
  *   재접속 때 브로커가 다시 보낸 옛 이벤트는 빠진다), 지난 소식 = 발생 시각(봉투 ts) 최신 5개, "N초 전" = 서버 시계 − 봉투 ts. 프리셋(F8)·보내지 않은 무전(F16)은 아직 없어 비운다.
+ *   띠의 위험 이벤트 강조(빨간 강조 + 깜빡임)는 패널과 같은 [app.donghaeng.car.surface.EventHighlightPolicy] · 같은 음성 값(`voiceCue`).
  * - 하단 지연 = T31 문구 그대로("이벤트 N ms · 상태 N ms", 표시 꺼짐이면 없음).
  */
 object DriveDashboardMapper {
@@ -97,7 +98,7 @@ object DriveDashboardMapper {
 
         val serverNow = s.serverNowMs ?: now
         val myId = s.myVehicleId ?: me?.vehicleId
-        val event = SurfaceEvents.bannerUi(s.recentEvents, myId, now, serverNow)
+        val event = SurfaceEvents.bannerUi(s.recentEvents, myId, now, serverNow, s.voiceCue)
         val recent = SurfaceEvents.recent(s.recentEvents, myId, RECENT_COUNT).map {
             RecentEventUi(DriveFormat.eventText(it.event.type, it.event.speech), DriveFormat.eventTone(it.event.type), DriveFormat.ago(SurfaceEvents.ageMs(it, serverNow)))
         }

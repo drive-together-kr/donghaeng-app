@@ -40,4 +40,7 @@ interface SurfaceFeed {
 
     /** 연속 주행(ms, [app.donghaeng.car.feature.drive.ContinuousDriveTimer]) — 주행 구간 합, 15분 이상 쉬면 0. null = 모름 */
     fun continuousDriveMs(): Long? = null
+
+    /** 음성 경로·지연·eventId 별 시작 신호 — 위험 이벤트 강조([EventHighlightPolicy]). 기본 = 모름(강조는 3초 규칙만) */
+    fun voiceCue(): app.donghaeng.car.domain.voice.VoiceCue = app.donghaeng.car.domain.voice.VoiceCue()
 }

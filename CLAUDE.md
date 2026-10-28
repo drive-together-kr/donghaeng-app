@@ -45,7 +45,7 @@ python tools/demo/demo.py --dry-run && python tools/demo/demo.py --email <dev �
 2. 모든 어댑터는 Pleos 구현 + Fake 구현을 함께 만든다. Fake로 단위·통합 테스트가 돌아야 한다.
 3. SDK 콜백은 `callbackFlow`로 감싸고 `awaitClose`에서 **같은 리스너로** unregister. `Vehicle.release()`는 모든 콜백 이후.
 4. 기능 사용 전 `checkXxxCapabilities` → 미지원이면 UI에서 숨기고 로그만 남긴다. 크래시 금지.
-5. **준비 중 SDK(FusedLocation, TTS, STT, Vehicle Control)에 기능적으로 의존하지 않는다.** 위치 기본 체인은 NaviHelper → Android LocationManager → Fake 이며, FusedLocation 은 `isSupported()` 와 런타임 권한 승인이 모두 true 일 때만 선택적으로 앞에 붙인다(없어도 동작). 음성은 Android `TextToSpeech`.
+5. **준비 중 SDK(FusedLocation, TTS, STT, Vehicle Control)에 '의존'하지 않는다 — 가능하면 쓰고, 실패하면 다음 수단으로 자동 전환.** 위치 기본 체인은 NaviHelper → Android LocationManager → Fake 이며, FusedLocation 은 `isSupported()` 와 런타임 권한 승인이 모두 true 일 때만 선택적으로 앞에 붙인다(없어도 동작). 음성은 Android `TextToSpeech`(한국어 엔진·ko_KR 확인) → Pleos TextToSpeech SDK ON_DEVICE → 화면 표시만(`ChainedVoiceAdapter`, docs/05 §3.5).
 6. 주행 중 앞 화면은 항상 순정 내비, 동행은 가리지 않는 표면으로만. 차량 제어(Set) API 사용 금지 — 조회만. 안전 원칙: 주행 중 입력 UI 비활성(CarUxRestrictions), 정보는 음성 우선.
 7. 메시지 스키마는 `protocol/`에만 정의. car-app·server·companion에서 중복 정의 금지.
 8. 로그에 좌표·닉네임·토큰 원문 금지(마스킹 유틸 사용).

@@ -3,7 +3,10 @@ package app.donghaeng.car.surface
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.session.GroupSession
 import app.donghaeng.car.domain.session.ReceivedGroupEvent
+import app.donghaeng.car.domain.voice.VoiceCue
 import app.donghaeng.car.feature.drive.ContinuousDriveTimer
+import app.donghaeng.car.feature.drive.EventBannerUi
+import app.donghaeng.car.feature.drive.EventHighlight
 import app.donghaeng.car.feature.drive.FloatingPanelUi
 import app.donghaeng.car.feature.drive.PttUi
 import app.donghaeng.protocol.EventAudience
@@ -21,10 +24,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.ZoneId
@@ -57,6 +62,8 @@ class SurfaceState(
     /** 연속 주행 타이머용 단조 시계(기기: SystemClock.elapsedRealtime) — 벽시계 보정(NTP·GNSS·수동)에 흔들리지 않게. 기본 = [clock] */
     private val driveClock: () -> Long = clock,
     private val tickMs: Long = 1_000L,
+    /** 음성 경로·지연·시작 신호(VoiceCueTracker) — 위험 이벤트 강조. 바뀌면 틱을 기다리지 않고 패널을 다시 그린다 */
+    private val voiceCues: StateFlow<VoiceCue> = MutableStateFlow(VoiceCue()),
 ) : SurfaceFeed {
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private var job: Job? = null
@@ -96,15 +103,15 @@ class SurfaceState(
             launch { combine(_mode, appVisible) { m, v -> SurfacePolicy.panelVisible(m, v) }.collect { _panelVisible.value = it } }
             launch { driving.collect { _isDriving.value = it; driveTimer.onDriving(it, driveClock()) } }
             launch { connected.collect { _connected.value = it } }
-            launch { session.map { it?.groupId }.distinctUntilChanged().collect { _recent.value = emptyList() } }
+            launch { session.map { it?.groupId }.distinctUntilChanged().collect { _recent.value = emptyList(); lateAtReceipt.value = emptyMap() } }
             launch { events.collect { noteEvent(it) } }
             launch {
                 session.flatMapLatest { s ->
                     if (s == null) flowOf(null)
                     else combine(groupState, _recent, _connected, ptt, ticker()) { g, ev, c, p, now ->
-                        FloatingPanelMapper.map(s, g, myVehicleId(), ev, p, c, nowMs = now, zone = zone(), serverNowMs = serverClock())
+                        FloatingPanelMapper.map(s, g, myVehicleId(), ev, p, c, nowMs = now, zone = zone(), serverNowMs = serverClock(), voiceCue = voiceCue())
                     }
-                }.collect { _panelUi.value = it }
+                }.collect { ui -> logHighlight(ui?.event); _panelUi.value = ui }
             }
         }
     }
@@ -124,11 +131,30 @@ class SurfaceState(
             DhLog.i("surface: skip not-for-me ${e.event.type} basis=${audience.basis}")
             return false
         }
+        // 위험 이벤트 강조의 '늦을 게 분명'은 받은 순간 한 번만 정한다(EventHighlightPolicy.noteReceipt) — 목록보다 먼저 넣어 첫 그림부터 쓰게
+        lateAtReceipt.update { EventHighlightPolicy.noteReceipt(it, e.event.type, e.event.eventId, voiceCues.value) }
         _recent.update { (listOf(e) + it).distinctBy { r -> r.event.eventId }.take(MAX_EVENTS) }
         return true
     }
 
     override fun serverNow(): Long = serverClock()
+
+    /** 위험 이벤트 eventId → 받은 순간 '늦을 게 분명'이었나 */
+    private val lateAtReceipt = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+
+    /** 음성 값 + 받은 순간 판정 — 패널 소식 줄·정차 대시보드 띠가 같은 값을 본다 */
+    override fun voiceCue(): VoiceCue = voiceCues.value.copy(lateAtReceipt = lateAtReceipt.value)
+
+    private var lastHighlight: EventHighlight = EventHighlight.NONE
+
+    /** 위험 이벤트 강조가 바뀔 때만 한 줄 — `surface: event highlight BLINK|STEADY|NONE tone=… age=…s path=… avg=…ms` (문구·닉네임 없음) */
+    private fun logHighlight(e: EventBannerUi?) {
+        val h = e?.highlight ?: EventHighlight.NONE
+        if (h == lastHighlight) return
+        lastHighlight = h
+        val cue = voiceCues.value
+        DhLog.i("surface: event highlight $h tone=${e?.tone} age=${e?.ageS ?: "-"}s path=${cue.path ?: "-"} avg=${cue.avgLatencyMs ?: "-"}ms")
+    }
 
     override fun continuousDriveMs(): Long? = if (job?.isActive == true) driveTimer.drivenMs(driveClock()) else null
 
@@ -142,14 +168,18 @@ class SurfaceState(
     fun describe(): String =
         "mode=${_mode.value} panelVisible=${_panelVisible.value} canDraw=${canDrawOverlays.value} appVisible=${appVisible.value} " +
             "driving=${_isDriving.value} corner=${_corner.value} cars=${_panelUi.value?.cars?.size ?: 0} more=${_panelUi.value?.moreCount ?: 0} " +
-            "event=${_panelUi.value?.event != null} recent=${_recent.value.size}"
+            "event=${_panelUi.value?.event != null} highlight=${_panelUi.value?.event?.highlight ?: EventHighlight.NONE} recent=${_recent.value.size}"
 
-    private fun ticker(): Flow<Long> = flow {
-        while (true) {
-            emit(clock())
-            delay(tickMs)
-        }
-    }
+    /** 1초 틱 + 음성 신호가 바뀔 때(위험 이벤트의 음성이 시작되면 깜빡임을 바로 멈추게) */
+    private fun ticker(): Flow<Long> = merge(
+        flow {
+            while (true) {
+                emit(clock())
+                delay(tickMs)
+            }
+        },
+        voiceCues.drop(1).map { clock() },
+    )
 
     companion object {
         const val MAX_EVENTS = 20

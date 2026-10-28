@@ -168,6 +168,58 @@ class DhApiNetworkErrorTest(unittest.TestCase):
         self.assertIn("login failed: 0", str(caught.exception))
 
 
+class TtsPathRowTest(unittest.TestCase):
+    """preflight '앱 음성 경로' 판정 — 소리 경로(Android TTS·Pleos TTS)가 있으면 OK, 화면만이면 FAIL, Supertonic 은 음질 선택"""
+
+    def st(self, tts, path, selecting="false", engine="-"):
+        return {"tts": tts, "ttsPath": path, "ttsSelecting": selecting, "ttsEngine": engine}
+
+    def test_android_path_is_ok(self):
+        label, ok = demo.tts_path_row("A", self.st("ready", "ANDROID_TTS", engine=demo.TTS_ENGINE_PKG), True)
+        self.assertTrue(ok)
+        self.assertIn("ANDROID_TTS(engine=com.k2fsa.sherpa.onnx.tts.engine)", label)
+
+    def test_pleos_path_without_supertonic_is_ok(self):
+        label, ok = demo.tts_path_row("A", self.st("ready", "PLEOS_TTS", engine="Pleos_TextToSpeech_ON_DEVICE"), False)
+        self.assertTrue(ok)
+        self.assertIn("Pleos TTS 로 자동 동작", label)
+
+    def test_pleos_path_while_supertonic_is_installed_is_a_warning(self):
+        _, ok = demo.tts_path_row("A", self.st("ready", "PLEOS_TTS"), True)
+        self.assertIsNone(ok)
+        _, ok = demo.tts_path_row("A", self.st("ready", "PLEOS_TTS", selecting="true"), True)
+        self.assertIsNone(ok, "Android 적재가 상한 안에 안 끝남")
+
+    def test_display_only_or_no_answer_fails(self):
+        label, ok = demo.tts_path_row("B", self.st("off", "DISPLAY_ONLY"), False)
+        self.assertFalse(ok)
+        self.assertIn("화면 표시만", label)
+        self.assertFalse(demo.tts_path_row("B", self.st("init", "DISPLAY_ONLY", selecting="true"), False)[1])
+        self.assertFalse(demo.tts_path_row("B", {}, False)[1])
+
+    def test_old_app_without_path_token_still_passes_on_ready(self):
+        self.assertTrue(demo.tts_path_row("A", {"tts": "ready", "ttsEngine": "x"}, True)[1])
+
+
+class EnsureTtsEngineTest(unittest.TestCase):
+    """Supertonic 이 없으면 WARN 만 — 판정은 앱 경로(status)로"""
+
+    def run_with(self, packages: str, st: dict, tts_apk=None):
+        d = demo.Demo(args(tts_apk=tts_apk, dry_run=True))
+        with mock.patch.object(demo, "sh", side_effect=lambda serial, cmd, timeout=30: packages if cmd.startswith("pm list") else ""), \
+                mock.patch.object(demo.Demo, "wait_tts_path", return_value=st):
+            return d.ensure_tts_engine("A", "emulator-A")
+
+    def test_clean_pleos_avd_without_supertonic_passes_on_pleos_path(self):
+        rows = self.run_with("", {"tts": "ready", "ttsPath": "PLEOS_TTS", "ttsSelecting": "false"})
+        self.assertEqual([None, True], [ok for _, ok in rows])
+        self.assertIn("Supertonic", rows[0][0])
+
+    def test_no_sound_route_fails(self):
+        rows = self.run_with("", {"tts": "off", "ttsPath": "DISPLAY_ONLY", "ttsSelecting": "false"})
+        self.assertFalse(rows[-1][1])
+
+
 class GwaWaTest(unittest.TestCase):
 
     def test_matches_the_car_app_rule(self):

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 음성 체인 진단(R19 해결, docs/05 §3.5) — 진단 화면 '음성 안내' 카드 -->
+<resources>
+    <string name="diag_voice_path">지금 경로</string>
+    <string name="diag_voice_path_reason">고른 사유</string>
+    <string name="diag_voice_candidates">후보</string>
+    <string name="diag_voice_latency">요청→시작 지연</string>
+    <string name="diag_voice_action_sample">예시 안내 듣기</string>
+    <string name="diag_voice_sample_hint">“아빠 차가 휴게소에 도착했어요.”를 지금 경로로 읽습니다(정차 중에만)</string>
+</resources>

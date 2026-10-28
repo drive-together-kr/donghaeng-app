@@ -27,6 +27,8 @@ espressoCore = "3.6.1"
 pleosVehicle = "2.3.2"
 pleosNaviHelper = "3.0.5"
 pleosFusedLocation = "1.1.3"
+# 음성 체인 2순위(ON_DEVICE, ko_KR) — 의존: universal-access 0.6.0(+JNA·security-crypto-ktx). docs/10 R19
+pleosTts = "3.3.1"
 
 [libraries]
 # 공용 스키마 — includeBuild("../protocol") 가 소스 프로젝트로 치환하므로 버전 없음
@@ -68,6 +70,7 @@ zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" 
 pleos-vehicle = { group = "ai.pleos.playground", name = "Vehicle", version.ref = "pleosVehicle" }
 pleos-navihelper = { group = "ai.pleos.playground", name = "NaviHelper", version.ref = "pleosNaviHelper" }
 pleos-fusedlocation = { group = "ai.pleos.playground", name = "FusedLocation", version.ref = "pleosFusedLocation" }
+pleos-tts = { group = "ai.pleos.playground", name = "TextToSpeech", version.ref = "pleosTts" }
 
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxJunit" }

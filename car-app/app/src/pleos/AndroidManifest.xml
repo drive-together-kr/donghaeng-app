@@ -22,6 +22,14 @@
     <!-- 속도·기어: AAOS 표준 Car API 시도용 (T22). CAR_SPEED 는 런타임 권한 — T22 정차 시 요청, 미승인이면 Haversine 속도. CAR_POWERTRAIN 은 normal -->
     <uses-permission android:name="android.car.permission.CAR_SPEED" />
     <uses-permission android:name="android.car.permission.CAR_POWERTRAIN" />
+    <!-- Pleos TextToSpeech SDK(음성 체인 2순위, R19 해결 2026-10-28) — CaaS(ai.pleos.playground.caas)가 정의한 normal 권한(설치 시 자동 승인).
+         없으면 SDK 가 SecurityException. SDK AAR 매니페스트가 <queries> SPEECH_START 를 병합한다 -->
+    <uses-permission android:name="pleos.car.permission.TTS_SERVICE" />
+
+    <!-- CaaS 설치·버전 확인(PleosTtsVoiceAdapter 의 getPackageInfo) — API 30+ 패키지 가시성 -->
+    <queries>
+        <package android:name="ai.pleos.playground.caas" />
+    </queries>
 
     <application>
         <!-- AAOS 공유 라이브러리. required=false: 없는 기기에서도 설치되고 CarApiSignals 가 "미지원" 으로 끝난다 -->
