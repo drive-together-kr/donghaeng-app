@@ -7,6 +7,7 @@ import app.donghaeng.protocol.GroupEnded
 import app.donghaeng.protocol.GroupEvent
 import app.donghaeng.protocol.GroupJoined
 import app.donghaeng.protocol.MessageTypes
+import app.donghaeng.protocol.TokenRevoked
 import app.donghaeng.protocol.Topics
 import org.slf4j.LoggerFactory
 import org.springframework.context.event.EventListener
@@ -27,6 +28,12 @@ class MqttVehicleCommandPort(private val publisher: MqttPublisher) : VehicleComm
     override fun groupEnded(vehicleId: String, cmd: GroupEnded) {
         val sent = publisher.publish(Topics.vehicleCmd(vehicleId), CmdType.GROUP_ENDED.name, cmd, GroupEnded.serializer())
         log.info("cmd GROUP_ENDED vehicleId={} groupId={} reason={} sent={}", vehicleId, cmd.groupId, cmd.reason, sent)
+    }
+
+    /** T33: QoS 1, **retain 금지** — 재페어링한 같은 차가 retained 폐기를 다시 받으면 새 토큰을 지운다 */
+    override fun tokenRevoked(vehicleId: String) {
+        val sent = publisher.publish(Topics.vehicleCmd(vehicleId), CmdType.TOKEN_REVOKED.name, TokenRevoked, TokenRevoked.serializer(), qos = 1, retain = false)
+        log.info("cmd TOKEN_REVOKED vehicleId={} sent={}", vehicleId, sent)
     }
 
     companion object {

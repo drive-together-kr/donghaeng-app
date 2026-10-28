@@ -74,8 +74,10 @@ import kotlin.test.assertTrue
 class RecordingVehicleCommandPort : VehicleCommandPort {
     val joined = CopyOnWriteArrayList<Pair<String, GroupJoined>>()
     val ended = CopyOnWriteArrayList<Pair<String, GroupEnded>>()
+    val revoked = CopyOnWriteArrayList<String>()
     override fun groupJoined(vehicleId: String, cmd: GroupJoined) { joined += vehicleId to cmd }
     override fun groupEnded(vehicleId: String, cmd: GroupEnded) { ended += vehicleId to cmd }
+    override fun tokenRevoked(vehicleId: String) { revoked += vehicleId }
 }
 
 @TestConfiguration
@@ -613,6 +615,33 @@ class GroupFlowIT {
         val rows = jdbc.queryForList("select type, payload::text as payload from group_event where group_id = ? order by occurred_at desc, event_id desc", gid)
         assertEquals("GROUP_ENDED", rows[0]["type"])
         assertEquals(GroupService.LEFT_REASON_TRANSFERRED, json.parseToJsonElement(rows[1]["payload"] as String).jsonObject["reason"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `T33 - TOKEN_REVOKED goes to the previous vehicleId after unpair and after an ownership transfer, never for a same-owner re-pair`() {
+        val a = driver("tr-a", "아빠 차")
+        val b = driver("tr-b", "엄마 차")
+        val created = create(a)
+        join(b, created.invite.token).assertOk()
+
+        // 1) 폰에서 페어링 해제 → 커밋 뒤 b 에 TOKEN_REVOKED 한 번 (그룹 정리 cmd 와 함께)
+        val before = commands.revoked.size
+        call(HttpMethod.DELETE, ApiPaths.meVehicle(b.vehicleId), bearer = b.userToken).assertOk(204)
+        assertEquals(listOf(b.vehicleId), commands.revoked.drop(before))
+        // 이미 해제된 차를 또 해제(404) → 롤백이라 보내지 않는다
+        call(HttpMethod.DELETE, ApiPaths.meVehicle(b.vehicleId), bearer = b.userToken).assertError(404, ErrorCodes.NOT_FOUND)
+        assertEquals(before + 1, commands.revoked.size)
+
+        // 2) 같은 소유자가 같은 차를 다시 페어링 → 소유권 이전이 아니므로 보내지 않는다(차량 앱이 새 토큰을 받는 중이다)
+        val sameOwner = pair(a.user, "아빠 차 다시", carId = a.carInfoId)
+        assertEquals(a.vehicleId, sameOwner.vehicle.vehicleId)
+        assertEquals(before + 1, commands.revoked.size)
+
+        // 3) 다른 계정이 a 의 차를 승인(소유권 이전) → 이전 vehicleId(= 같은 차량 행) 에 TOKEN_REVOKED
+        val d = login("tr-d")
+        val taken = pair(d, "넘겨받은 차", carId = a.carInfoId)
+        assertEquals(a.vehicleId, taken.vehicle.vehicleId)
+        assertEquals(listOf(b.vehicleId, a.vehicleId), commands.revoked.drop(before))
     }
 
     @Test
