@@ -34,6 +34,14 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.APP_MAPS" />
         </intent>
+        <!-- 음성 안내(Android TextToSpeech)·무전 확인 인식(SpeechRecognizer): targetSdk 30+ 는 엔진 서비스가 보이게 선언해야 한다.
+             없으면 TextToSpeech 가 엔진을 못 찾아 즉시 status=-1(2026-10-28 실측 — Pleos AVD 의 엔진 ai.pleos.playground.caas 가 있는데도 '엔진 없음'으로 보였다) -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
     </queries>
 
     <application
