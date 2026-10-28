@@ -156,7 +156,8 @@ class PleosSttYesNoRecognizer(context: Context) : YesNoRecognizer {
             var keep = false
             try {
                 stt.addListener(listener)
-                stt.setLocale(Locale.KOREAN)
+                // "ko"(Locale.KOREAN)만 주면 CaaS 엔진이 "unsupported locale: ko-" 로 ON_DEVICE_ENGINE_ERROR — TTS 와 같은 원인(docs/10 R19, 2026-10-28 실측) → ko_KR
+                stt.setLocale(Locale.KOREA)
                 stt.request()
                 val r = withTimeoutOrNull(budget) { done.await() } ?: run {
                     runCatching { stt.stop() }
