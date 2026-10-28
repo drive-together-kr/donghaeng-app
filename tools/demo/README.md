@@ -9,6 +9,7 @@ adb 는 환경변수 `ADB` 또는 `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb
 | `replay_gpx.py` | GPX → `adb emu geo fix` 재생 (차 A, 실 SDK Pleos AVD 의 GPS) |
 | `vc.py` | Pleos 에뮬레이터 Virtual Console 클라이언트 (기어·속도·브레이크·EV 잔량·방향지시등) |
 | `api.py` | 서버 REST 보조 (dev 로그인, 페어링 승인, 초대·합류, 동승자 메시지) — 폰 없이 리허설할 때 |
+| `soak.py` | T33 30분 연속 실행 점검 — 1분마다 두 차의 앱 pid 불변·MQTT 연결·텔레메트리 증가·그룹 STATE 나이 < 10 s·logcat E/FATAL 0 확인 → `out/<시각>_soak/soak.md` |
 
 GPX 는 `car-app/app/src/main/assets/gpx/{lead,follow}.gpx` 를 그대로 쓴다(단일 원본). 두 파일은 같은 가상 복도(직선 보간, 실제 도로·주소와 무관)를
 선두가 1.2 km 앞서 달리는 구성이며 덕평휴게소 좌표(37.2963, 127.4120)를 지난다 — `RouteSyncEngine.DEMO_WAYPOINT` 와 같아 차 B(fake)의 `WaypointArrived` 가 난다.
@@ -30,6 +31,13 @@ python tools/demo/demo.py --dry-run                                   # prefligh
 python tools/demo/demo.py --email <dev 이메일>                         # 전체. 장면 2~3(그룹 생성·QR 합류)은 화면·폰에서 → 합류를 감지하면 자동 진행
 python tools/demo/api.py --email <dev 이메일> join --vehicle DemoCarB  # 폰 없이 차 B 합류(리허설)
 ```
+30분 연속 실행(T33 완료 기준): 두 차를 같은 그룹으로 주행시키는 상태(위 `demo.py` 장면 4 이후, 또는 GPX 재생 중)에서
+```
+python tools/demo/soak.py --car-a emulator-5556 --car-b emulator-5558 --minutes 30
+```
+앱이 30초마다 남기는 `health mqtt=… tel=… stateAgeMs=…` 줄과 `pidof`·`logcat *:E`·crash 버퍼만 읽는다(기기 상태를 바꾸지 않는다). 시스템 라이브러리의 E 소음은 `--ignore-tag <태그>` 로 뺀다.
+결과 표(`soak.md`)와 각 차의 health·E 줄·DongHaeng 로그가 `out/<시각>_soak/` 에 남는다 — 그대로 붙여넣으면 된다.
+
 `--no-auto-accept` 면 차 B 의 제안("선두차 목적지까지 안내할까요?", "따라갈까요?")을 화면에서 직접 누른다(30초 안에, 주행 중엔 버튼이 막히므로 정차 상태에서).
 
 ## 디버그 리시버 (debug 빌드 전용)
