@@ -185,7 +185,7 @@ class DemoControlReceiver : BroadcastReceiver() {
                 DhLog.i("demo: surface ${surfaceController.describe()} tbt=${turnProbe.describe()}")
             }
             "tbt" -> {
-                // 카드 TBT 게이트 확인용: 다음 회전 거리를 잠시 덮어쓴다(m=-1 해제). 미룬 카드는 1초마다 다시 확인해 회전 후(> 300 m 등)에 올라간다
+                // 카드 TBT 게이트 확인용: 다음 회전 거리를 잠시 덮어쓴다(m=-1 해제). 미룬 카드는 1초마다 다시 확인해 다음 회전이 300 m 밖이 되면(·안내 끝) 올라간다 — 300 m 안 값으로 바꾸면 계속 미룬다
                 val m = intent.getIntExtra("m", -1)
                 val forS = intent.getIntExtra("for_s", 30)
                 if (m < 0) turnProbe.clearOverride() else turnProbe.setOverride(m, forS * 1_000L)

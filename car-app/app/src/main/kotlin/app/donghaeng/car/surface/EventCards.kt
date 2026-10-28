@@ -188,9 +188,12 @@ class CardThrottle(
  *   음성이 전하므로 카드를 올리지 않는다(skip `panel-mode`). [SurfaceMode.OFF](그룹 없음)면 아무것도 안 한다.
  * - 판단은 [EventCardPolicy], 빈도 제한은 [CardThrottle], 게시는 [CardPoster].
  * - **TBT 게이트([TurnCardGate]):** 올리기 직전에 [nextTurn] 으로 다음 회전까지 거리를 한 번 묻고 300 m 이내면 카드를 미룬다(음성은 VoiceAnnouncer 가
- *   따로 이미 읽었다). 미룬 카드가 있는 동안만 [recheckMs](1초)마다 다시 물어 회전을 지나면 올리고, 120초 넘게 밀린 카드는 버린다. TBT 를 모르면 바로 올린다.
+ *   따로 이미 읽었다). 미룬 카드가 있는 동안만 [recheckMs](1초)마다 다시 물어 다음 회전이 300 m 밖이 되거나 안내가 끝나면 미룬 순서대로 올리고
+ *   (회전을 지났어도 다음 회전이 또 300 m 안이면 계속 미룬다), 120초 넘게 밀린 카드는 버린다. 미룬 카드가 없을 때 TBT 를 모르면 바로 올린다 —
+ *   미룬 카드가 있으면 새 카드도 줄 끝에 서고, '모름'이 3번 연달아 와야 놓는다.
  *
- * 로그: `surface: card <종류> id=… category=… mode=… tbt=…`(올림), `surface: card deferred type=… tbt=…m`, `surface: card released type=… reason=… tbt=… after=…s`,
+ * 로그: `surface: card <종류> id=… category=… mode=… tbt=…`(올림), `surface: card deferred type=… tbt=…m kind=… why=near|tbt-unknown|burst`,
+ * `surface: card released type=… reason=far|no-guidance|unknown tbt=… after=…s`, `surface: card still held — …`(연속 회전),
  * `surface: card expired type=…`, `surface: card skip <종류> reason=…`(debug 빌드).
  */
 class EventCardNotifier(
@@ -244,30 +247,46 @@ class EventCardNotifier(
             is CardDecision.Post -> {
                 // 패널 모드: 패널 소식 줄 + 음성으로만 — 헤드업 카드가 순정 내비 TBT 를 가리지 않게
                 if (m == SurfaceMode.PANEL) return@withLock skip("panel-mode", e)
-                throttle.check(e, clock())?.let { return@withLock skip(it, e) }
+                val limited = throttle.check(e, clock())
+                // 빈도 한도(burst)에 걸려도 미룬 카드 줄이 있으면 버리지 않고 줄 끝에 세운다 — 줄이 풀릴 때 옛 소식만 남고 새 소식이 사라지지 않게
+                if (limited != null && !(limited == "burst" && gate.heldCount > 0)) return@withLock skip(limited, e)
                 val reading = readTurn()
                 val now = clock()
-                // 먼저 미뤄 둔 카드부터 정리 — 회전을 지났으면 새 카드보다 먼저 나간다
-                settle(gate.observe(reading, now), now)
-                if (reading is NextTurnResult.Ahead && gate.isNear(reading)) {
-                    val replaced = gate.hold(d.card, e, now)
-                    DhLog.i(
-                        "surface: card deferred type=${d.card.type} tbt=${reading.turn.distanceM}m kind=${reading.turn.kind} held=${gate.heldCount}" +
-                            if (replaced != null) " (같은 종류 교체)" else "",
-                    )
-                    _state.update { it.copy(deferred = it.deferred + 1) }
+                if (gate.heldCount == 0 && !gate.isNear(reading)) {
+                    // 미룬 카드가 없고 다음 회전이 300 m 밖이거나 안내가 없거나 모른다 → 바로
+                    gate.observe(reading, now)
                     publishGate()
-                    ensureRecheck()
-                    CardOutcome.DEFERRED
-                } else {
-                    publishGate()
-                    // 방금 놓인 카드가 빈도 한도를 썼을 수 있어 한 번 더 본다
-                    throttle.check(e, now)?.let { return@withLock skip(it, e) }
-                    if (post(d.card, e, now)) CardOutcome.POSTED else CardOutcome.SKIPPED
+                    return@withLock if (post(d.card, e, now)) CardOutcome.POSTED else CardOutcome.SKIPPED
+                }
+                // 회전 직전이거나 이미 미룬 카드가 있다 → 새 카드도 줄에 세우고(같은 종류는 그 자리에서 최신으로 교체) 지금 읽은 TBT 로 줄을 정리한다.
+                // 놓을 때는 미룬 순서대로라 이미 미뤄 둔 카드가 새 카드보다 먼저 나간다.
+                val replaced = gate.hold(d.card, e, now)
+                if (replaced != null) DhLog.d("surface: card replaced type=${d.card.type} (같은 종류는 최신 1장)")
+                val u = gate.observe(reading, now)
+                val posted = settle(u, now, fresh = e.event.eventId)
+                publishGate()
+                when {
+                    gate.isHolding(e.event.eventId) -> {
+                        val why = when {
+                            gate.isNear(reading) -> "near"
+                            u.released.isEmpty() -> "tbt-unknown" // 미룬 카드가 있는데 모름(아직 3번 연달아는 아님) — 바로 띄우지 않고 줄에서 기다린다
+                            else -> "burst" // 줄이 막 풀려 5초 2장 한도를 썼다 — 다음 확인에서
+                        }
+                        DhLog.i("surface: card deferred type=${d.card.type} tbt=${tbtLog(reading)} why=$why held=${gate.heldCount}")
+                        _state.update { it.copy(deferred = it.deferred + 1) }
+                        ensureRecheck()
+                        CardOutcome.DEFERRED
+                    }
+                    e.event.eventId in posted -> CardOutcome.POSTED
+                    else -> CardOutcome.SKIPPED
                 }
             }
         }
     }
+
+    /** 로그용 TBT 표기 — 회전이 있으면 `120m kind=TURN_LEFT`, 아니면 `none`/`unknown` (문구는 남기지 않는다) */
+    private fun tbtLog(r: NextTurnResult): String =
+        if (r is NextTurnResult.Ahead) "${r.turn.distanceM}m kind=${r.turn.kind}" else r.toLogString()
 
     /** 다음 회전 조회 — 실패는 모름 */
     private suspend fun readTurn(): NextTurnResult = try {
@@ -279,26 +298,35 @@ class EventCardNotifier(
         NextTurnResult.Unknown
     }
 
-    /** 게이트가 놓은 카드는 올리고(빈도 제한 burst 면 다시 넣어 다음 확인에), 오래 밀린 카드는 버린다 */
-    private fun settle(u: TurnCardGate.Update, now: Long) {
+    /**
+     * 게이트가 놓은 카드는 미룬 순서대로 올리고(빈도 제한 burst 면 다시 넣어 다음 확인에), 오래 밀린 카드는 버린다. 올린 카드의 eventId 를 돌려준다.
+     * [fresh] = 방금 줄에 세운 새 카드(미룬 적이 없으니 released 로 세지 않는다).
+     */
+    private fun settle(u: TurnCardGate.Update, now: Long, fresh: String? = null): Set<String> {
         u.expired.forEach {
             DhLog.i("surface: card expired type=${it.card.type} after=${(now - it.sinceMs) / 1000}s (120초 넘게 밀림 — 버림)")
             _state.update { s -> s.copy(expired = s.expired + 1) }
         }
-        if (u.released.isEmpty()) return
         val tbt = gate.lastReading?.toLogString() ?: "-"
+        if (u.turnChanged) DhLog.i("surface: card still held — 회전이 바뀌었지만 다음 회전도 300 m 안 tbt=$tbt held=${gate.heldCount}")
+        if (u.released.isEmpty()) return emptySet()
+        val posted = HashSet<String>()
         u.released.forEach { h ->
+            val id = h.event.event.eventId
             when (val limited = throttle.check(h.event, now)) {
                 null -> {
-                    DhLog.i("surface: card released type=${h.card.type} reason=${u.reason} tbt=$tbt after=${(now - h.sinceMs) / 1000}s")
-                    _state.update { s -> s.copy(released = s.released + 1) }
-                    post(h.card, h.event, now)
+                    if (id != fresh) {
+                        DhLog.i("surface: card released type=${h.card.type} reason=${u.reason} tbt=$tbt after=${(now - h.sinceMs) / 1000}s")
+                        _state.update { s -> s.copy(released = s.released + 1) }
+                    }
+                    if (post(h.card, h.event, now)) posted += id
                 }
                 "burst" -> gate.putBack(h)
                 else -> skip(limited, h.event)
             }
         }
         if (gate.heldCount > 0) ensureRecheck()
+        return posted
     }
 
     /** 미룬 카드가 있으면 재확인 루프를 띄운다 — [mutex] 안에서 부른다 */

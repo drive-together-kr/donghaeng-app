@@ -23,8 +23,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 알림 카드 TBT 게이트 (docs/05 §5.2, 사용자 지시 2026-10-28) — 회전 300 m 이내면 미루고 회전 후 올림, 모르면 즉시, 120초 폐기,
- * 미룬 동안만 1초마다 TBT 재조회, PANEL 모드면 카드 없음. 게이트(순수) + 알림기(가상 시간) + 조회기(디버그 덮어쓰기).
+ * 알림 카드 TBT 게이트 (docs/05 §5.2, 사용자 지시 2026-10-28) — 회전 300 m 이내면 미루고 다음 회전이 300 m 밖이 되면(또는 안내 끝) 올림,
+ * 연속 회전은 계속 미룸, 미룬 카드가 없을 때 모르면 즉시·있으면 '모름' 3번 연달아 와야 놓음, 120초 폐기, 미룬 동안만 1초마다 TBT 재조회,
+ * 줄이 있으면 새 카드도 줄 끝(빈도 한도에 걸려도 버리지 않음), PANEL 모드면 카드 없음. 게이트(순수) + 알림기(가상 시간) + 조회기(디버그 덮어쓰기).
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class TurnCardGateTest {
@@ -52,39 +53,56 @@ class TurnCardGateTest {
         assertTrue("같은 회전에 다가가는 중", g.observe(ahead(180), 1_000).released.isEmpty())
         assertTrue(g.observe(ahead(40), 2_000).released.isEmpty())
         assertEquals(1, g.heldCount)
+        assertTrue(g.isHolding("e1"))
         val u = g.observe(ahead(301), 3_000)
         assertEquals(listOf("HARD_BRAKE"), u.released.map { it.card.type })
         assertEquals("far", u.reason)
         assertEquals(0, g.heldCount)
+        assertFalse(g.isHolding("e1"))
     }
 
     @Test
-    fun `a changed turn kind or description means the turn was passed, distance jitter does not but a jump does`() {
+    fun `a passed turn followed by another turn within 300 m keeps holding - only a far next turn releases`() {
+        // impl_03 처럼 회전이 이어지는 길: 80 m 좌회전 → (지남) 다음 280 m → (지남) 다음 130 m → 그다음 900 m
         val g = TurnCardGate()
-        g.observe(ahead(200, "TURN_RIGHT", "A 방면"), 0)
-        g.hold(card("LOW_ENERGY"), ev("e1", "LOW_ENERGY"), 0)
-        val changed = g.observe(ahead(150, "TURN_LEFT", "B 방면"), 1_000)
-        assertEquals("turn-changed", changed.reason)
-        assertEquals(1, changed.released.size)
+        g.observe(ahead(80, "TURN_LEFT", "기업지원허브 방면"), 0)
+        g.hold(card("HARD_BRAKE"), ev("e1", "HARD_BRAKE"), 0)
 
-        // 바뀐 회전도 300 m 안 → 새 카드는 그 회전을 기준으로 붙잡는다
-        g.hold(card("HARD_BRAKE"), ev("e2", "HARD_BRAKE"), 1_000)
-        assertTrue(g.observe(ahead(120, "TURN_LEFT", "B 방면"), 2_000).released.isEmpty())
-        assertTrue("거리 흔들림(+50 m 이하)은 같은 회전", g.observe(ahead(170, "TURN_LEFT", "B 방면"), 3_000).released.isEmpty())
-        val jump = g.observe(ahead(260, "TURN_LEFT", "B 방면"), 4_000)
-        assertEquals("같은 문구의 연속 회전 — 거리가 크게 늘면 앞 회전을 지났다", "distance-jump", jump.reason)
-        assertEquals(listOf("HARD_BRAKE"), jump.released.map { it.card.type })
+        val chained = g.observe(ahead(280, "TURN_LEFT", "강릉항 방면"), 1_000)
+        assertTrue("회전이 바뀌었어도 다음 회전이 300 m 안이면 그 TBT 를 가리지 않게 계속 붙잡는다", chained.released.isEmpty())
+        assertNull(chained.reason)
+        assertTrue("연속 회전은 로그로 알린다", chained.turnChanged)
+        assertFalse("같은 회전에 다가가는 중이면 바뀐 게 아니다", g.observe(ahead(200, "TURN_LEFT", "강릉항 방면"), 2_000).turnChanged)
+
+        val jump = g.observe(ahead(260, "TURN_LEFT", "강릉항 방면"), 3_000)
+        assertTrue("같은 문구의 연속 회전으로 거리가 늘어도 300 m 안이면 계속", jump.released.isEmpty())
+        assertTrue(g.observe(ahead(130, "TURN_RIGHT", "창해로 방면"), 4_000).released.isEmpty())
+        assertEquals(1, g.heldCount)
+
+        val far = g.observe(ahead(900, "TURN_STRAIGHT", "경포 방면"), 5_000)
+        assertEquals(listOf("HARD_BRAKE"), far.released.map { it.card.type })
+        assertEquals("far", far.reason)
+        assertFalse(far.turnChanged)
     }
 
     @Test
-    fun `guidance ending and an unknown TBT both release held cards`() {
+    fun `guidance ending releases at once, but an unknown TBT releases only after 3 in a row`() {
         val g = TurnCardGate()
         g.observe(ahead(100), 0)
         g.hold(card("HARD_BRAKE"), ev("e1", "HARD_BRAKE"), 0)
         assertEquals("no-guidance", g.observe(NextTurnResult.NoGuidance, 1_000).reason)
+        assertEquals(0, g.heldCount)
+
         g.observe(ahead(100), 2_000)
         g.hold(card("HARD_BRAKE"), ev("e2", "HARD_BRAKE"), 2_000)
-        assertEquals("unknown", g.observe(NextTurnResult.Unknown, 3_000).reason)
+        assertTrue("한 번 늦은 응답으로 회전 직전에 놓지 않는다", g.observe(NextTurnResult.Unknown, 3_000).released.isEmpty())
+        assertTrue(g.observe(NextTurnResult.Unknown, 4_000).released.isEmpty())
+        assertTrue("사이에 값이 오면 다시 센다", g.observe(ahead(90), 5_000).released.isEmpty())
+        assertTrue(g.observe(NextTurnResult.Unknown, 6_000).released.isEmpty())
+        assertTrue(g.observe(NextTurnResult.Unknown, 7_000).released.isEmpty())
+        val u = g.observe(NextTurnResult.Unknown, 8_000)
+        assertEquals("unknown", u.reason)
+        assertEquals(listOf("HARD_BRAKE"), u.released.map { it.card.type })
         assertEquals(0, g.heldCount)
     }
 
@@ -97,6 +115,8 @@ class TurnCardGateTest {
         val replaced = g.hold(card("LOW_ENERGY", "둘째"), ev("e3", "LOW_ENERGY"), 1_000)
         assertEquals("첫째", replaced!!.card.title)
         assertEquals(listOf("LOW_ENERGY", "HARD_BRAKE"), g.heldTypes())
+        assertFalse(g.isHolding("e1"))
+        assertTrue(g.isHolding("e3"))
         val out = g.observe(ahead(900), 2_000).released
         assertEquals(listOf("둘째", "HARD_BRAKE 문구"), out.map { it.card.title })
 
@@ -162,7 +182,26 @@ class TurnCardGateTest {
     }
 
     @Test
-    fun `an unknown, missing or far TBT posts the card at once`() = runTest {
+    fun `chained turns keep the card held - the TBT of the next near turn is not covered`() = runTest {
+        // 리뷰 재현: 80 m 회전 앞에서 미룬 카드가, 회전을 지나 다음 회전 280 m 를 읽었을 때 그 TBT 위로 올라가면 안 된다
+        val r = Rig(this, reading = ahead(80, "TURN_LEFT", "기업지원허브 방면"))
+        assertEquals(CardOutcome.DEFERRED, r.notifier.onEvent(ev("e1", "HARD_BRAKE")))
+        r.reading = ahead(280, "TURN_LEFT", "강릉항 방면")
+        advanceTimeBy(1_000); runCurrent()
+        assertTrue(r.posted.isEmpty())
+        assertEquals("같은 읽기에서 새 카드도 미룬다 — 옛 카드만 올리는 모순 없음", CardOutcome.DEFERRED, r.notifier.onEvent(ev("e2", "LOW_ENERGY", source = "veh_B")))
+        assertTrue(r.posted.isEmpty())
+        assertEquals(2, r.notifier.state.value.held)
+
+        r.reading = ahead(700, "TURN_STRAIGHT", "경포 방면")
+        advanceTimeBy(1_000); runCurrent()
+        assertEquals("미룬 순서대로", listOf("HARD_BRAKE", "LOW_ENERGY"), r.posted.map { it.type })
+        assertEquals(0, r.notifier.state.value.held)
+        assertEquals(2, r.notifier.state.value.released)
+    }
+
+    @Test
+    fun `an unknown, missing or far TBT posts the card at once when nothing is held`() = runTest {
         val r = Rig(this)
         assertEquals("타임아웃·미지원 → 즉시", CardOutcome.POSTED, r.notifier.onEvent(ev("e1", "HARD_BRAKE")))
         advanceTimeBy(6_000)
@@ -175,6 +214,19 @@ class TurnCardGateTest {
         assertEquals(0, r.notifier.state.value.deferred)
         advanceTimeBy(10_000); runCurrent()
         assertEquals("미룬 게 없으면 재조회 없음", 3, r.lookups)
+    }
+
+    @Test
+    fun `while a card is held one slow TBT answer neither posts the held card nor the new one - three in a row do`() = runTest {
+        val r = Rig(this, reading = ahead(120))
+        assertEquals(CardOutcome.DEFERRED, r.notifier.onEvent(ev("e1", "HARD_BRAKE")))
+        r.reading = NextTurnResult.Unknown // 교차로 재탐색 등으로 0.8 s 안에 답이 없다
+        assertEquals("미룬 카드가 있으면 모름이어도 줄 끝에", CardOutcome.DEFERRED, r.notifier.onEvent(ev("e2", "LOW_ENERGY", source = "veh_B")))
+        advanceTimeBy(1_000); runCurrent()
+        assertTrue("모름 2번 — 아직 회전 직전일 수 있다", r.posted.isEmpty())
+        advanceTimeBy(1_000); runCurrent()
+        assertEquals("모름 3번 연달아 → 놓는다", listOf("HARD_BRAKE", "LOW_ENERGY"), r.posted.map { it.type })
+        assertEquals(0, r.notifier.state.value.held)
     }
 
     @Test
@@ -212,7 +264,7 @@ class TurnCardGateTest {
     }
 
     @Test
-    fun `held cards go out before a new one after the turn, same type keeps the newest, and the 5 s burst limit still applies`() = runTest {
+    fun `after the turn held cards go out first, a new card queues behind them instead of being lost to the 5 s burst limit`() = runTest {
         val r = Rig(this, reading = ahead(200))
         assertEquals(CardOutcome.DEFERRED, r.notifier.onEvent(ev("e1", "LOW_ENERGY", speech = "첫째")))
         assertEquals("같은 종류는 바꿔 넣는다", CardOutcome.DEFERRED, r.notifier.onEvent(ev("e2", "LOW_ENERGY", speech = "둘째")))
@@ -220,18 +272,45 @@ class TurnCardGateTest {
         assertEquals(CardOutcome.DEFERRED, r.notifier.onEvent(ev("e4", "WAYPOINT_ARRIVED")))
         assertEquals(3, r.notifier.state.value.held)
 
-        // 회전을 지난 뒤 새 소식이 오면: 미룬 카드가 먼저 나가고(5초에 2장), 새 카드는 한도에 걸린다
+        // 회전을 지난 뒤 새 소식이 오면: 미룬 카드가 먼저 나가고(5초에 2장), 한도에 걸린 미룬 카드와 새 카드는 줄에서 기다린다
         r.reading = ahead(800, "TURN_LEFT", "다음 길")
-        assertEquals(CardOutcome.SKIPPED, r.notifier.onEvent(ev("e5", "MEMBER_JOINED", source = "veh_B")))
+        assertEquals(CardOutcome.DEFERRED, r.notifier.onEvent(ev("e5", "MEMBER_JOINED", source = "veh_B")))
         assertEquals(listOf("둘째", "HARD_BRAKE 문구"), r.posted.map { it.title })
-        assertEquals(1, r.notifier.state.value.skipped["burst"])
-        assertEquals("한도에 걸린 미룬 카드는 다시 기다린다", 1, r.notifier.state.value.held)
+        assertEquals("버린 카드 없음", null, r.notifier.state.value.skipped["burst"])
+        assertEquals(2, r.notifier.state.value.held)
+
+        // 줄이 있는 동안 한도에 걸린 또 다른 새 카드도 버리지 않고 줄 끝에
+        assertEquals(CardOutcome.DEFERRED, r.notifier.onEvent(ev("e6", "DESTINATION_ARRIVED", source = "veh_C")))
+        assertEquals(3, r.notifier.state.value.held)
 
         advanceTimeBy(4_000); runCurrent()
         assertEquals(2, r.posted.size)
         advanceTimeBy(1_000); runCurrent()
-        assertEquals(listOf("LOW_ENERGY", "HARD_BRAKE", "WAYPOINT_ARRIVED"), r.posted.map { it.type })
+        assertEquals(listOf("LOW_ENERGY", "HARD_BRAKE", "WAYPOINT_ARRIVED", "MEMBER_JOINED"), r.posted.map { it.type })
+        advanceTimeBy(5_000); runCurrent()
+        assertEquals("미룬 순서대로 모두 나간다", listOf("LOW_ENERGY", "HARD_BRAKE", "WAYPOINT_ARRIVED", "MEMBER_JOINED", "DESTINATION_ARRIVED"), r.posted.map { it.type })
         assertEquals(0, r.notifier.state.value.held)
+        assertTrue(r.notifier.state.value.skipped.isEmpty())
+    }
+
+    @Test
+    fun `a same-type card arriving at release time replaces the held one, so the newest is shown`() = runTest {
+        val r = Rig(this, reading = ahead(150))
+        assertEquals(CardOutcome.DEFERRED, r.notifier.onEvent(ev("e1", "LOW_ENERGY", source = "veh_B", speech = "20%")))
+        r.reading = ahead(900)
+        assertEquals(CardOutcome.POSTED, r.notifier.onEvent(ev("e2", "LOW_ENERGY", source = "veh_B", speech = "12%")))
+        assertEquals(listOf("12%"), r.posted.map { it.title })
+        assertEquals("새 카드는 미룬 적이 없으니 released 로 세지 않는다", 0, r.notifier.state.value.released)
+        assertEquals(0, r.notifier.state.value.held)
+    }
+
+    @Test
+    fun `with nothing held a burst-limited card is still skipped (5 s, 2 cards)`() = runTest {
+        val r = Rig(this, reading = ahead(900))
+        assertEquals(CardOutcome.POSTED, r.notifier.onEvent(ev("e1", "LOW_ENERGY")))
+        assertEquals(CardOutcome.POSTED, r.notifier.onEvent(ev("e2", "HARD_BRAKE")))
+        assertEquals(CardOutcome.SKIPPED, r.notifier.onEvent(ev("e3", "MEMBER_JOINED", source = "veh_B")))
+        assertEquals(1, r.notifier.state.value.skipped["burst"])
     }
 
     // ------------------------------------------------------------------ 조회기

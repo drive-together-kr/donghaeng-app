@@ -11,27 +11,36 @@ import kotlin.coroutines.cancellation.CancellationException
  * 알림 카드 TBT 게이트 (docs/05 §5.2, 사용자 지시 2026-10-28) — 순수 클래스(시계·TBT 조회·게시는 [EventCardNotifier] 가 넘긴다, `TurnCardGateTest`).
  *
  * 헤드업 카드는 순정 내비 상단의 회전 안내(TBT) 위에 겹친다. 그래서 '카드 + 음성' 모드에서도 다음 회전까지 [nearM](300 m) 이내면
- * 카드를 미루고(음성은 VoiceAnnouncer 가 이미 읽었다) **회전 후**에 올린다.
- * - 미루기([hold]): 새 카드 직전에 읽은 TBT 가 [nearM] 이내([isNear]). 같은 종류는 최신 1장만 남긴다(같은 알림 id 로 교체되는 카드와 같은 규칙).
- * - 놓기([observe] — 미룬 동안 1초마다 다시 읽은 TBT 로): ① 거리 > [nearM] ② 회전 종류·문구가 바뀜 ③ 같은 종류·문구인데 거리가 [passedJumpM] 넘게
- *   늘어남(같은 문구가 이어지는 연속 회전) ④ TBT 없음(안내 끝) ⑤ 모름(타임아웃·미지원 — TBT 를 모르면 카드는 바로 뜬다는 규칙과 같다).
+ * 카드를 미루고(음성은 VoiceAnnouncer 가 이미 읽었다) **회전 후**에 올린다. 규칙의 기준은 '지금 읽은 다음 회전이 300 m 안인가' 하나다.
+ * - 미루기([hold]): 새 카드 직전에 읽은 TBT 가 [nearM] 이내([isNear])이거나, 이미 미룬 카드가 있다(줄 끝에 선다). 같은 종류는 최신 1장만 남긴다
+ *   (같은 알림 id 로 교체되는 카드와 같은 규칙).
+ * - 놓기([observe] — 미룬 동안 1초마다 다시 읽은 TBT 로): ① 다음 회전이 [nearM] 밖(far) ② TBT 없음(안내 끝, no-guidance)
+ *   ③ 모름이 [unknownReleaseCount]번 연달아(unknown — 한 번 늦은 응답으로 회전 직전에 카드가 뜨지 않게. 처음 판단에서 모르면 바로 띄우는 규칙과는 따로다).
+ * - 회전을 지났어도 **바뀐 다음 회전이 다시 [nearM] 안이면 계속 붙잡는다**(연속 회전 — 놓으면 그 회전의 TBT 를 가린다). 이때 [Update.turnChanged] 로 알린다(로그용).
+ *   연속 회전이 길게 이어지면 아래 120초 폐기가 막는다.
  * - 버리기: [maxDeferMs](120초) 넘게 미뤄진 카드 — 그만큼 지난 소식은 음성으로 이미 들었고 카드로 띄우기엔 늦다.
  */
 class TurnCardGate(
     private val nearM: Int = NEAR_M,
     private val maxDeferMs: Long = MAX_DEFER_MS,
-    private val passedJumpM: Int = PASSED_JUMP_M,
+    private val unknownReleaseCount: Int = UNKNOWN_RELEASE_COUNT,
 ) {
     /** 미룬 카드 한 장 — [sinceMs] 는 처음 미룬 시각(같은 종류로 바뀌면 새 카드의 시각) */
     data class Held(val card: EventCard, val event: ReceivedGroupEvent, val sinceMs: Long)
 
-    /** TBT 를 한 번 읽고 정리한 결과 — [reason] 은 놓은 이유(놓은 게 없으면 null): far / turn-changed / distance-jump / no-guidance / unknown */
-    data class Update(val released: List<Held>, val expired: List<Held>, val reason: String?)
+    /**
+     * TBT 를 한 번 읽고 정리한 결과 — [reason] 은 놓은 이유(놓은 게 없으면 null): far / no-guidance / unknown.
+     * [turnChanged] = 붙잡던 회전이 다른 회전으로 바뀌었지만 그 회전도 [nearM] 안이라 계속 붙잡는다(연속 회전, 로그용).
+     */
+    data class Update(val released: List<Held>, val expired: List<Held>, val reason: String?, val turnChanged: Boolean = false)
 
     private val held = LinkedHashMap<String, Held>()
 
-    /** 지금 붙잡고 있는 회전(가장 최근에 읽은 [nearM] 이내 TBT) — 다음 읽기와 비교해 '회전 후'를 판단한다 */
+    /** 지금 붙잡고 있는 회전(가장 최근에 읽은 [nearM] 이내 TBT) — 바뀌었는지는 로그에만 쓴다 */
     private var reference: NextTurn? = null
+
+    /** 연달아 '모름'을 읽은 횟수 — 다른 값을 읽으면 0 */
+    private var unknownStreak = 0
 
     /** 마지막으로 읽은 TBT(디버그 `surface` 한 줄) */
     var lastReading: NextTurnResult? = null
@@ -41,23 +50,32 @@ class TurnCardGate(
 
     fun heldTypes(): List<String> = held.keys.toList()
 
+    /** [eventId] 카드가 아직 미뤄져 있는지 */
+    fun isHolding(eventId: String): Boolean = held.values.any { it.event.event.eventId == eventId }
+
     fun isNear(reading: NextTurnResult): Boolean = reading is NextTurnResult.Ahead && reading.turn.distanceM <= nearM
 
     /**
-     * 새로 읽은 TBT 반영: 오래된 카드는 버리고, 회전을 지났으면 미룬 카드를 모두 놓는다. 그 뒤 [reading] 이 [nearM] 이내면 그 회전을 붙잡는다.
-     * 새 카드가 왔을 때도 먼저 이걸 부른다 — 이미 미뤄 둔 카드가 새 카드보다 먼저 나가게.
+     * 새로 읽은 TBT 반영: 오래된 카드는 버리고, 놓을 조건(far·no-guidance·연속 unknown)이면 미룬 카드를 모두(미룬 순서대로) 놓는다.
+     * 새 카드가 왔을 때는 [hold] 로 줄에 세운 뒤 이걸 부른다 — 이미 미뤄 둔 카드가 새 카드보다 먼저 나가게.
      */
     fun observe(reading: NextTurnResult, nowMs: Long): Update {
         lastReading = reading
+        unknownStreak = if (reading == NextTurnResult.Unknown) unknownStreak + 1 else 0
         val expired = held.values.filter { nowMs - it.sinceMs > maxDeferMs }
         expired.forEach { held.remove(it.card.type) }
-        val reason = passedReason(reading)
+        val reason = releaseReason(reading)
+        val turnChanged = reason == null && held.isNotEmpty() && changedTurn(reading)
         val released = if (reason != null && held.isNotEmpty()) held.values.toList().also { held.clear() } else emptyList()
-        reference = (reading as? NextTurnResult.Ahead)?.turn?.takeIf { it.distanceM <= nearM }
-        return Update(released, expired, reason.takeIf { released.isNotEmpty() })
+        reference = when (reading) {
+            is NextTurnResult.Ahead -> reading.turn.takeIf { it.distanceM <= nearM }
+            NextTurnResult.Unknown -> reference // 모르는 동안은 붙잡던 회전을 그대로 기억한다
+            NextTurnResult.NoGuidance -> null
+        }
+        return Update(released, expired, reason.takeIf { released.isNotEmpty() }, turnChanged)
     }
 
-    /** 카드를 미룬다(호출 쪽이 [isNear] 를 먼저 확인). 같은 종류가 있으면 바꾸고 바뀐 옛 카드를 돌려준다 */
+    /** 카드를 미룬다. 같은 종류가 있으면 그 자리에서 바꾸고 바뀐 옛 카드를 돌려준다 */
     fun hold(card: EventCard, event: ReceivedGroupEvent, nowMs: Long): Held? = held.put(card.type, Held(card, event, nowMs))
 
     /** 놓았지만 아직 못 올린 카드(빈도 제한 burst)를 다시 넣는다 — 처음 미룬 시각 유지, 그새 같은 종류가 들어왔으면 새 것을 둔다 */
@@ -66,22 +84,18 @@ class TurnCardGate(
     }
 
     /** 모두 비운다(모드가 바뀌어 카드를 안 쓰게 됐을 때) — 비운 카드 */
-    fun clear(): List<Held> = held.values.toList().also { held.clear(); reference = null }
+    fun clear(): List<Held> = held.values.toList().also { held.clear(); reference = null; unknownStreak = 0 }
 
-    private fun passedReason(reading: NextTurnResult): String? = when (reading) {
-        NextTurnResult.Unknown -> "unknown"
+    private fun releaseReason(reading: NextTurnResult): String? = when (reading) {
+        NextTurnResult.Unknown -> "unknown".takeIf { unknownStreak >= unknownReleaseCount }
         NextTurnResult.NoGuidance -> "no-guidance"
-        is NextTurnResult.Ahead -> {
-            val t = reading.turn
-            val ref = reference
-            when {
-                t.distanceM > nearM -> "far"
-                ref == null -> null // 새로 가까워진 회전 — 붙잡는다
-                t.kind != ref.kind || t.description != ref.description -> "turn-changed"
-                t.distanceM > ref.distanceM + passedJumpM -> "distance-jump"
-                else -> null // 같은 회전에 다가가는 중
-            }
-        }
+        is NextTurnResult.Ahead -> "far".takeIf { reading.turn.distanceM > nearM }
+    }
+
+    private fun changedTurn(reading: NextTurnResult): Boolean {
+        val ref = reference ?: return false
+        val t = (reading as? NextTurnResult.Ahead)?.turn ?: return false
+        return t.kind != ref.kind || t.description != ref.description
     }
 
     companion object {
@@ -91,8 +105,11 @@ class TurnCardGate(
         /** 이보다 오래 미뤄진 카드는 버린다 */
         const val MAX_DEFER_MS = 120_000L
 
-        /** 같은 종류·문구인데 거리가 이만큼 넘게 늘면 앞 회전을 지난 것으로 본다(내비 거리 흔들림보다 크게) */
-        const val PASSED_JUMP_M = 50
+        /**
+         * 미룬 카드가 있을 때 '모름'이 이만큼 연달아 오면 놓는다(재확인 1초 + 조회 최대 0.8 s → 약 3~5초).
+         * 한 번의 타임아웃(내비 재탐색·바인더 지연)으로 회전 직전에 카드가 뜨지 않게 하면서, 내비가 아예 답을 못 하면 카드를 너무 오래 잡아 두지 않는다.
+         */
+        const val UNKNOWN_RELEASE_COUNT = 3
 
         /** 미룬 동안 TBT 를 다시 묻는 간격 */
         const val RECHECK_MS = 1_000L

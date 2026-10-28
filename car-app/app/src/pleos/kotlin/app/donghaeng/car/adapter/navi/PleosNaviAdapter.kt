@@ -24,11 +24,11 @@ import android.content.Context
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.model.Fix
 import app.donghaeng.car.domain.model.NaviEvent
-import app.donghaeng.car.domain.model.NextTurn
 import app.donghaeng.car.domain.model.NextTurnResult
 import app.donghaeng.car.domain.model.Place
 import app.donghaeng.car.domain.model.RouteState
 import app.donghaeng.car.domain.model.WaypointIndex
+import app.donghaeng.car.domain.model.nextTurnOf
 import app.donghaeng.car.domain.model.toLogString
 import app.donghaeng.protocol.LocSource
 import kotlinx.coroutines.CompletableDeferred
@@ -46,7 +46,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.cancellation.CancellationException
-import kotlin.math.roundToInt
 
 /**
  * Pleos NaviHelper 3.0.5 어댑터 (T20, docs/05 §3.1). SDK 타입은 이 파일 밖으로 나가지 않는다.
@@ -282,7 +281,7 @@ class PleosNaviAdapter(context: Context) : NaviAdapter {
 
     /**
      * 다음 회전 안내 — `getTBTInfo()` 를 부르고 `onTBTInfo(List<TBTInfo>)` 를 최대 [timeoutMs] 기다린다(첫 항목 = 다음 회전).
-     * 빈 목록 → [NextTurnResult.NoGuidance], 응답 없음·실패·이상한 거리 → [NextTurnResult.Unknown](카드는 바로 뜬다).
+     * 빈 목록 → [NextTurnResult.NoGuidance], 응답 없음·실패·이상한 거리·자리표시 항목(`TURN_UNKNOWN`·0 m 에 문구 없음, [nextTurnOf]) → [NextTurnResult.Unknown].
      * `TBTInfo.distance`(Double)는 단위가 문서·샘플에 없다 → **미터로 가정**([TBT_DISTANCE_TO_M]). 첫 응답의 원값은 info 로 한 번,
      * 그 뒤는 debug 로 남겨 기기에서 단위를 확인한다(같은 때의 `onTripInfo distance`(m)·내비 화면 TBT 숫자와 비교).
      */
@@ -303,10 +302,12 @@ class PleosNaviAdapter(context: Context) : NaviAdapter {
         }
         val first = list.firstOrNull() ?: return NextTurnResult.NoGuidance
         val raw = first.distance
-        if (tbtRawLogged.compareAndSet(false, true)) DhLog.i("navi tbt 첫 응답 n=${list.size} type=${first.type.name} rawDistance=$raw (단위 미터로 가정 — 확인용)")
-        else DhLog.d("navi tbt n=${list.size} type=${first.type.name} rawDistance=$raw")
-        if (raw.isNaN() || raw < 0) return NextTurnResult.Unknown
-        return NextTurnResult.Ahead(NextTurn(distanceM = (raw * TBT_DISTANCE_TO_M).roundToInt(), kind = first.type.name, description = first.description))
+        // 문구 원문은 남기지 않고 길이만(자리표시 항목 확인용)
+        val desc = if (first.description.isBlank()) "blank" else "len=${first.description.length}"
+        if (tbtRawLogged.compareAndSet(false, true)) DhLog.i("navi tbt 첫 응답 n=${list.size} type=${first.type.name} rawDistance=$raw desc=$desc (단위 미터로 가정 — 확인용)")
+        else DhLog.d("navi tbt n=${list.size} type=${first.type.name} rawDistance=$raw desc=$desc")
+        // NaN·음수·자리표시 항목(TURN_UNKNOWN·0 m·문구 없음)은 모름 — nextTurnOf 참고
+        return nextTurnOf(kind = first.type.name, distanceM = raw * TBT_DISTANCE_TO_M, description = first.description)
     }
 
     /**
