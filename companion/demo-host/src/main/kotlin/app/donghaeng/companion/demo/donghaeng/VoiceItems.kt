@@ -60,8 +60,17 @@ object VoiceEvents {
     /** 목록에 남길 최대 개수(최신부터) */
     const val MAX_ITEMS = 20
 
-    /** `VOICE_MESSAGE` → 목록 항목. 다른 종류·형식 오류면 null. 보낸 차 이름·색은 스냅샷 멤버 → 합류 때 멤버 → 음성 문구 순으로 찾는다 */
-    fun toItem(event: GroupEvent, members: List<MemberState>, group: ActiveGroup?, nowMs: Long = System.currentTimeMillis()): VoiceItem? {
+    /**
+     * 서버 `recentEvents` 밖으로 밀려난 무전만 폰 시계로 보관 끝을 판정할 때 두는 여유 — 폰 시계와 서버 시계가 조금 어긋나도 일찍 끝나 보이지 않게.
+     * 실제 파일은 모듈이 서버 시계로 만료 때 지운다(그 사이 [재생] 을 누르면 VoicePlayer 가 "보관 기간이 지났거나…" 로 안내).
+     */
+    const val CARRIED_EXPIRY_GRACE_MS = 60L * 60 * 1000
+
+    /**
+     * `VOICE_MESSAGE` → 목록 항목. 다른 종류·형식 오류면 null. 보낸 차 이름·색은 스냅샷 멤버 → 합류 때 멤버 → 음성 문구 순으로 찾는다.
+     * 상태는 모듈이 서버 시계로 정한 `localAudioStatus` 그대로다(폰 시계로 다시 판정하지 않는다).
+     */
+    fun toItem(event: GroupEvent, members: List<MemberState>, group: ActiveGroup?): VoiceItem? {
         if (event.eventType != GroupEventType.VOICE_MESSAGE) return null
         val payload = runCatching { DhJson.payloadAs(event.payload, VoiceMessagePayload.serializer()) }.getOrNull() ?: return null
         val statusText = (event.payload[KEY_STATUS] as? JsonPrimitive)?.contentOrNull
@@ -82,22 +91,31 @@ object VoiceEvents {
             status = if (status == VoiceAudioStatus.READY && path == null) VoiceAudioStatus.PENDING else status,
             localPath = path,
             expiresAtMs = payload.expiresAtMs,
-            sentAtMs = (payload.expiresAtMs - RETENTION_MS).coerceAtMost(nowMs),
+            // 서버 시계 그대로(폰 시계로 자르지 않는다 — 정렬이 어긋나지 않게). "n분 전" 표시는 relativeTime 이 음수를 0 으로 본다
+            sentAtMs = payload.expiresAtMs - RETENTION_MS,
             mine = source != null && source == group?.myVehicleId,
         )
     }
 
     /**
      * 지금까지의 목록([existing])에 새 스냅샷의 무전([incoming])을 합친다 — 같은 eventId 는 새 상태로 바꾸고, 최신(보낸 시각)부터 [MAX_ITEMS] 개.
-     * 서버 `recentEvents`(최대 20) 밖으로 밀려난 무전은 마지막 상태를 유지하되, 만료 시각이 지났거나 그룹이 끝났으면 EXPIRED 로 바꾼다.
+     * - [incoming](이번 스냅샷에 있는 무전): 모듈이 **서버 시계**(응답 Date 헤더)로 정한 상태를 그대로 쓴다 — 폰 시계가 틀려도 READY 를 EXPIRED 로 덮지 않는다(docs/07 §3.1).
+     * - 서버 `recentEvents`(최대 20) 밖으로 밀려난 무전: 모듈이 더는 상태를 주지 않으므로 마지막 상태를 유지하되, 그룹이 끝났거나
+     *   폰 시계로 만료 시각 + [CARRIED_EXPIRY_GRACE_MS] 가 지났으면 EXPIRED 로 바꾼다.
+     * - 그룹 종료면 모두 EXPIRED(모듈도 그 그룹 파일을 지운다).
      */
     fun merge(existing: List<VoiceItem>, incoming: List<VoiceItem>, groupEnded: Boolean, nowMs: Long = System.currentTimeMillis()): List<VoiceItem> {
+        val fresh = incoming.mapTo(HashSet()) { it.eventId }
         val byId = LinkedHashMap<String, VoiceItem>()
         existing.forEach { byId[it.eventId] = it }
         incoming.forEach { byId[it.eventId] = it }
         return byId.values
             .map { item ->
-                val gone = groupEnded || nowMs >= item.expiresAtMs
+                val gone = when {
+                    groupEnded -> true
+                    item.eventId in fresh -> false
+                    else -> nowMs >= item.expiresAtMs + CARRIED_EXPIRY_GRACE_MS
+                }
                 if (gone && item.status != VoiceAudioStatus.EXPIRED) item.copy(status = VoiceAudioStatus.EXPIRED, localPath = null) else item
             }
             .sortedByDescending { it.sentAtMs }

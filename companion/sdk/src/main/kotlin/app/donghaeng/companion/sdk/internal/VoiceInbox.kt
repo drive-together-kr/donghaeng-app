@@ -6,8 +6,11 @@ import app.donghaeng.protocol.GroupEvent
 import app.donghaeng.protocol.GroupEventType
 import app.donghaeng.protocol.VoiceMessagePayload
 import app.donghaeng.protocol.rest.ApiPaths
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import java.io.File
@@ -88,16 +91,23 @@ internal object VoiceMessages {
  * - 저장 위치: `{java.io.tmpdir}/donghaeng-voice/{groupId}/{voiceId}.{m4a|aac|wav}`. 안드로이드는 앱 시작 때 `java.io.tmpdir` 를
  *   앱 전용 캐시 디렉터리(`Context.getCacheDir()`)로 맞춰 두므로 모듈이 Context 없이도 앱 전용 저장소에 쓴다(다른 앱은 못 읽는다).
  *   프로세스가 다시 떠도 파일이 있으면 다시 받지 않는다.
- * - 만료: **서버 시계** 기준 `expiresAtMs` 가 지나면 EXPIRED + 파일 삭제. 서버 시계는 응답 `Date` 헤더로 맞춘다([observeServerDate]) —
- *   폰 시계가 틀려도 서버 보관 기간과 어긋나지 않게. 404 도 EXPIRED(서버: 만료·삭제 404).
+ * - 스레드: 파일 작업(쓰기·이름 바꾸기·목록·삭제)과 내려받기는 모두 [ioDispatcher](기본 `Dispatchers.IO`)에서 돈다 —
+ *   호스트가 `observeGroup` 을 메인 스레드(`viewModelScope` 등)에서 수집해도 메인에서 디스크를 건드리지 않는다.
+ * - 만료: **서버 시계** 기준 `expiresAtMs` 가 지나면 EXPIRED + 그 캐시 경로의 파일 삭제(이전 프로세스가 받아 둔 파일 포함).
+ *   서버 시계는 응답 `Date` 헤더로 맞춘다([observeServerDate]) — 폰 시계가 틀려도 서버 보관 기간과 어긋나지 않게. 404 도 EXPIRED(서버: 만료·삭제 404).
+ *   한 번 본 무전은 서버 `recentEvents`(최근 20건) 밖으로 밀려나도 폴링마다 만료를 확인해 지운다([housekeeping]).
  * - 그룹 종료: 그룹 상태가 `ENDED` 이거나 이벤트에 `GROUP_ENDED` 가 보이면 그 그룹 파일을 바로 지운다(서버가 그룹 종료 때 무전을 지우는 것과 같은 원칙).
  *   그룹을 더 볼 수 없게 되면(나간 뒤 404) 전송 계층이 [forgetGroup] 으로 지운다.
+ * - 더 보지 않는 그룹(앱을 다시 띄운 뒤 그 그룹을 관찰하지 않음 등)은 종료를 알 수 없으므로 **시간 기준으로** 지운다:
+ *   이벤트와 상관없이 첫 처리(폴링 또는 [housekeeping]) 때와 그 뒤 [sweepIntervalMs](기본 1시간)마다, 받은 지 25시간 넘은 파일·
+ *   1분 넘게 남은 `.part`·빈 폴더를 지운다. 전체가 [maxFiles] 개를 넘으면 오래된 것부터 지운다.
  * - 한 번 폴링에 최대 [maxDownloadsPerPoll] 개(최신부터)만 받는다 — 나머지는 PENDING 으로 다음 폴링에. 일시 오류는 [maxAttempts] 번까지.
- * - 디스크: 시작 후 첫 처리 때 하루 넘은 파일을 지우고, 전체가 [maxFiles] 개를 넘으면 오래된 것부터 지운다.
  * - 로그: voiceId·크기·길이·상태만(닉네임·토큰·내용 없음, CLAUDE.md 규칙 8).
  *
  * @param rootDir 캐시 루트(테스트에서 임시 폴더로 바꾼다)
  * @param clock 이 기기 시각(ms)
+ * @param ioDispatcher 파일 작업·내려받기를 돌릴 디스패처(테스트에서 바꿔 끼운다)
+ * @param sweepIntervalMs 시간 기준 파일 정리 간격
  */
 internal class VoiceInbox(
     private val rootDir: File = defaultRoot(),
@@ -105,6 +115,8 @@ internal class VoiceInbox(
     private val maxDownloadsPerPoll: Int = 3,
     private val maxAttempts: Int = 3,
     private val maxFiles: Int = 30,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val sweepIntervalMs: Long = SWEEP_INTERVAL_MS,
 ) {
 
     /** 오디오 한 건 내려받기 결과 — 전송 계층([HttpDongHaengApi])이 만든다 */
@@ -118,13 +130,19 @@ internal class VoiceInbox(
         class Failed(val reason: String, val retryable: Boolean) : Fetch
     }
 
+    /**
+     * @param target 이 무전의 캐시 경로 — 받기 전에도 정해져 있다(만료 때 이전 프로세스가 받아 둔 파일도 이 경로로 지운다)
+     * @param file READY 일 때 [target] (아니면 null)
+     */
     private class Entry(
-        var status: VoiceMessages.Status,
-        var file: File?,
+        val target: File,
         val expiresAtMs: Long,
+        var status: VoiceMessages.Status = VoiceMessages.Status.PENDING,
+        var file: File? = null,
         var attempts: Int = 0,
     )
 
+    /** [entries]·[lastSweepMs]·캐시 폴더를 지킨다 */
     private val mutex = Mutex()
     private val entries = HashMap<String, Entry>()
 
@@ -132,8 +150,8 @@ internal class VoiceInbox(
     @Volatile
     private var serverOffsetMs: Long = 0L
 
-    @Volatile
-    private var swept = false
+    /** 마지막 시간 기준 정리 시각(이 기기 시계). null = 아직 안 함 */
+    private var lastSweepMs: Long? = null
 
     /** 서버 응답 `Date` 헤더(epoch ms, 초 단위 정밀도)로 서버 시계 차이를 맞춘다. null 이면 그대로 */
     fun observeServerDate(serverDateMs: Long?) {
@@ -146,7 +164,9 @@ internal class VoiceInbox(
 
     /**
      * [events](오래된 것부터) 중 `VOICE_MESSAGE` 에 상태를 붙여 돌려준다. 다른 이벤트·순서는 그대로다.
-     * 무전도 그룹 종료도 없으면 아무 일도 하지 않는다(파일 시스템을 건드리지 않음).
+     * 이벤트와 상관없이 먼저 [housekeeping] 몫(시간 기준 파일 정리·만료 항목 삭제)을 한다.
+     * 무전도 그룹 종료도 없으면 받은 [events] 를 그대로 돌려준다(새 파일을 만들거나 받지 않는다).
+     * 호출 스레드와 무관하게 [ioDispatcher] 에서 돈다.
      *
      * @param groupEnded 서버 그룹 상태가 `ENDED`(이벤트 `GROUP_ENDED` 가 최근 20건 밖으로 밀려나도 종료를 안다)
      * @param fetch [VoiceMessages.downloadPath] 경로를 받아 오디오를 내려받는다(인증·401 재교환은 전송 계층 몫)
@@ -156,11 +176,11 @@ internal class VoiceInbox(
         events: List<GroupEvent>,
         groupEnded: Boolean = false,
         fetch: suspend (path: String) -> Fetch,
-    ): List<GroupEvent> {
-        val ended = groupEnded || events.any { it.type == GroupEventType.GROUP_ENDED.name }
-        if (!ended && events.none(VoiceMessages::isVoice)) return events
-        return mutex.withLock {
-            sweepOnce()
+    ): List<GroupEvent> = withContext(ioDispatcher) {
+        mutex.withLock {
+            housekeepingLocked()
+            val ended = groupEnded || events.any { it.type == GroupEventType.GROUP_ENDED.name }
+            if (!ended && events.none(VoiceMessages::isVoice)) return@withLock events
             if (!VoiceMessages.isSafeId(groupId)) {
                 Log.w(TAG, "voice: unsafe groupId — skip download")
                 return@withLock events.map { if (VoiceMessages.isVoice(it)) VoiceMessages.annotate(it, VoiceMessages.Status.FAILED) else it }
@@ -183,14 +203,14 @@ internal class VoiceInbox(
                     continue
                 }
                 val key = "$groupId/${payload.voiceId}"
-                val entry = entries.getOrPut(key) { Entry(VoiceMessages.Status.PENDING, null, payload.expiresAtMs) }
+                val entry = entries.getOrPut(key) { Entry(fileFor(groupId, payload), payload.expiresAtMs) }
                 when {
                     ended -> expire(key, entry, "group_ended")
                     now >= payload.expiresAtMs -> expire(key, entry, "clock")
                     entry.status == VoiceMessages.Status.READY && entry.file?.isFile == true -> Unit
                     entry.status == VoiceMessages.Status.EXPIRED || entry.status == VoiceMessages.Status.FAILED -> Unit
                     else -> {
-                        val file = fileFor(groupId, payload)
+                        val file = entry.target
                         if (file.isFile && file.length() > 0) {
                             // 이전 프로세스가 받아 둔 파일
                             entry.status = VoiceMessages.Status.READY
@@ -205,9 +225,35 @@ internal class VoiceInbox(
                 }
                 out[i] = VoiceMessages.annotate(event, entry.status, entry.file)
             }
-            pruneEntries(now)
             out.map { requireNotNull(it) }
         }
+    }
+
+    /**
+     * 이벤트·폴링과 무관한 정리 — 시간 기준 파일 정리(첫 호출 + [sweepIntervalMs] 마다)와, 한 번 본 무전 중 서버 시계로 만료된 것의 파일 삭제.
+     * [resolve] 가 폴링마다 하고, 전송 계층은 폴링이 없을 때(내 차 목록 등)도 부른다. 다른 처리가 진행 중이면(그쪽이 하므로) 건너뛴다.
+     * 호출 스레드와 무관하게 [ioDispatcher] 에서 돈다.
+     */
+    suspend fun housekeeping() {
+        withContext(ioDispatcher) {
+            if (!mutex.tryLock()) return@withContext
+            try {
+                housekeepingLocked()
+            } finally {
+                mutex.unlock()
+            }
+        }
+    }
+
+    private fun housekeepingLocked() {
+        val now = clock()
+        val last = lastSweepMs
+        // 시계가 뒤로 가면(now < last) 다시 훑는다 — 그대로 두면 다음 정리가 한없이 밀린다
+        if (last == null || now - last >= sweepIntervalMs || now < last) {
+            lastSweepMs = now
+            sweepStaleFiles(now)
+        }
+        expireDueEntries(serverNow())
     }
 
     private suspend fun download(
@@ -257,20 +303,22 @@ internal class VoiceInbox(
         Log.w(TAG, "voice: download failed voiceId=$voiceId reason=$reason attempt=${entry.attempts}/$maxAttempts status=${entry.status}")
     }
 
+    /** EXPIRED 로 바꾸고 캐시 경로([Entry.target])의 파일을 지운다 — 받아 둔 것이 이 프로세스든 이전 프로세스든. 이미 EXPIRED 면 아무 일도 없다 */
     private fun expire(key: String, entry: Entry, basis: String) {
-        if (entry.status != VoiceMessages.Status.EXPIRED) {
-            Log.i(TAG, "voice: expired ${key.substringAfter('/')} basis=$basis")
-        }
-        entry.file?.delete()
+        if (entry.status == VoiceMessages.Status.EXPIRED) return
+        Log.i(TAG, "voice: expired ${key.substringAfter('/')} basis=$basis")
+        deleteQuietly(entry.target)
         entry.file = null
         entry.status = VoiceMessages.Status.EXPIRED
     }
 
-    /** 그룹을 더 볼 수 없음(나간 그룹 404 등) — 그 그룹의 캐시를 지운다 */
+    /** 그룹을 더 볼 수 없음(나간 그룹 404 등) — 그 그룹의 캐시를 지운다. 호출 스레드와 무관하게 [ioDispatcher] 에서 돈다 */
     suspend fun forgetGroup(groupId: String) {
         if (!VoiceMessages.isSafeId(groupId)) return
-        mutex.withLock {
-            if (File(rootDir, groupId).exists() || entries.keys.any { it.startsWith("$groupId/") }) purgeGroup(groupId)
+        withContext(ioDispatcher) {
+            mutex.withLock {
+                if (File(rootDir, groupId).exists() || entries.keys.any { it.startsWith("$groupId/") }) purgeGroup(groupId)
+            }
         }
     }
 
@@ -279,23 +327,24 @@ internal class VoiceInbox(
         val dir = File(rootDir, groupId)
         val files = dir.listFiles().orEmpty()
         if (files.isNotEmpty()) Log.i(TAG, "voice: group ended or gone — delete files=${files.size}")
-        files.forEach { it.delete() }
-        dir.delete()
+        files.forEach { deleteQuietly(it) }
+        deleteQuietly(dir)
         entries.filterKeys { it.startsWith("$groupId/") }.forEach { (_, e) ->
             e.file = null
             e.status = VoiceMessages.Status.EXPIRED
         }
     }
 
-    /** 만료가 지난 항목은 상태 표에서 뺀다(파일은 [expire] 가 지움) */
-    private fun pruneEntries(now: Long) {
-        val it = entries.entries.iterator()
-        while (it.hasNext()) {
-            val e = it.next().value
-            if (now >= e.expiresAtMs + PRUNE_GRACE_MS) {
-                e.file?.delete()
-                it.remove()
-            }
+    /**
+     * 한 번 본 무전 중 서버 시계로 만료된 것 — `recentEvents` 밖으로 밀려나 [resolve] 가 다시 보지 못해도 파일을 지운다.
+     * 만료 뒤 [PRUNE_GRACE_MS] 가 지나면 상태 표에서도 뺀다(같은 이벤트가 다시 와도 시계로 EXPIRED 판정된다).
+     */
+    private fun expireDueEntries(serverNow: Long) {
+        val iter = entries.entries.iterator()
+        while (iter.hasNext()) {
+            val (key, e) = iter.next()
+            if (serverNow >= e.expiresAtMs) expire(key, e, "clock")
+            if (serverNow >= e.expiresAtMs + PRUNE_GRACE_MS) iter.remove()
         }
     }
 
@@ -316,19 +365,27 @@ internal class VoiceInbox(
         }
     }
 
-    /** 첫 처리 때 한 번 — 하루 넘은 파일·남은 `.part`·빈 폴더 정리 */
-    private fun sweepOnce() {
-        if (swept) return
-        swept = true
-        val cutoff = clock() - STALE_FILE_MS
+    /**
+     * 시간 기준 정리 — 받은 지(파일 수정 시각, 이 기기 시계) [STALE_FILE_MS] 넘은 파일, [STALE_PART_MS] 넘게 남은 `.part`, 빈 폴더.
+     * 지운 파일이 상태 표에서 READY 였으면 다시 받을 수 있게 PENDING 으로 되돌린다(만료됐으면 다음 처리에서 EXPIRED).
+     */
+    private fun sweepStaleFiles(now: Long) {
+        val cutoff = now - STALE_FILE_MS
+        val partCutoff = now - STALE_PART_MS
         var removed = 0
-        rootDir.listFiles().orEmpty().filter { it.isDirectory }.forEach { dir ->
-            dir.listFiles().orEmpty().forEach { f ->
-                if (f.name.endsWith(".part") || f.lastModified() < cutoff) {
-                    if (f.delete()) removed++
+        try {
+            rootDir.listFiles().orEmpty().filter { it.isDirectory }.forEach { dir ->
+                dir.listFiles().orEmpty().forEach { f ->
+                    val stale = if (f.name.endsWith(".part")) f.lastModified() < partCutoff else f.lastModified() < cutoff
+                    if (stale && f.delete()) {
+                        removed++
+                        forgetFile(f)
+                    }
                 }
+                if (dir.listFiles().isNullOrEmpty()) dir.delete()
             }
-            if (dir.listFiles().isNullOrEmpty()) dir.delete()
+        } catch (e: SecurityException) {
+            Log.w(TAG, "voice: cache sweep not permitted")
         }
         if (removed > 0) Log.i(TAG, "voice: swept stale files=$removed")
     }
@@ -338,10 +395,23 @@ internal class VoiceInbox(
         if (all.size <= maxFiles) return
         all.sortedBy { it.lastModified() }.take(all.size - maxFiles).forEach { f ->
             f.delete()
-            entries.values.filter { it.file == f }.forEach { e ->
-                e.file = null
-                e.status = VoiceMessages.Status.PENDING
-            }
+            forgetFile(f)
+        }
+    }
+
+    /** 지워진 파일을 가리키던 READY 항목 → PENDING(다음 폴링에 다시 받는다) */
+    private fun forgetFile(f: File) {
+        entries.values.filter { it.file == f }.forEach { e ->
+            e.file = null
+            e.status = VoiceMessages.Status.PENDING
+        }
+    }
+
+    private fun deleteQuietly(f: File) {
+        try {
+            f.delete()
+        } catch (e: SecurityException) {
+            Log.w(TAG, "voice: cache delete not permitted")
         }
     }
 
@@ -349,8 +419,14 @@ internal class VoiceInbox(
         private const val TAG = "DongHaeng"
         private const val DIR_NAME = "donghaeng-voice"
 
-        /** 서버 보관(24시간) + 여유 — 이보다 오래된 캐시 파일은 시작 때 지운다 */
+        /** 서버 보관(24시간) + 여유 — 받은 지 이보다 오래된 캐시 파일은 시간 기준 정리에서 지운다 */
         private const val STALE_FILE_MS = 25L * 60 * 60 * 1000
+
+        /** 쓰다 남은 `.part` — 이보다 오래되면 지운다(다른 인스턴스가 막 쓰는 중인 것은 건드리지 않게) */
+        private const val STALE_PART_MS = 60L * 1000
+
+        /** 시간 기준 정리 간격 */
+        const val SWEEP_INTERVAL_MS: Long = 60L * 60 * 1000
 
         /** 만료 뒤 상태 표에서 빼기까지의 여유 — 같은 이벤트가 다시 와도 EXPIRED 로 판정되게 */
         private const val PRUNE_GRACE_MS = 60L * 60 * 1000

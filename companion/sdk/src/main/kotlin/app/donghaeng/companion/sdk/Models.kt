@@ -69,7 +69,11 @@ public data class PairResult(
  * (`voiceId, durationMs, mime, sizeBytes, expiresAtMs`, `DhJson.payloadAs` 로 해석)이고, `sourceVehicleId` 가 보낸 차다.
  * 호스트 앱은 동행 토큰을 갖지 않으므로 모듈이 오디오를 미리 내려받아(앱 전용 캐시) payload 에 두 키를 **덧붙인다**:
  * - `localAudioStatus`: `READY`(재생 가능) · `PENDING`(받는 중 — 다음 스냅샷에서 바뀐다) · `EXPIRED`(서버 보관 끝·그룹 종료) · `FAILED`(받을 수 없음)
- * - `localAudioPath`: `READY` 일 때만, 내려받은 파일의 절대 경로(`MediaPlayer.setDataSource(path)` 로 재생). 만료·그룹 종료 때 모듈이 지운다
+ * - `localAudioPath`: `READY` 일 때만, 내려받은 파일의 절대 경로(`MediaPlayer.setDataSource(path)` 로 재생).
+ *   모듈이 만료(서버 시계)·그룹 종료를 보면 바로 지우고, 더 관찰하지 않는 그룹의 파일은 받은 지 25시간 지나 정리한다(docs/07 §3.1)
+ *
+ * 상태는 모듈이 서버 시계로 정한 것이므로 호스트가 폰 시계로 다시 만료를 판정하지 않는다. 파일 작업은 모듈이 IO 스레드에서 하므로
+ * 이 흐름은 메인 스레드에서 수집해도 된다.
  *
  * 공개 함수는 늘리지 않았다(docs/07 §3·§3.1). 재생(오디오 포커스·출력)은 호스트 앱 몫이다.
  *

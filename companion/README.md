@@ -69,7 +69,10 @@ observeGroup 폴링 ─► recentEvents 에 VOICE_MESSAGE ─► 만료(서버 �
    ─► GET /v1/groups/{gid}/voice/{voiceId}  (Bearer 동행 JWT, Accept: audio/*, 폴링당 최신 3건, 1 MB 상한)
    ─► {java.io.tmpdir}/donghaeng-voice/{gid}/{voiceId}.m4a   (안드로이드: 앱 캐시 디렉터리)
    ─► event.payload + { localAudioStatus: "READY", localAudioPath: "/data/user/0/<앱>/cache/donghaeng-voice/…" }
-404·410·expiresAtMs 지남 → EXPIRED(파일 삭제) · status ENDED·GROUP_ENDED → 그 그룹 캐시 삭제 · 그룹 404(나감) → 캐시 삭제 후 예외 · 일시 오류 3회 → FAILED
+404·410·expiresAtMs 지남 → EXPIRED(파일 삭제 — 이전 프로세스가 받은 파일·recentEvents 밖으로 밀려난 무전 포함)
+status ENDED·GROUP_ENDED → 그 그룹 캐시 삭제 · 그룹 404(나감) → 캐시 삭제 후 예외 · 일시 오류 3회 → FAILED
+이벤트와 무관: 첫 처리(폴링·listMyVehicles) + 1시간마다 받은 지 25시간 넘은 파일 정리(더 보지 않는 그룹의 캐시)
+파일 작업·내려받기는 Dispatchers.IO — 호스트가 메인 스레드에서 수집해도 된다
 ```
 호스트 코드(공식 앱이 가져갈 부분 — demo-host `donghaeng/VoiceItems.kt`·`VoicePlayer.kt`):
 ```kotlin
@@ -129,7 +132,7 @@ val path = (event.payload["localAudioPath"] as? JsonPrimitive)?.content     // �
 |---|---|
 | 로그인 | dev 로그인(`DevAuthClient` → `POST /v1/auth/login`) → `DongHaeng.init(…, DEV, DevTokenProvider)` + `SdkGateway`. **"서버 없이 둘러보기 (시연 모드)"** 는 `FakeGateway`(호스트 쪽 가짜 그룹: 서울시청에서 움직이는 3대 + 시간표 이벤트)로 B·D·F·G 가 그대로 움직인다 |
 | 홈 / 지도 / 제어 / 스토어 / 마이카 | `feature/*` — 기아 앱 레이아웃 재현. 디자인 토큰 `ui/theme/KiaTheme.kt`(배경 `#08131B`, 카드 `#18222B`, 라임 `#8CC63F`, Pretendard), 공용 조각 `ui/components/`(KiaTopBar·KiaBottomBar·KiaCard·CarArt 벡터 실루엣·OsmMap) |
-| 무전(F16) | C 동행 메인 진행 중 탭의 **무전 카드**(`VoiceMessagesCard`: 보낸 차 색·이름·길이·보낸 시각·[재생]/[멈춤]·진행 바)와 F 알림의 무전 행 [재생]. 상태는 `DongHaengStore.voices`(`VoiceItems.kt` — sdk 가 덧붙인 키 읽기·합치기), 재생은 `VoicePlayer`(MediaPlayer, `USAGE_MEDIA`·`CONTENT_TYPE_SPEECH`, `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`). 시연 모드는 30초에 아빠 차 무전(코드로 만든 신호음 WAV, `FakeVoiceTone`) |
+| 무전(F16) | C 동행 메인 진행 중 탭의 **무전 카드**(`VoiceMessagesCard`: 보낸 차 색·이름·길이·보낸 시각·[재생]/[멈춤]·진행 바)와 F 알림의 무전 행 [재생]. 상태는 `DongHaengStore.voices`(`VoiceItems.kt` — sdk 가 덧붙인 키 읽기·합치기, 이번 스냅샷의 무전은 sdk 상태 그대로·밀려난 것만 폰 시계 + 1시간), 재생은 `VoicePlayer`(MediaPlayer, `USAGE_MEDIA`·`CONTENT_TYPE_SPEECH`, `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`, 다른 앱 안내 음성(CAN_DUCK)이면 일시정지 후 이어 재생 — `VoiceFocusPolicy`). 시연 모드는 30초에 아빠 차 무전(코드로 만든 신호음 WAV, `FakeVoiceTone`) |
 | 동행 삽입 지점 | `donghaeng/` 패키지 하나에 모아 둔다 — **A** 상단 QR 스캔(`ScanScreen` + `JoinGroupSheet`: 초대 미리보기 → 차 선택 → `joinGroup`), **B** 홈 "동행 중" 카드(`ActiveGroupCard`), **C** 동행 메인(`DongHaengMainScreen`), **D** 지도 "동행" 칩 → 그룹 마커 + `GroupDriveSheet`, **E** 마이카 > 연동 서비스 > 동행 그룹 주행(`DongHaengSettingsScreen`), **F** 알림 벨(`NotificationsScreen`, 백그라운드면 시스템 알림), **G** 메시지 시트(`PassengerMessageSheet`, 프리셋 4 + 60자). 상태는 `DongHaengStore`, 서버/SDK 호출은 `DongHaengGateway` 로만 |
 
 - 서버 주소는 `BuildConfig.DH_PUBLIC_BASE_URL` — Gradle 속성 `dhPublicBaseUrl`(기본 `http://10.0.2.2:8080`). 클라우드: `-PdhPublicBaseUrl=https://<VM-IP>.sslip.io`
@@ -140,7 +143,7 @@ val path = (event.payload["localAudioPath"] as? JsonPrimitive)?.content     // �
 - 권한: `CAMERA`(스캔 진입 시), `POST_NOTIFICATIONS`(API 33+, 알림 화면 진입 시). 에뮬레이터: `adb shell pm grant app.donghaeng.companion.demo android.permission.CAMERA`
 - 카메라 없는 에뮬레이터: 스캔 화면 톱니(디버그) → "QR 문자열 붙여넣기" 에 차 화면 QR 문자열(초대 `url` / `verifyUri`)을 그대로. 시연 모드에서는 "그룹 QR 예시" 버튼으로 가짜 그룹에 합류한다
 - 브랜드 자산 미사용: 로고 자리 "KIA (시연)", 차량은 벡터 실루엣, 폰트 Pretendard(OFL, `res/font`), 아이콘 Material Symbols Outlined(Apache-2.0, `res/drawable/ms_*.xml`). 모든 화면 하단에 "본 앱은 공모전 시연용 재현 화면이며 기아 공식 앱이 아닙니다". 참고 스크린샷은 저장소 밖에만 둔다
-- 로그: `Log.i("DongHaeng", …)` — 토큰·닉네임·좌표는 찍지 않는다. 무전: `voice: received voiceId=… status=READY durMs=… mine=…`(목록 반영), `voice: play voiceId=…` → `voice: done|user|focus_loss|error voiceId=…`
+- 로그: `Log.i("DongHaeng", …)` — 토큰·닉네임·좌표는 찍지 않는다. 무전: `voice: received voiceId=… status=READY durMs=… mine=…`(목록 반영), `voice: play voiceId=…` → (`voice: duck_pause|resume voiceId=…`) → `voice: done|user|focus_loss|focus_timeout|error voiceId=…`
 
 ## 4. 빌드 · 테스트
 
@@ -148,7 +151,7 @@ val path = (event.payload["localAudioPath"] as? JsonPrimitive)?.content     // �
 cd companion
 .\gradlew.bat :sdk:assembleDebug :demo-host:assembleDebug --console=plain   # AAR + APK
 .\gradlew.bat :sdk:testDebugUnitTest --console=plain                        # QrParserTest, DongHaengFakeFlowTest, HttpDongHaengApiTest(MockWebServer), VoiceInboxTest, HttpVoiceDownloadTest
-.\gradlew.bat :demo-host:testDebugUnitTest --console=plain                  # VoiceItemsTest(무전 목록·신호음 WAV)
+.\gradlew.bat :demo-host:testDebugUnitTest --console=plain                  # VoiceItemsTest(무전 목록·서버 시계 상태 유지·포커스 정책·신호음 WAV)
 .\gradlew.bat :sdk:assembleRelease                                          # 배포용 AAR
 
 adb install -r demo-host\build\outputs\apk\debug\demo-host-debug.apk

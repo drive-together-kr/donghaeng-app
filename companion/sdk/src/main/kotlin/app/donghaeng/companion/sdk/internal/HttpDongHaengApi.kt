@@ -64,6 +64,9 @@ import kotlin.coroutines.resumeWithException
  * [observeGroup] 은 `GET /v1/groups/{id}` 를 [pollIntervalMs](기본 15초)마다 폴링한다(수집 취소 시 종료). 푸시 전환은 이후 작업.
  * F16 무전: 폴링 결과의 `VOICE_MESSAGE` 는 [voiceInbox] 가 `GET /v1/groups/{id}/voice/{voiceId}`(같은 동행 JWT)로 미리 받아
  * payload 에 `localAudioStatus`·`localAudioPath` 를 붙인다(공개 API 변경 없음 — [VoiceInbox], docs/07 §3.1).
+ * 무전 캐시의 파일 작업은 호출(수집) 스레드와 무관하게 `Dispatchers.IO` 에서 돈다([VoiceInbox]) — 호스트가 [observeGroup] 을
+ * 메인 스레드에서 수집해도 메인에서 디스크를 건드리지 않는다. 폴링이 없을 때도 캐시가 정리되도록 [listMyVehicles] 때도
+ * [VoiceInbox.housekeeping] 을 부른다.
  * 토큰·닉네임·코드는 로그에 남기지 않는다(CLAUDE.md 규칙 8).
  *
  * @param client 테스트에서 바꿔 끼울 수 있다. 기본은 연결·읽기·쓰기 10초 타임아웃
@@ -122,6 +125,8 @@ internal class HttpDongHaengApi(
     // ---------- DongHaengApi ----------
 
     override suspend fun listMyVehicles(): List<MyVehicle> {
+        // 호스트가 동행 메뉴·합류 화면을 열 때 부르는 호출 — 그룹을 다시 관찰하지 않아도 지난 무전 캐시가 정리되게(폴링 처리 중이면 건너뛴다)
+        voiceInbox.housekeeping()
         val response = authed(ApiPaths.ME_VEHICLES, "GET")
         return decode(ListSerializer(MyVehicleDto.serializer()), response.body).map { it.toModel() }
     }

@@ -1,5 +1,6 @@
 package app.donghaeng.companion.demo.donghaeng
 
+import android.media.AudioManager
 import app.donghaeng.companion.sdk.GroupMember
 import app.donghaeng.companion.sdk.MemberRole
 import app.donghaeng.protocol.DhJson
@@ -55,7 +56,7 @@ class VoiceItemsTest {
 
     @Test
     fun `toItem - sdk 가 붙인 READY·경로와 보낸 차 이름·색, 보낸 시각 = 만료 - 24시간`() {
-        val item = VoiceEvents.toItem(voice("e1"), listOf(member("veh_lead", "아빠 차(스냅샷)", "#123456")), group, now)!!
+        val item = VoiceEvents.toItem(voice("e1"), listOf(member("veh_lead", "아빠 차(스냅샷)", "#123456")), group)!!
         assertEquals("vm_e1", item.voiceId)
         assertEquals(VoiceAudioStatus.READY, item.status)
         assertEquals("/cache/donghaeng-voice/grp_1/vm_1.m4a", item.localPath)
@@ -68,37 +69,40 @@ class VoiceItemsTest {
 
     @Test
     fun `toItem - 스냅샷에 없으면 합류 때 멤버, 그것도 없으면 음성 문구에서 이름`() {
-        assertEquals("아빠 차", VoiceEvents.toItem(voice("e1"), emptyList(), group, now)!!.senderNickname)
-        assertEquals("아빠 차", VoiceEvents.toItem(voice("e1", source = "veh_unknown"), emptyList(), group, now)!!.senderNickname)
-        assertTrue("내 차가 보낸 무전", VoiceEvents.toItem(voice("e2", source = "veh_me"), emptyList(), group, now)!!.mine)
+        assertEquals("아빠 차", VoiceEvents.toItem(voice("e1"), emptyList(), group)!!.senderNickname)
+        assertEquals("아빠 차", VoiceEvents.toItem(voice("e1", source = "veh_unknown"), emptyList(), group)!!.senderNickname)
+        assertTrue("내 차가 보낸 무전", VoiceEvents.toItem(voice("e2", source = "veh_me"), emptyList(), group)!!.mine)
     }
 
     @Test
     fun `toItem - 상태 키가 없거나(옛 모듈) READY 인데 경로가 없으면 받는 중, 다른 종류는 null`() {
-        val noStatus = VoiceEvents.toItem(voice("e1", status = null, path = null), emptyList(), group, now)!!
+        val noStatus = VoiceEvents.toItem(voice("e1", status = null, path = null), emptyList(), group)!!
         assertEquals(VoiceAudioStatus.PENDING, noStatus.status)
         assertNull(noStatus.localPath)
-        assertEquals(VoiceAudioStatus.PENDING, VoiceEvents.toItem(voice("e2", path = null), emptyList(), group, now)!!.status)
-        val expired = VoiceEvents.toItem(voice("e3", status = "EXPIRED", path = "/x"), emptyList(), group, now)!!
+        assertEquals(VoiceAudioStatus.PENDING, VoiceEvents.toItem(voice("e2", path = null), emptyList(), group)!!.status)
+        val expired = VoiceEvents.toItem(voice("e3", status = "EXPIRED", path = "/x"), emptyList(), group)!!
         assertEquals(VoiceAudioStatus.EXPIRED, expired.status)
         assertNull("READY 가 아니면 경로를 쓰지 않는다", expired.localPath)
         val other = GroupEvent("e4", GroupEventType.PASSENGER_MESSAGE.name, "veh_lead", Severity.INFO, "hi", JsonObject(mapOf("text" to JsonPrimitive("hi"))))
-        assertNull(VoiceEvents.toItem(other, emptyList(), group, now))
+        assertNull(VoiceEvents.toItem(other, emptyList(), group))
     }
 
     @Test
     fun `merge - 같은 이벤트는 새 상태로, 최신부터, 밀려난 것은 유지하되 만료·그룹 종료면 EXPIRED`() {
-        val pending = VoiceEvents.toItem(voice("e1", status = "PENDING", path = null), emptyList(), group, now)!!
-        val older = VoiceEvents.toItem(voice("e0", expiresAtMs = now + VoiceEvents.RETENTION_MS - 600_000), emptyList(), group, now)!!
+        val pending = VoiceEvents.toItem(voice("e1", status = "PENDING", path = null), emptyList(), group)!!
+        val older = VoiceEvents.toItem(voice("e0", expiresAtMs = now + VoiceEvents.RETENTION_MS - 600_000), emptyList(), group)!!
         val first = VoiceEvents.merge(emptyList(), listOf(older, pending), groupEnded = false, nowMs = now)
         assertEquals(listOf("e1", "e0"), first.map { it.eventId })
 
-        val ready = VoiceEvents.toItem(voice("e1"), emptyList(), group, now)!!
+        val ready = VoiceEvents.toItem(voice("e1"), emptyList(), group)!!
         val second = VoiceEvents.merge(first, listOf(ready), groupEnded = false, nowMs = now)
         assertEquals(VoiceAudioStatus.READY, second.first { it.eventId == "e1" }.status)
         assertEquals("목록 밖으로 밀려난 e0 유지", 2, second.size)
 
-        val afterExpiry = VoiceEvents.merge(second, emptyList(), groupEnded = false, nowMs = older.expiresAtMs)
+        val atExpiry = VoiceEvents.merge(second, emptyList(), groupEnded = false, nowMs = older.expiresAtMs)
+        assertEquals("밀려난 항목은 폰 시계 + 여유 전까지 마지막 상태 유지", VoiceAudioStatus.READY, atExpiry.first { it.eventId == "e0" }.status)
+
+        val afterExpiry = VoiceEvents.merge(second, emptyList(), groupEnded = false, nowMs = older.expiresAtMs + VoiceEvents.CARRIED_EXPIRY_GRACE_MS)
         assertEquals(VoiceAudioStatus.EXPIRED, afterExpiry.first { it.eventId == "e0" }.status)
         assertNull(afterExpiry.first { it.eventId == "e0" }.localPath)
         assertEquals(VoiceAudioStatus.READY, afterExpiry.first { it.eventId == "e1" }.status)
@@ -108,8 +112,43 @@ class VoiceItemsTest {
     }
 
     @Test
+    fun `merge - 이번 스냅샷의 무전은 폰 시계가 이틀 빨라도 sdk 가 서버 시계로 정한 READY 그대로`() {
+        val phoneAhead = now + 2 * VoiceEvents.RETENTION_MS // 폰 시계가 이틀 빠름(sdk HttpVoiceDownloadTest 와 같은 상황)
+        val ready = VoiceEvents.toItem(voice("e1"), emptyList(), group)!!
+
+        val merged = VoiceEvents.merge(emptyList(), listOf(ready), groupEnded = false, nowMs = phoneAhead)
+
+        assertEquals(VoiceAudioStatus.READY, merged.single().status)
+        assertEquals("/cache/donghaeng-voice/grp_1/vm_1.m4a", merged.single().localPath)
+        // 다음 스냅샷에서 recentEvents 밖으로 밀려나면 그때부터는 폰 시계(+ 여유)로만 판정할 수 있다
+        val carried = VoiceEvents.merge(merged, emptyList(), groupEnded = false, nowMs = phoneAhead)
+        assertEquals(VoiceAudioStatus.EXPIRED, carried.single().status)
+    }
+
+    @Test
+    fun `toItem - 보낸 시각은 서버 시계 그대로(폰 시계가 느려도 자르지 않아 순서가 유지된다)`() {
+        val a = VoiceEvents.toItem(voice("e1", expiresAtMs = now + VoiceEvents.RETENTION_MS + 120_000), emptyList(), group)!!
+        val b = VoiceEvents.toItem(voice("e2", expiresAtMs = now + VoiceEvents.RETENTION_MS + 60_000), emptyList(), group)!!
+        assertEquals(now + 120_000, a.sentAtMs)
+        assertEquals(listOf("e1", "e2"), VoiceEvents.merge(listOf(b), listOf(a), groupEnded = false, nowMs = now).map { it.eventId })
+    }
+
+    @Test
+    fun `VoiceFocusPolicy - LOSS·LOSS_TRANSIENT 멈춤, CAN_DUCK 일시정지, GAIN 이어 재생`() {
+        assertEquals(VoiceFocusPolicy.Action.STOP, VoiceFocusPolicy.actionFor(AudioManager.AUDIOFOCUS_LOSS))
+        assertEquals(VoiceFocusPolicy.Action.STOP, VoiceFocusPolicy.actionFor(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT))
+        assertEquals(
+            "말소리(SPEECH)는 프레임워크가 자동 덕킹하지 않는다 — 앱이 멈춘다",
+            VoiceFocusPolicy.Action.PAUSE,
+            VoiceFocusPolicy.actionFor(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK),
+        )
+        assertEquals(VoiceFocusPolicy.Action.RESUME, VoiceFocusPolicy.actionFor(AudioManager.AUDIOFOCUS_GAIN))
+        assertEquals(VoiceFocusPolicy.Action.NONE, VoiceFocusPolicy.actionFor(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT))
+    }
+
+    @Test
     fun `merge - 최대 20개`() {
-        val many = (1..25).map { VoiceEvents.toItem(voice("e$it", expiresAtMs = now + VoiceEvents.RETENTION_MS - it * 1_000L), emptyList(), group, now)!! }
+        val many = (1..25).map { VoiceEvents.toItem(voice("e$it", expiresAtMs = now + VoiceEvents.RETENTION_MS - it * 1_000L), emptyList(), group)!! }
         val merged = VoiceEvents.merge(emptyList(), many, groupEnded = false, nowMs = now)
         assertEquals(VoiceEvents.MAX_ITEMS, merged.size)
         assertEquals("가장 최근(e1)부터", "e1", merged.first().eventId)

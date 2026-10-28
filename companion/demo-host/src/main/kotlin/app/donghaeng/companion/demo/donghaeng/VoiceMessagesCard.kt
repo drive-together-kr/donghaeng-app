@@ -85,6 +85,7 @@ private fun VoiceRow(item: VoiceItem, player: VoicePlayer.State, onToggle: () ->
                 }
             }
             val sub = when {
+                playing && player.pausedForFocus -> "다른 안내 음성이 끝나면 이어서 재생해요"
                 playing && player.preparing -> "재생 준비 중…"
                 playing -> "${durationLabel(player.positionMs)} / ${durationLabel(player.durationMs)}"
                 else -> listOfNotNull(durationLabel(item.durationMs), voiceStatusText(item.status) ?: relativeTime(item.sentAtMs)).joinToString(" · ")

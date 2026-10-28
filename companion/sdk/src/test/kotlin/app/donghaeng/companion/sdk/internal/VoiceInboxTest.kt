@@ -5,6 +5,7 @@ import app.donghaeng.protocol.GroupEvent
 import app.donghaeng.protocol.GroupEventType
 import app.donghaeng.protocol.Severity
 import app.donghaeng.protocol.VoiceMessagePayload
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -14,6 +15,7 @@ import kotlinx.serialization.json.put
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -22,6 +24,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.util.concurrent.Executors
 
 /**
  * F16 무전 수신 — `VOICE_MESSAGE` 해석·내려받기 경로·payload 덧붙이기([VoiceMessages])와 캐시·만료·재시도([VoiceInbox]).
@@ -132,7 +135,7 @@ class VoiceInboxTest {
     // ---------- VoiceInbox ----------
 
     @Test
-    fun `무전도 그룹 종료도 없으면 그대로 돌려주고 파일 시스템을 건드리지 않는다`() = runTest {
+    fun `무전도 그룹 종료도 없으면 그대로 돌려주고 파일을 만들거나 받지 않는다`() = runTest {
         val root = File(tmp.root, "untouched")
         val events = listOf(event("evt_1", GroupEventType.MEMBER_JOINED), event("evt_2", GroupEventType.LOW_ENERGY))
         val fetch = ok(audio)
@@ -357,5 +360,104 @@ class VoiceInboxTest {
     fun `wav mime 은 wav 확장자로 저장된다`() = runTest {
         val out = inbox().resolve("grp_1", listOf(voiceEvent("evt_1", "vm_w", mime = "audio/wav")), fetch = ok(audio)::invoke)
         assertTrue(out[0].path()!!.endsWith("vm_w.wav"))
+    }
+
+    // ---------- 이벤트와 무관한 정리 (검토 지적: 정리가 무전 이벤트가 있을 때만 돌았다) ----------
+
+    private val hour = 60L * 60 * 1000
+
+    private fun cachedFile(root: File, groupId: String, name: String, ageMs: Long): File =
+        File(File(root, groupId), name).apply {
+            parentFile!!.mkdirs()
+            writeBytes(audio)
+            setLastModified(now - ageMs)
+        }
+
+    @Test
+    fun `무전이 없는 폴링에서도 첫 처리 때 25시간 넘은 파일과 남은 part 를 지우고, 이후 1시간마다 다시 정리한다`() = runTest {
+        val root = File(tmp.root, "voice")
+        // 이전 프로세스가 다른 그룹 G 에서 받아 둔 파일 — G 는 다시 관찰되지 않는다
+        val stale = cachedFile(root, "grp_old", "vm_old.m4a", ageMs = 26 * hour)
+        val fresh = cachedFile(root, "grp_old", "vm_new.m4a", ageMs = 1 * hour)
+        val oldPart = cachedFile(root, "grp_old", "vm_x.m4a.part", ageMs = 2 * 60_000)
+        val inbox = inbox(root)
+        val fetch = ok(audio)
+        val noVoice = listOf(event("evt_1", GroupEventType.MEMBER_JOINED))
+
+        assertSame(noVoice, inbox.resolve("grp_new", noVoice, fetch = fetch::invoke))
+        assertFalse("하루 넘은 파일", stale.exists())
+        assertFalse("1분 넘게 남은 .part", oldPart.exists())
+        assertTrue("아직 보관 기간 안", fresh.exists())
+
+        fresh.setLastModified(t0 - 26 * hour) // 시간이 지나 오래된 파일이 됐다고 치자
+        now = t0 + 30 * 60_000
+        inbox.resolve("grp_new", noVoice, fetch = fetch::invoke)
+        assertTrue("1시간이 안 지났으면 다시 훑지 않는다", fresh.exists())
+
+        now = t0 + hour
+        inbox.resolve("grp_new", noVoice, fetch = fetch::invoke)
+        assertFalse("1시간마다 다시 정리", fresh.exists())
+        assertFalse("빈 폴더도 지운다", File(root, "grp_old").exists())
+        assertTrue(fetch.paths.isEmpty())
+    }
+
+    @Test
+    fun `housekeeping - 폴링이 없어도(내 차 목록 등) 오래된 파일을 지운다`() = runTest {
+        val root = File(tmp.root, "voice")
+        val stale = cachedFile(root, "grp_old", "vm_old.m4a", ageMs = 26 * hour)
+        val part = cachedFile(root, "grp_old", "vm_busy.m4a.part", ageMs = 0) // 막 쓰는 중일 수 있는 .part 는 남긴다
+
+        inbox(root).housekeeping()
+
+        assertFalse(stale.exists())
+        assertTrue(part.exists())
+    }
+
+    @Test
+    fun `이전 프로세스가 받아 둔 파일도 만료 이벤트를 보면 지운다`() = runTest {
+        val root = File(tmp.root, "voice")
+        val cached = cachedFile(root, "grp_1", "vm_1.m4a", ageMs = 0) // 시간 기준 정리 대상이 아닌 새 파일
+        val fetch = ok(audio)
+
+        val out = inbox(root).resolve("grp_1", listOf(voiceEvent("evt_1", "vm_1", expiresAtMs = t0 - 1)), fetch = fetch::invoke)
+
+        assertEquals("EXPIRED", out[0].status())
+        assertFalse("새 Entry(file=null)여도 캐시 경로의 파일을 지운다", cached.exists())
+        assertTrue(fetch.paths.isEmpty())
+    }
+
+    @Test
+    fun `recentEvents 밖으로 밀려난 무전도 만료 시각이 지나면 파일을 지운다`() = runTest {
+        val inbox = inbox()
+        val fetch = ok(audio)
+        val file = File(inbox.resolve("grp_1", listOf(voiceEvent("evt_1", "vm_1", expiresAtMs = t0 + 60_000)), fetch = fetch::invoke)[0].path()!!)
+        assertTrue(file.isFile)
+        val pushedOut = (1..20).map { event("evt_n$it", GroupEventType.LOW_ENERGY) } // 무전이 최근 20건 밖으로 밀려났다
+
+        inbox.resolve("grp_1", pushedOut, fetch = fetch::invoke)
+        assertTrue("만료 전이면 남는다", file.isFile)
+
+        now = t0 + 60_000
+        inbox.resolve("grp_1", pushedOut, fetch = fetch::invoke)
+        assertFalse("이벤트를 다시 보지 못해도 만료되면 지운다", file.exists())
+    }
+
+    @Test
+    fun `파일 작업·내려받기는 주입한 IO 디스패처에서 돈다 - 호출 스레드와 무관`() = runTest {
+        val executor = Executors.newSingleThreadExecutor { r -> Thread(r, "voice-io-test") }
+        val io = executor.asCoroutineDispatcher()
+        try {
+            val inbox = VoiceInbox(rootDir = File(tmp.root, "voice"), clock = { now }, ioDispatcher = io)
+            var fetchThread: String? = null
+            val out = inbox.resolve("grp_1", listOf(voiceEvent("evt_1", "vm_1"))) { _ ->
+                fetchThread = Thread.currentThread().name
+                VoiceInbox.Fetch.Ok(audio)
+            }
+            assertEquals("READY", out[0].status())
+            assertEquals("내려받기와 그 뒤 파일 쓰기가 같은 IO 블록에서", "voice-io-test", fetchThread)
+            assertNotEquals("호출한 쪽 스레드는 IO 가 아니다", "voice-io-test", Thread.currentThread().name)
+        } finally {
+            io.close()
+        }
     }
 }
