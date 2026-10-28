@@ -18,11 +18,14 @@ import kotlinx.coroutines.launch
  * @property path 지금 음성 경로(체인). null = 모름
  * @property avgLatencyMs 지금 경로의 최근 10건 평균 요청 → 시작(ms). 표본 없으면 null
  * @property starts 문장 꼬리표(그룹 이벤트 eventId) → 음성 시작 시각(기기 벽시계 ms), 최근 [VoiceCueTracker.MAX_STARTS]개
+ * @property lateAtReceipt 위험 이벤트 eventId → **받은 순간** '늦을 게 분명'이었나(표면 `SurfaceState.noteEvent` 가 한 번만 정해 붙인다 —
+ *   강조 시작 시점이 그 뒤 평균 지연·경로 변화로 흔들리지 않게, docs/05 §5.2). 없으면 지금 값으로 판정
  */
 data class VoiceCue(
     val path: VoicePath? = null,
     val avgLatencyMs: Long? = null,
     val starts: Map<String, Long> = emptyMap(),
+    val lateAtReceipt: Map<String, Boolean> = emptyMap(),
 )
 
 /**

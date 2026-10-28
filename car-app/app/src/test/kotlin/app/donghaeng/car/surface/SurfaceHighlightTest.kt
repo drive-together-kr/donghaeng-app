@@ -49,9 +49,35 @@ class SurfaceHighlightTest {
             advanceTimeBy(300)
             cue.value = cue.value.copy(starts = mapOf("evt_b" to testScheduler.currentTime)); runCurrent()
             assertEquals(EventHighlight.STEADY, s.panelUi.value?.event?.highlight)
-            assertEquals(cue.value, s.voiceCue())
+            assertEquals("피드 = 음성 값 + 받은 순간 판정(빠른 경로 → 늦지 않음)", cue.value.copy(lateAtReceipt = mapOf("evt_b" to false)), s.voiceCue())
             advanceTimeBy(3_700); runCurrent()   // 시작 + 3초 유지가 지난 다음 틱
             assertEquals(EventHighlight.NONE, s.panelUi.value?.event?.highlight)
+        } finally { s.stop() }
+    }
+
+    @Test
+    fun `late is decided at receipt - the average dropping under 3 s or the path changing does not flip the highlight`() = runTest {
+        val slow = MutableStateFlow(VoiceCue(path = VoicePath.DISPLAY_ONLY))
+        val s = SurfaceState(
+            session = session, groupState = MutableStateFlow(GroupState("grp_1", "veh_A", emptyList())), events = events, myVehicleId = { "veh_ME" },
+            connected = MutableStateFlow(true), driving = MutableStateFlow(true), canDrawOverlays = MutableStateFlow(true), appVisible = MutableStateFlow(false),
+            positions = InMemoryPanelPositionStore(PanelCorner.TOP_END), dispatcher = StandardTestDispatcher(testScheduler),
+            clock = { testScheduler.currentTime }, voiceCues = slow,
+        )
+        s.start(); runCurrent()
+        try {
+            val t0 = testScheduler.currentTime
+            // 시작 직후(선택 중, 화면만)에 급제동 → 받은 순간부터 깜빡임
+            events.emit(ReceivedGroupEvent(GroupEvent("evt_c", "HARD_BRAKE", "veh_A", Severity.WARN, "앞쪽 아빠 차가 급제동했어요.", JsonObject(emptyMap())), t0, t0))
+            runCurrent()
+            assertEquals(EventHighlight.BLINK, s.panelUi.value?.event?.highlight)
+            assertEquals(mapOf("evt_c" to true), s.voiceCue().lateAtReceipt)
+            // 1초 뒤 Pleos 가 준비돼 경로·평균이 '빠름'으로 바뀌어도 깜빡임이 끊기지 않는다
+            advanceTimeBy(1_000)
+            slow.value = VoiceCue(path = VoicePath.PLEOS_TTS, avgLatencyMs = 1_200); runCurrent()
+            assertEquals(EventHighlight.BLINK, s.panelUi.value?.event?.highlight)
+            advanceTimeBy(1_500); runCurrent()
+            assertEquals(EventHighlight.BLINK, s.panelUi.value?.event?.highlight)
         } finally { s.stop() }
     }
 }

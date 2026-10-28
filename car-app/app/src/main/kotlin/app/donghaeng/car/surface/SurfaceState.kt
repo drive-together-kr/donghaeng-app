@@ -103,13 +103,13 @@ class SurfaceState(
             launch { combine(_mode, appVisible) { m, v -> SurfacePolicy.panelVisible(m, v) }.collect { _panelVisible.value = it } }
             launch { driving.collect { _isDriving.value = it; driveTimer.onDriving(it, driveClock()) } }
             launch { connected.collect { _connected.value = it } }
-            launch { session.map { it?.groupId }.distinctUntilChanged().collect { _recent.value = emptyList() } }
+            launch { session.map { it?.groupId }.distinctUntilChanged().collect { _recent.value = emptyList(); lateAtReceipt.value = emptyMap() } }
             launch { events.collect { noteEvent(it) } }
             launch {
                 session.flatMapLatest { s ->
                     if (s == null) flowOf(null)
                     else combine(groupState, _recent, _connected, ptt, ticker()) { g, ev, c, p, now ->
-                        FloatingPanelMapper.map(s, g, myVehicleId(), ev, p, c, nowMs = now, zone = zone(), serverNowMs = serverClock(), voiceCue = voiceCues.value)
+                        FloatingPanelMapper.map(s, g, myVehicleId(), ev, p, c, nowMs = now, zone = zone(), serverNowMs = serverClock(), voiceCue = voiceCue())
                     }
                 }.collect { ui -> logHighlight(ui?.event); _panelUi.value = ui }
             }
@@ -131,13 +131,19 @@ class SurfaceState(
             DhLog.i("surface: skip not-for-me ${e.event.type} basis=${audience.basis}")
             return false
         }
+        // 위험 이벤트 강조의 '늦을 게 분명'은 받은 순간 한 번만 정한다(EventHighlightPolicy.noteReceipt) — 목록보다 먼저 넣어 첫 그림부터 쓰게
+        lateAtReceipt.update { EventHighlightPolicy.noteReceipt(it, e.event.type, e.event.eventId, voiceCues.value) }
         _recent.update { (listOf(e) + it).distinctBy { r -> r.event.eventId }.take(MAX_EVENTS) }
         return true
     }
 
     override fun serverNow(): Long = serverClock()
 
-    override fun voiceCue(): VoiceCue = voiceCues.value
+    /** 위험 이벤트 eventId → 받은 순간 '늦을 게 분명'이었나 */
+    private val lateAtReceipt = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+
+    /** 음성 값 + 받은 순간 판정 — 패널 소식 줄·정차 대시보드 띠가 같은 값을 본다 */
+    override fun voiceCue(): VoiceCue = voiceCues.value.copy(lateAtReceipt = lateAtReceipt.value)
 
     private var lastHighlight: EventHighlight = EventHighlight.NONE
 

@@ -140,4 +140,14 @@ class SerialUtterancePlayerTest {
         assertTrue(signals.contains(UtteranceSignal.Dropped(VoicePath.PLEOS_TTS, "evt_1", 0, "interrupted")))
         assertEquals(0, p.pending)
     }
+
+    @Test
+    fun `stopAll while idle does not touch the engine`() = runTest {
+        val p = player()
+        p.stopAll(); runCurrent()
+        assertEquals(0, backend.stops)
+        assertTrue(signals.isEmpty())
+        p.enqueue("다음", Priority.NORMAL, "evt_1"); runCurrent()
+        assertEquals(listOf("다음"), backend.spoken)
+    }
 }

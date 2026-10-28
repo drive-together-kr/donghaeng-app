@@ -74,6 +74,11 @@ object VoiceChainPolicy {
  * - 경로 선택은 [VoiceChainPolicy.choose] — 후보 상태가 바뀔 때·실패 신호가 올 때·선택 상한([selectTimeoutMs])이 될 때 다시 본다.
  * - 지금 경로가 **연속 [demoteAfter]번 실패**([UtteranceSignal.Failed])하면 그 후보를 강등(프로세스 수명 동안)하고 다음 경로로 내린다. 시작·완료 신호가 오면 0 으로.
  * - 실패한 그 문장을 다음 경로로 다시 읽지는 않는다(늦게 소리가 나 두 번 들리는 것을 피한다) — 위험 이벤트는 화면 강조가 받친다(docs/05 §5.2).
+ * - **경로가 바뀌면(승격·강등) 이전 경로를 [VoiceRoute.stop]** — 대기·재생 중이던 문장은 버린다(Dropped, 실패 아님). 그대로 두면
+ *   선택 중 Pleos 큐에 있던 문장이 5~9 s 뒤에 시작해 새 경로(Android)의 다음 문장과 두 목소리가 겹친다(리뷰 2026-10-28). 손실은 앱 시작 직후
+ *   한 번 정도이고 소식 줄(10초)이 받친다.
+ * - 상태 `ready`: true = 소리 경로 있음, false = 화면 표시만으로 정해짐, null = 소리 경로가 아직 없고 **초기화 중인 후보가 있음**
+ *   (선택 상한 안이거나, 상한 뒤에도 Pleos 처럼 늦게·다시 시도로 준비될 수 있는 후보 — 준비되면 올라간다).
  * - 로그: 경로나 '선택 중' 여부가 바뀔 때 한 줄 `voice: 경로 = ANDROID_TTS(engine=…)|PLEOS_TTS|DISPLAY_ONLY 사유=…`.
  * - 지연: 후보가 보내는 [UtteranceSignal.Started] 의 요청 → 시작을 경로별 최근 10건으로 모은다. [status] 의 `latency` = 지금 경로.
  * - 문장 원문은 어떤 로그에도 남기지 않는다(길이만, 규칙 8).
@@ -165,8 +170,9 @@ class ChainedVoiceAdapter(
         refresh()
     }
 
-    /** 경로 다시 고르기 + 상태 갱신 + (바뀌었으면) 로그 한 줄 */
+    /** 경로 다시 고르기 + 상태 갱신 + (바뀌었으면) 로그 한 줄·이전 경로 멈춤 */
     private fun refresh() {
+        var retired: VoiceRoute? = null
         synchronized(lock) {
             val statuses = routes.map { it.status.value }
             val c = VoiceChainPolicy.choose(
@@ -174,6 +180,7 @@ class ChainedVoiceAdapter(
                 elapsedMs = clock() - startedAtMs,
                 selectTimeoutMs = selectTimeoutMs,
             )
+            if (c.path != choice.path) retired = routes.firstOrNull { it.path == choice.path }
             choice = c
             val activeIndex = routes.indexOfFirst { it.path == c.path }
             val active = statuses.getOrNull(activeIndex)
@@ -185,7 +192,7 @@ class ChainedVoiceAdapter(
                 engine = active?.engine,
                 ready = when {
                     c.path != VoicePath.DISPLAY_ONLY -> true
-                    c.selecting -> null
+                    c.selecting || routes.indices.any { statuses[it].ready == null && routes[it].path !in demoted } -> null
                     else -> false
                 },
                 detail = active?.detail ?: c.reason,
@@ -205,6 +212,11 @@ class ChainedVoiceAdapter(
                     )
                 },
             )
+        }
+        // 이전 경로의 대기·재생 문장을 멈춘다(두 목소리 겹침 방지) — 잠금 밖에서(후보 stop 이 신호를 낸다)
+        retired?.let { r ->
+            DhLog.i("voice: 이전 경로 ${r.path} 멈춤(경로 바뀜 — 대기·재생 문장 버림)")
+            runCatching { r.stop() }
         }
     }
 

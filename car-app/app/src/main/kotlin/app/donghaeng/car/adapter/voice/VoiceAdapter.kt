@@ -38,7 +38,7 @@ data class VoiceCandidateStatus(
 /** 음성 어댑터 상태(진단용). 문장 원문은 담지 않는다 */
 data class VoiceAdapterStatus(
     val engine: String? = null,
-    /** null = 초기화 중(체인: 소리 경로를 아직 고르는 중), true = 소리 경로 있음, false = 없음 */
+    /** null = 초기화 중(체인: 소리 경로가 아직 없고 초기화 중인 후보가 있음), true = 소리 경로 있음, false = 없음(화면 표시만으로 정해짐) */
     val ready: Boolean? = null,
     val detail: String? = null,
     val spokenCount: Int = 0,
@@ -114,7 +114,8 @@ interface VoiceRoute : VoiceAdapter {
 /**
  * 디버그 리시버 `status` 한 줄의 음성 부분(demo.py 가 읽는다, 공백 없는 토큰):
  * `tts=ready|init|off ttsEngine=<엔진, 공백→_> ttsPath=ANDROID_TTS|PLEOS_TTS|DISPLAY_ONLY ttsSelecting=true|false`.
- * ready = 어느 경로든 소리 경로가 있음, init = 아직 고르는 중이고 소리 경로 없음, off = 화면 표시만으로 정해짐.
+ * ready = 어느 경로든 소리 경로가 있음, init = 소리 경로가 아직 없고 초기화 중인 후보가 있음(늦게·다시 시도로 준비될 수 있음),
+ * off = 화면 표시만으로 정해짐(모든 후보 불가·강등).
  */
 fun VoiceAdapterStatus.debugTokens(): String {
     val tts = when (ready) { true -> "ready"; null -> "init"; false -> "off" }

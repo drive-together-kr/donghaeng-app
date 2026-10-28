@@ -88,7 +88,10 @@ class SerialUtterancePlayer(
     fun onError(reason: String) { inbox.trySend(Msg.Error(reason)) }
     fun onStop() { inbox.trySend(Msg.Stop) }
 
-    /** 전부 멈춤(음성 끄기·앱 정지) — 대기 문장은 Dropped("stopped") */
+    /**
+     * 전부 멈춤(음성 끄기·체인 경로 바뀜) — 대기 문장은 Dropped("stopped"), 재생 중 문장은 Dropped("interrupted").
+     * 넘긴 문장이 없으면 엔진은 건드리지 않는다(빈 stop 의 늦은 정지 신호가 다음 문장을 끊지 않게).
+     */
     fun stopAll() {
         val playing: Boolean
         synchronized(lock) {
@@ -96,7 +99,8 @@ class SerialUtterancePlayer(
             queue.clear()
             playing = current != null
         }
-        if (playing) inbox.trySend(Msg.Interrupt)
+        if (!playing) return
+        inbox.trySend(Msg.Interrupt)
         runCatching { backend.stop() }
     }
 

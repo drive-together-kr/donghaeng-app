@@ -76,6 +76,52 @@ class EventHighlightPolicyTest {
         assertEquals(EventHighlight.NONE, decide(1_000, VoiceCue(path = VoicePath.PLEOS_TTS, avgLatencyMs = 3_000)))
     }
 
+    // ---- '늦을 게 분명'은 받은 순간 한 번만(리뷰 2026-10-28) ----
+
+    private fun receipt(cue: VoiceCue, type: String = "HARD_BRAKE") = EventHighlightPolicy.noteReceipt(emptyMap(), type, "evt_1", cue)
+
+    @Test
+    fun `late at receipt - a fast start that pulls the average under 3 s still holds steady for 3 s`() {
+        // 받을 때 Pleos 평균 3.4 s → 받은 순간부터 깜빡임. 엔진이 데워져 1.5 s 만에 시작 → 평균 2.9 s 로 내려가도 STEADY 3초
+        val atReceipt = VoiceCue(path = VoicePath.PLEOS_TTS, avgLatencyMs = 3_400)
+        val late = receipt(atReceipt)
+        assertEquals(mapOf("evt_1" to true), late)
+        assertEquals(EventHighlight.BLINK, decide(0, atReceipt.copy(lateAtReceipt = late)))
+        val after = VoiceCue(path = VoicePath.PLEOS_TTS, avgLatencyMs = 2_900, starts = mapOf("evt_1" to t0 + 1_500), lateAtReceipt = late)
+        assertEquals(EventHighlight.STEADY, decide(1_600, after))
+        assertEquals(EventHighlight.STEADY, decide(4_499, after))
+        assertEquals(EventHighlight.NONE, decide(4_500, after))
+    }
+
+    @Test
+    fun `not late at receipt - a start just before 3 s that pushes the average over 3 s stays plain`() {
+        val atReceipt = VoiceCue(path = VoicePath.PLEOS_TTS, avgLatencyMs = 2_800)
+        val late = receipt(atReceipt)
+        assertEquals(mapOf("evt_1" to false), late)
+        val after = VoiceCue(path = VoicePath.PLEOS_TTS, avgLatencyMs = 3_050, starts = mapOf("evt_1" to t0 + 2_900), lateAtReceipt = late)
+        assertEquals("강조 전에 음성이 시작됐으면 평소 모양 그대로", EventHighlight.NONE, decide(3_000, after))
+        assertEquals(EventHighlight.NONE, decide(5_000, after))
+    }
+
+    @Test
+    fun `display only at receipt keeps blinking when a route becomes ready a second later`() {
+        val late = receipt(VoiceCue(path = VoicePath.DISPLAY_ONLY))
+        val later = VoiceCue(path = VoicePath.PLEOS_TTS, avgLatencyMs = null, lateAtReceipt = late)
+        listOf(0L, 1_000L, 2_000L, 2_999L, 3_000L, 9_000L).forEach { assertEquals("t+$it", EventHighlight.BLINK, decide(it, later)) }
+    }
+
+    @Test
+    fun `receipt map - danger only, first value kept, bounded`() {
+        val slow = VoiceCue(path = VoicePath.PLEOS_TTS, avgLatencyMs = 6_000)
+        assertEquals(emptyMap<String, Boolean>(), EventHighlightPolicy.noteReceipt(emptyMap(), "WAYPOINT_ARRIVED", "evt_w", slow))
+        val m = EventHighlightPolicy.noteReceipt(mapOf("evt_1" to false), "AIRBAG_DEPLOYED", "evt_1", slow)
+        assertEquals("같은 eventId(QoS1 중복)는 처음 값", mapOf("evt_1" to false), m)
+        var big = emptyMap<String, Boolean>()
+        (1..40).forEach { big = EventHighlightPolicy.noteReceipt(big, "HARD_BRAKE", "evt_$it", slow) }
+        assertEquals(EventHighlightPolicy.MAX_RECEIPTS, big.size)
+        assertEquals("evt_9", big.keys.first())
+    }
+
     @Test
     fun `unknown route without samples falls back to the 3 s rule`() {
         assertEquals(EventHighlight.NONE, decide(1_000, VoiceCue()))

@@ -108,9 +108,38 @@ class ChainedVoiceAdapterTest {
         advanceTimeBy(12_000); android.ready(); runCurrent()
         assertEquals(VoicePath.ANDROID_TTS, c.status.value.path)
         assertFalse(c.status.value.selecting)
+        assertEquals("경로가 바뀌면 이전 경로(Pleos)의 대기·재생 문장을 멈춘다 — 두 목소리 겹침 방지", 1, pleos.stops)
+        assertEquals(0, android.stops)
         c.speak("다음 문장", Priority.NORMAL, "evt_5")
         assertEquals(1, android.spoken.size)
         assertEquals(1, pleos.spoken.size)
+    }
+
+    @Test
+    fun `a path change stops only the previous route - demotion too, readiness of others does not`() = runTest {
+        val c = chain(android, pleos)
+        android.ready(); runCurrent()
+        assertEquals("화면만 → Android: 멈출 이전 후보 없음", 0, android.stops + pleos.stops)
+        pleos.ready(); runCurrent()
+        assertEquals("경로가 그대로면 아무것도 멈추지 않는다", 0, android.stops + pleos.stops)
+        repeat(3) { android.out.emit(UtteranceSignal.Failed(VoicePath.ANDROID_TTS, "a$it", 0, "onError code=-3")) }
+        runCurrent()
+        assertEquals(VoicePath.PLEOS_TTS, c.status.value.path)
+        assertEquals("강등된 Android 의 남은 문장도 멈춘다", 1, android.stops)
+        assertEquals(0, pleos.stops)
+    }
+
+    @Test
+    fun `off only when no candidate is still initializing - a late or retrying route keeps init`() = runTest {
+        val c = chain(android, pleos)
+        android.unavailable("초기화 실패 status=-1 (엔진 없음)"); runCurrent()
+        advanceTimeBy(ChainedVoiceAdapter.SELECT_TIMEOUT_MS + 1); runCurrent()
+        assertFalse(c.status.value.selecting)
+        assertEquals(VoicePath.DISPLAY_ONLY, c.status.value.path)
+        assertNull("Pleos 가 아직 초기화 중(다시 시도)이면 off 가 아니라 init", c.status.value.ready)
+        assertEquals("tts=init ttsEngine=- ttsPath=DISPLAY_ONLY ttsSelecting=false", c.status.value.debugTokens())
+        pleos.unavailable("initialize 실패 SERVICE_ERROR (시도 3회)"); runCurrent()
+        assertEquals(false, c.status.value.ready)
     }
 
     @Test
@@ -122,7 +151,7 @@ class ChainedVoiceAdapterTest {
         assertTrue(c.status.value.selecting)
         advanceTimeBy(ChainedVoiceAdapter.SELECT_TIMEOUT_MS + 1); runCurrent()
         assertFalse("상한이 지나면 확정", c.status.value.selecting)
-        assertEquals(false, c.status.value.ready)
+        assertNull("둘 다 아직 초기화 중 — 소리 경로 없음이지만 off 로 정하지 않는다", c.status.value.ready)
         assertEquals("ANDROID_TTS 초기화 30s 넘음 · PLEOS_TTS 초기화 30s 넘음", c.status.value.pathReason)
         pleos.ready(); runCurrent()
         assertEquals(VoicePath.PLEOS_TTS, c.status.value.path)

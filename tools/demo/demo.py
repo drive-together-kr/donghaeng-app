@@ -117,7 +117,7 @@ def tts_path_row(name: str, st: dict, engine_installed: bool):
             return (f"{name} 앱 음성 경로 = PLEOS_TTS (Supertonic 이 있는데 Android TTS 불가 — 기본 엔진·앱 재시작 확인, 진단 '음성 안내' 사유)", None)
         return (f"{name} 앱 음성 경로 = PLEOS_TTS (Supertonic 없음 — Pleos TTS 로 자동 동작, 음질은 docs/09 §1.4)", True)
     if tts == "init":
-        return (f"{name} 앱 음성 경로 — 아직 고르는 중(소리 경로 없음, 시간 초과)", False)
+        return (f"{name} 앱 음성 경로 — 소리 경로 없음, 초기화 중인 후보 있음(Pleos TTS 늦은 응답·다시 시도일 수 있음 — 시간 초과, 진단 '음성 안내' 후보 줄·잠시 뒤 다시)", False)
     return (f"{name} 앱 음성 경로 = {path or 'DISPLAY_ONLY'} — 소리 없음(화면 표시만): Supertonic 설치(docs/09 §1.4) 또는 Pleos CaaS 확인", False)
 
 

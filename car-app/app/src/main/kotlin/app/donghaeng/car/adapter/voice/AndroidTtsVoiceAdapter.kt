@@ -24,7 +24,11 @@ import java.util.concurrent.atomic.AtomicReference
  * - 오디오: [AudioFocusGuard](`USAGE_ASSISTANCE_NAVIGATION_GUIDANCE`, 말하기 전 `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`, 마지막 문장이 끝나면 반납).
  *   문장 앞에 **선행 묵음 200 ms**(Pleos 가이드) — 블루투스/앰프가 깨어나며 첫 음절이 잘리는 것을 막는다.
  * - [Priority.CRITICAL] 은 `QUEUE_FLUSH` 로 재생 중인 안내를 끊는다. 큐 순서·신선도는 `VoiceAnnouncer` 가 결정한다.
- * - 진행 신호([signals]): 본문 utterance 의 `onStart` → Started(요청 → 시작, 선행 묵음 200 ms 포함), `onDone` → Done, `onError` → Failed, 끊김 → Dropped.
+ * - 진행 신호([signals]): **Started = 실제 소리 시작** — 본문 utterance 의 재생 차례(`onStart`)와 엔진 오디오 첫 조각(`onAudioAvailable`, API 24+)이
+ *   **둘 다 온 시각(늦은 쪽)**. AOSP `SynthesisPlaybackQueueItem.run()` 은 `onStart` 를 먼저 보내고 엔진 오디오를 기다리므로(sherpa-onnx 는
+ *   문장 합성을 끝낸 뒤에 오디오를 넘긴다) `onStart` 만 보면 합성이 3 s 넘게 걸려도 지연이 0.2~0.3 s 로 보인다(리뷰 2026-10-28).
+ *   오디오 조각 신호 없이 끝나면(onDone) `onStart` 시각으로 대신한다. 지연 = 요청 → 그 시각(선행 묵음 200 ms 포함).
+ *   `onDone` → Done, `onError` → Failed, 끊김 → Dropped.
  *
  * 문장 원문은 **어떤 빌드에서도** 로그에 남기지 않는다(닉네임 포함, CLAUDE.md 규칙 8) — 길이와 utteranceId 만 남긴다.
  */
@@ -32,7 +36,14 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceRoute {
 
     private enum class State { INITIALIZING, READY, UNAVAILABLE }
 
-    private data class Pending(val tag: String?, val requestedAt: Long)
+    /** 본문 utterance 한 개 — [startAt] = onStart(재생 차례), [audioAt] = 첫 onAudioAvailable(엔진 오디오 도착), [signaled] = Started 를 보냈다 */
+    private data class Pending(
+        val tag: String?,
+        val requestedAt: Long,
+        val startAt: Long? = null,
+        val audioAt: Long? = null,
+        val signaled: Boolean = false,
+    )
 
     override val path: VoicePath = VoicePath.ANDROID_TTS
 
@@ -85,7 +96,9 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceRoute {
         }
         runCatching { engine.setAudioAttributes(AudioFocusGuard.NAV_GUIDANCE) }
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) = onUtteranceStart(utteranceId)
+            override fun onStart(utteranceId: String?) = onUtteranceProgress(utteranceId) { p, now -> if (p.startAt == null) p.copy(startAt = now) else p }
+            override fun onAudioAvailable(utteranceId: String?, audio: ByteArray?) =
+                onUtteranceProgress(utteranceId) { p, now -> if (p.audioAt == null) p.copy(audioAt = now) else p }
             override fun onDone(utteranceId: String?) = onUtteranceFinished(utteranceId, ok = true, reason = null)
             @Deprecated("API 21 미만 호환용")
             override fun onError(utteranceId: String?) = onUtteranceFinished(utteranceId, ok = false, reason = "onError")
@@ -138,11 +151,20 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceRoute {
         releaseFocusIfIdle()
     }
 
-    private fun onUtteranceStart(utteranceId: String?) {
+    /** onStart·onAudioAvailable — 둘 다 모이면 그 문장의 Started 를 한 번 보낸다(바인더 스레드 여럿이어도 맵 갱신은 원자적) */
+    private fun onUtteranceProgress(utteranceId: String?, update: (Pending, Long) -> Pending) {
         if (utteranceId == null || utteranceId.endsWith(SILENCE_SUFFIX)) return
-        val p = pending[utteranceId] ?: return
         val now = System.currentTimeMillis()
-        _signals.tryEmit(UtteranceSignal.Started(path, p.tag, now, now - p.requestedAt))
+        var fire: Pending? = null
+        pending.computeIfPresent(utteranceId) { _, p ->
+            val n = update(p, now)
+            if (!n.signaled && soundStartAt(n.startAt, n.audioAt) != null) n.copy(signaled = true).also { fire = it } else n
+        }
+        fire?.let { p -> emitStarted(p, soundStartAt(p.startAt, p.audioAt) ?: now) }
+    }
+
+    private fun emitStarted(p: Pending, atMs: Long) {
+        _signals.tryEmit(UtteranceSignal.Started(path, p.tag, atMs, atMs - p.requestedAt))
     }
 
     private fun onUtteranceFinished(utteranceId: String?, ok: Boolean, reason: String?) {
@@ -150,6 +172,8 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceRoute {
         if (utteranceId != null && !utteranceId.endsWith(SILENCE_SUFFIX)) {
             pending.remove(utteranceId)?.let { p ->
                 val now = System.currentTimeMillis()
+                // 오디오 조각 신호 없이 끝남 → 재생 차례(onStart) 시각으로 대신한다
+                if (ok && !p.signaled && p.startAt != null) emitStarted(p, p.startAt)
                 _signals.tryEmit(if (ok) UtteranceSignal.Done(path, p.tag, now) else UtteranceSignal.Failed(path, p.tag, now, reason ?: "onError"))
                 if (!ok) _status.update { it.copy(failedCount = it.failedCount + 1) }
             }
@@ -180,6 +204,13 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceRoute {
     internal companion object {
         const val PRE_SILENCE_MS = 200L
         private const val SILENCE_SUFFIX = "-s"
+
+        /**
+         * 실제 소리 시작 시각 — 재생 차례(onStart)와 엔진 오디오 도착(첫 onAudioAvailable) 중 **늦은 쪽**, 둘 다 와야 정해진다(null = 아직).
+         * 합성이 빠르면 오디오가 선행 묵음 중에 먼저 와 onStart 가 시작, 느리면(sherpa-onnx 부하) 오디오 도착이 시작이다.
+         */
+        internal fun soundStartAt(startAt: Long?, audioAt: Long?): Long? =
+            if (startAt != null && audioAt != null) maxOf(startAt, audioAt) else null
 
         /** 로그용 요약 — 문장 원문 대신 길이와 utteranceId 만 (규칙 8). 빌드 타입과 무관하게 항상 동일. */
         internal fun describe(text: String, utteranceId: String): String = "(len=${text.length} id=$utteranceId)"
