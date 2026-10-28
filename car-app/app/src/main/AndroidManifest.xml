@@ -13,12 +13,22 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" /> <!-- 위치 권한 전에는 dataSync 타입으로 시작(T23) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 주행 중 표면: 순정 내비 위 플로팅 패널(TYPE_APPLICATION_OVERLAY, docs/05 §5.2). Pleos 는 설정 화면이 없어
+         adb 의 appops set(사용자 10) SYSTEM_ALERT_WINDOW allow 로만 허용된다(docs/10 R16). 없으면 알림 카드 + 음성 모드 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- Pleos 차량 권한(pleos.car.permission.*, android.car.permission.*)은 src/pleos/AndroidManifest.xml 에만 선언 -->
 
     <!-- required=false 는 fake flavor 용(일반 폰·태블릿 AVD 설치). pleos flavor 는 FusedLocation AAR 이 automotive required=true 로
          병합하므로 AAOS 전용 APK 가 된다(의도된 동작, PleosFusedLocationAdapter KDoc 참조). -->
     <uses-feature android:name="android.hardware.type.automotive" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+    <!-- 정차 대시보드 '권한 열기' 버튼: 오버레이 권한 설정 화면이 있는 기기에서만 보이도록 resolve 확인(API 30+ 패키지 가시성) -->
+    <queries>
+        <intent>
+            <action android:name="android.settings.action.MANAGE_OVERLAY_PERMISSION" />
+        </intent>
+    </queries>
 
     <application
         android:name=".DongHaengApp"
@@ -55,6 +65,11 @@
             android:name=".service.DriveSessionService"
             android:exported="false"
             android:foregroundServiceType="location|dataSync" />
+
+        <!-- 순정 내비 위 플로팅 패널(오버레이 창). DriveSurfaceController 가 그룹 + 오버레이 권한 + 동행 화면 비전면일 때만 시작 -->
+        <service
+            android:name=".surface.FloatingPanelService"
+            android:exported="false" />
     </application>
 
 </manifest>

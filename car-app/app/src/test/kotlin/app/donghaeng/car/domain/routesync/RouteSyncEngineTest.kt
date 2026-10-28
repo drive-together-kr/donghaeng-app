@@ -188,4 +188,38 @@ class RouteSyncEngineTest {
             assertTrue(!e.publishTestRouteChange(RouteSyncEngine.DEMO_WAYPOINT))
         } finally { e.stop() }
     }
+
+    @Test
+    fun `active waypoint follows accepted and published routes and clears on arrival or group end`() = runTest {
+        session.value = memberSession
+        val e = engine(testScheduler); e.start(); runCurrent()
+        try {
+            assertNull(e.state.value.activeWaypoint)
+            // 멤버: 경유지 있는 제안 수락 → 다음 정차지 = 첫 경유지
+            proposals.emit(proposal()); runCurrent()
+            e.accept(); runCurrent()
+            assertEquals(waypoint, e.state.value.activeWaypoint)
+            // 경유지 도착 → 지난 정차지
+            naviEvents.emit(NaviEvent.WaypointArrived(index = 0, waypoint = waypoint)); runCurrent()
+            assertNull(e.state.value.activeWaypoint)
+            // 경유지 없는 경로 수락 → 없음 유지, 거절은 바꾸지 않는다
+            proposals.emit(proposal("prp_2")); runCurrent()
+            e.decline(); runCurrent()
+            assertNull(e.state.value.activeWaypoint)
+            proposals.emit(proposal("prp_3")); runCurrent()
+            e.accept(); runCurrent()
+            assertEquals(waypoint, e.state.value.activeWaypoint)
+            proposals.emit(proposal("prp_4", wps = emptyList())); runCurrent()
+            e.accept(); runCurrent()
+            assertNull(e.state.value.activeWaypoint)
+
+            // 선두: 발행한 경유지가 다음 정차지
+            session.value = leaderSession.copy(groupId = "grp_lead"); runCurrent()
+            assertTrue(e.publishTestRouteChange(RouteSyncEngine.DEMO_WAYPOINT))
+            assertEquals(RouteSyncEngine.DEMO_WAYPOINT, e.state.value.activeWaypoint)
+            // 그룹 종료 → 비움
+            session.value = null; runCurrent()
+            assertNull(e.state.value.activeWaypoint)
+        } finally { e.stop() }
+    }
 }

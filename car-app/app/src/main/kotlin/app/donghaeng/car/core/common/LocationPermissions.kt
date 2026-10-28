@@ -27,6 +27,7 @@ object LocationPermissions {
     fun runtimePermissions(context: Context): Array<String> = buildList {
         add(Manifest.permission.ACCESS_FINE_LOCATION)
         add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        // 포그라운드 서비스 알림 + 주행 중 이벤트 알림 카드(surface.EventCardNotifier, docs/05 §5.2) — 거부되면 카드 없이 패널·음성만
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.POST_NOTIFICATIONS)
         // 자동차 기기에서만: Car API 속도(PERF_VEHICLE_SPEED) 용 dangerous 권한. 거부 시 위치 계산 속도로 폴백(T22)
         if (context.packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE)) add(CAR_SPEED)

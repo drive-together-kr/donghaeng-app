@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -54,8 +55,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
 import app.donghaeng.car.R
+import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.session.GroupSession
+import app.donghaeng.car.feature.drive.DriveDashboardMapper
+import app.donghaeng.car.feature.drive.DriveDashboardScreen
+import app.donghaeng.car.surface.NaviLauncher
+import app.donghaeng.car.surface.OverlayPermissionMonitor
 import app.donghaeng.car.ui.theme.DongHaengTheme
 import app.donghaeng.protocol.GroupTopics
 import app.donghaeng.protocol.MemberStatus
@@ -65,16 +73,56 @@ import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
-/** 그룹 주행 화면 진입점 (T25) */
+/**
+ * 그룹 주행 화면 진입점 (T25 → 2026-10-28 정차 대시보드로 교체, docs/05 §5.1).
+ *
+ * 그룹이 있으면 [DriveDashboardScreen](실데이터 = [DriveDashboardMapper]) 위에 선두 경로 제안 카드(T28)를 띄운다. 그룹이 없으면 기존 화면의 "끝났어요" 패널.
+ * 초대 QR·나가기/종료는 정차 블록 '그룹 관리'(그룹 생성 화면 Active)에 있다. [내비 보기] = 순정 내비를 앞으로(지도 앱 selector → 실패 시 NaviHelper 화면 요청).
+ * [무전](F16)은 다음 작업 — 지금은 안내 토스트만.
+ */
 @Composable
 fun GroupDriveRoute(
     onBack: () -> Unit,
     onOpenInvite: () -> Unit,
     onOpenEvents: () -> Unit = {},
+    onManageGroup: () -> Unit = onOpenInvite,
+    onOpenSettings: () -> Unit = {},
     viewModel: GroupDriveViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    GroupDriveScreen(state = state, onBack = onBack, onOpenInvite = onOpenInvite, onEndOrLeave = { viewModel.endOrLeave() }, onClearError = viewModel::clearError, onOpenEvents = onOpenEvents, onAcceptProposal = viewModel::acceptProposal, onDeclineProposal = viewModel::declineProposal)
+    val dashboard = remember(state) { DriveDashboardMapper.map(state) }
+    if (dashboard == null) {
+        GroupDriveScreen(state = state, onBack = onBack, onOpenInvite = onOpenInvite, onEndOrLeave = { viewModel.endOrLeave() }, onClearError = viewModel::clearError, onOpenEvents = onOpenEvents, onAcceptProposal = viewModel::acceptProposal, onDeclineProposal = viewModel::declineProposal)
+        return
+    }
+    val context = LocalContext.current
+    val overlaySettings = remember(dashboard.overlayNotice) { if (dashboard.overlayNotice) OverlayPermissionMonitor.settingsIntent(context) else null }
+    Box(Modifier.fillMaxSize()) {
+        DriveDashboardScreen(
+            ui = dashboard,
+            onPtt = {
+                DhLog.i("group drive: ptt tapped (F16 미구현)")
+                Toast.makeText(context, R.string.surface_ptt_soon, Toast.LENGTH_SHORT).show()
+            },
+            onOpenNavi = { if (!NaviLauncher.bringToFront(context)) viewModel.showNavigationFallback() },
+            onManageGroup = onManageGroup,
+            onSettings = onOpenSettings,
+            onOpenEvents = onOpenEvents,
+            onHome = onBack,
+            onOpenOverlaySettings = overlaySettings?.let { intent -> { runCatching { context.startActivity(intent) }.onFailure { DhLog.w("group drive: 오버레이 설정 열기 실패 ${it.javaClass.simpleName}") } } },
+        )
+        state.proposal?.let { p ->
+            ProposalCard(state, p, viewModel::acceptProposal, viewModel::declineProposal, Modifier.align(Alignment.TopCenter).padding(top = 24.dp, start = 24.dp, end = 24.dp).widthIn(max = 960.dp))
+        }
+    }
+    state.error?.let { message ->
+        AlertDialog(
+            onDismissRequest = viewModel::clearError,
+            title = { Text(stringResource(R.string.drive_error_title)) },
+            text = { Text(message) },
+            confirmButton = { TextButton(onClick = viewModel::clearError) { Text(stringResource(R.string.drive_ok)) } },
+        )
+    }
 }
 
 /**
@@ -269,8 +317,8 @@ private fun MapPane(state: GroupDriveUiState, modifier: Modifier) {
 
 /** T28 — 선두 경로 제안: 따라가기/아니요. 주행 중에는 버튼을 막고 30초 뒤 자동 거절(남은 초 표시) */
 @Composable
-private fun ProposalCard(state: GroupDriveUiState, p: app.donghaeng.car.domain.routesync.RouteProposal, onAccept: () -> Unit, onDecline: () -> Unit) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+internal fun ProposalCard(state: GroupDriveUiState, p: app.donghaeng.car.domain.routesync.RouteProposal, onAccept: () -> Unit, onDecline: () -> Unit, modifier: Modifier = Modifier) {
+    Card(modifier = modifier, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(stringResource(R.string.drive_proposal_title), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
             Text(p.speech, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onPrimaryContainer)

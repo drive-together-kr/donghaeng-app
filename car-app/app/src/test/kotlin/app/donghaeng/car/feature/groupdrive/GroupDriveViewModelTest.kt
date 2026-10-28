@@ -106,8 +106,16 @@ class GroupDriveViewModelTest {
         clockState = kotlinx.coroutines.flow.MutableStateFlow(app.donghaeng.car.domain.time.ClockSyncState()), dispatcher = dispatcher,
     )
 
-    private fun viewModel() = GroupDriveViewModel(manager, GroupRepository(api, sessions, manager), tokens, gateway, fixes, AlwaysParkedDrivingStateMonitor(), routeSync(), latencyMeter())
-        .also { it.configureForTest(tickMs = 1_000, clock = { now }) }
+    /** 표면 상태 가짜 — 모드·최근 이벤트를 테스트가 직접 바꾼다 */
+    private val surface = object : app.donghaeng.car.surface.SurfaceFeed {
+        override val mode = kotlinx.coroutines.flow.MutableStateFlow(app.donghaeng.car.surface.SurfaceMode.PANEL)
+        override val recentEvents = kotlinx.coroutines.flow.MutableStateFlow<List<app.donghaeng.car.domain.session.ReceivedGroupEvent>>(emptyList())
+    }
+
+    private fun viewModel() = GroupDriveViewModel(
+        manager, GroupRepository(api, sessions, manager), tokens, gateway, fixes, AlwaysParkedDrivingStateMonitor(), routeSync(), latencyMeter(),
+        app.donghaeng.car.domain.navi.NaviEventMonitor(app.donghaeng.car.adapter.navi.FakeNaviAdapter()), app.donghaeng.car.adapter.navi.FakeNaviAdapter(), surface,
+    ).also { it.configureForTest(tickMs = 1_000, clock = { now }) }
 
     private fun member(vid: String, nick: String, status: MemberStatus, online: Boolean = true, lat: Double? = 36.35, lon: Double? = 127.38, speed: Float? = 80f, dist: Int? = 500) = MemberState(
         vehicleId = vid, nickname = nick, color = "#2E7DFF", online = online, lat = lat, lon = lon, heading = 90f, speedKph = speed, ageMs = 820,

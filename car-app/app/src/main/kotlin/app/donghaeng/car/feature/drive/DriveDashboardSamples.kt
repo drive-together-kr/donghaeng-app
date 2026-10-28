@@ -2,7 +2,8 @@ package app.donghaeng.car.feature.drive
 
 /**
  * 시안·프리뷰용 샘플 데이터 (실제 데이터 연결은 2단계). 닉네임·장소는 가상.
- * 변형 이름: drive_landscape, drive_portrait, parked, ptt_recording, ptt_confirm, ptt_sent, ptt_playing, drive_light
+ * 변형 이름: drive_landscape, drive_portrait, parked, ptt_recording, ptt_confirm, ptt_sent, ptt_playing, drive_light,
+ * panel_dark, panel_light, panel_full(플로팅 패널 단독 — FloatingPanelSamples)
  */
 object DriveDashboardSamples {
     const val BLUE = 0xFF2E7DFFL
@@ -87,5 +88,5 @@ object DriveDashboardSamples {
         else -> driving
     }
 
-    val variants = listOf("drive_landscape", "drive_portrait", "parked", "ptt_recording", "ptt_confirm", "ptt_sent", "ptt_playing", "drive_light")
+    val variants = listOf("drive_landscape", "drive_portrait", "parked", "ptt_recording", "ptt_confirm", "ptt_sent", "ptt_playing", "drive_light", "panel_dark", "panel_light", "panel_full")
 }

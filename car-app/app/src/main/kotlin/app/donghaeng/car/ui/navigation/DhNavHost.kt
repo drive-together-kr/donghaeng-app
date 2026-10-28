@@ -74,6 +74,9 @@ fun DhNavHost(
                 onBack = { navController.popBackStack(DhRoutes.HOME, inclusive = false) },
                 onOpenInvite = { navController.navigate(DhRoutes.CREATE_GROUP) },
                 onOpenEvents = { navController.navigate(DhRoutes.EVENTS) },
+                // 정차 대시보드 블록: 그룹 관리(초대 QR·멤버·나가기/종료) / 설정
+                onManageGroup = { navController.navigate(DhRoutes.CREATE_GROUP) },
+                onOpenSettings = { navController.navigate(DhRoutes.SETTINGS) },
             )
         }
         composable(DhRoutes.EVENTS) { EventsRoute(onBack = { navController.popBackStack() }) }

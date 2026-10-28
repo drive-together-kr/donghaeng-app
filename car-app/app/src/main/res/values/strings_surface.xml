@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 주행 중 표면(플로팅 패널·알림 카드·조용한 상시 알림·정차 대시보드, docs/05 §5.1·§5.2). strings.xml 과 분리해 다른 브랜치와 충돌을 줄인다 -->
+<resources>
+    <!-- 조용한 상시 알림(포그라운드 서비스) — 문구 고정, 갱신 금지 -->
+    <string name="surface_fgs_channel_name">동행 그룹 주행 상태</string>
+    <string name="surface_fgs_channel_desc">그룹 주행 중 위치 공유가 켜져 있음을 조용히 표시합니다(소리·팝업 없음)</string>
+    <string name="surface_fgs_title">동행 그룹 주행 중</string>
+
+    <!-- 이벤트 알림 카드(8초) -->
+    <string name="surface_events_channel_name">동행 그룹 소식</string>
+    <string name="surface_events_channel_desc">다른 차의 급제동·저잔량·도착·합류·연결 끊김·메시지를 8초 동안 알림 카드로 보여 줍니다</string>
+
+    <!-- 플로팅 패널 -->
+    <string name="surface_panel_more">외 %1$d대</string>
+    <string name="surface_panel_waiting">다른 차 정보를 기다리는 중</string>
+    <string name="surface_ptt_soon">무전은 곧 지원돼요</string>
+
+    <!-- 정차 대시보드 -->
+    <string name="surface_cards_only_notice">플로팅 창 권한이 없어 알림 카드와 음성으로 안내해요</string>
+    <string name="surface_open_permission">권한 열기</string>
+    <string name="surface_more_events">더 보기</string>
+    <string name="surface_home">홈</string>
+</resources>

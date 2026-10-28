@@ -43,7 +43,7 @@ class DriveSessionController(
     }
 
     private fun startService(s: GroupSession) {
-        val intent = DriveSessionService.intent(context, s.name)
+        val intent = DriveSessionService.intent(context)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
             _serviceRunning.value = true
@@ -56,7 +56,7 @@ class DriveSessionController(
 
     private fun stopService() {
         if (!_serviceRunning.value) return
-        runCatching { context.stopService(DriveSessionService.intent(context, "")) }
+        runCatching { context.stopService(DriveSessionService.intent(context)) }
             .onFailure { DhLog.w("drive session service: 종료 실패", it) }
         _serviceRunning.value = false
         DhLog.i("drive session service: stop 요청 (그룹 없음)")

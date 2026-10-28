@@ -13,6 +13,16 @@ import app.donghaeng.car.domain.model.toLogString
 import app.donghaeng.car.domain.routesync.RouteSyncEngine
 import app.donghaeng.car.domain.session.GroupSessionStore
 import app.donghaeng.car.domain.voice.VoiceAnnouncer
+import app.donghaeng.car.domain.session.ReceivedGroupEvent
+import app.donghaeng.car.domain.time.ClockSync
+import app.donghaeng.car.surface.DriveSurfaceController
+import app.donghaeng.car.surface.EventCardNotifier
+import app.donghaeng.car.surface.OverlayPermissionMonitor
+import app.donghaeng.car.surface.PanelCorner
+import app.donghaeng.car.surface.SurfaceState
+import app.donghaeng.protocol.GroupEvent
+import app.donghaeng.protocol.Severity
+import kotlinx.serialization.json.JsonObject
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
@@ -39,6 +49,9 @@ import kotlinx.coroutines.launch
  * | `gpx` | `role` = `lead`/`follow` | fake flavor GPX 역할 저장 — **앱 재시작 후 적용** |
  * | `status` | | 세션·제안·음성 상태 한 줄 로그 |
  * | `open` | `screen` = home/drive/events/create/settings/diagnostics | 앱을 전면으로 올리고 그 화면으로 이동(MainActivity extra `screen`) |
+ * | `surface` | | 주행 중 표면 상태 한 줄 — `demo: surface mode=PANEL panelVisible=true canDraw=true appResumed=false … panelShown=true cards=…` |
+ * | `surface_pos` | `corner` = top_end/top_start/bottom_end/bottom_start | 패널 모서리 강제 지정(저장됨) |
+ * | `event` | `type`(기본 LOW_ENERGY), `speech`, `source`(기본 veh_DEMO), `age_s`(봉투 나이), `voice`(ez, 기본 true) | 그룹 이벤트 한 건을 로컬로 흘려 패널 이벤트 줄·알림 카드·음성을 확인 |
  *
  * 결과는 `logcat -s DongHaeng` 의 `demo:` 줄로 확인한다. 좌표·ID 는 마스킹 규칙(CLAUDE.md 8)을 따른다.
  * 의존성은 Hilt `@EntryPoint` 로 꺼낸다(BroadcastReceiver 의 `onReceive` 가 추상이라 `@AndroidEntryPoint` 의 super 호출을 쓸 수 없다).
@@ -52,16 +65,28 @@ class DemoControlReceiver : BroadcastReceiver() {
         fun voice(): VoiceAnnouncer
         fun navi(): NaviAdapter
         fun sessionStore(): GroupSessionStore
+        fun surfaceController(): DriveSurfaceController
+        fun surfaceState(): SurfaceState
+        fun surfaceCards(): EventCardNotifier
+        fun surfaceOverlay(): OverlayPermissionMonitor
+        fun clockSync(): ClockSync
     }
 
     private lateinit var routeSync: RouteSyncEngine
     private lateinit var voice: VoiceAnnouncer
     private lateinit var navi: NaviAdapter
     private lateinit var sessionStore: GroupSessionStore
+    private lateinit var surfaceController: DriveSurfaceController
+    private lateinit var surfaceState: SurfaceState
+    private lateinit var surfaceCards: EventCardNotifier
+    private lateinit var surfaceOverlay: OverlayPermissionMonitor
+    private lateinit var clockSync: ClockSync
 
     override fun onReceive(context: Context, intent: Intent) {
         val deps = EntryPointAccessors.fromApplication(context.applicationContext, Deps::class.java)
         routeSync = deps.routeSync(); voice = deps.voice(); navi = deps.navi(); sessionStore = deps.sessionStore()
+        surfaceController = deps.surfaceController(); surfaceState = deps.surfaceState(); surfaceCards = deps.surfaceCards()
+        surfaceOverlay = deps.surfaceOverlay(); clockSync = deps.clockSync()
         val action = intent.getStringExtra(EXTRA_ACTION)
         if (action.isNullOrBlank()) {
             DhLog.w("demo: action 없음 (--es action …)")
@@ -150,12 +175,32 @@ class DemoControlReceiver : BroadcastReceiver() {
             }
             "notify" -> ProbeNotifications.post(context, intent.getStringExtra("kind") ?: "status")
             "ongoing" -> if (intent.getBooleanExtra("on", true)) ProbeNotifications.postOngoing(context, intent.getStringExtra("importance") ?: "min") else ProbeNotifications.cancelOngoing(context)
-            "panel" -> {
-                val svc = Intent(context, FloatingPanelProbeService::class.java)
-                    .putExtra("on", intent.getBooleanExtra("on", true))
-                    .putExtra("variant", intent.getStringExtra("variant") ?: "base")
-                context.startService(svc)
-                DhLog.i("demo: panel variant=${intent.getStringExtra("variant") ?: "base"} on=${intent.getBooleanExtra("on", true)}")
+            "surface" -> {
+                // 주행 중 표면 상태 한 줄: 모드(OFF/PANEL/CARDS_ONLY)·패널 표시 여부·권한·모서리·카드 수
+                surfaceOverlay.recheck()
+                DhLog.i("demo: surface ${surfaceController.describe()}")
+            }
+            "surface_pos" -> {
+                val corner = PanelCorner.parse(intent.getStringExtra("corner"))
+                if (corner == null) DhLog.w("demo: surface_pos corner=${intent.getStringExtra("corner")} 모름 (top_end|top_start|bottom_end|bottom_start)")
+                else { surfaceState.setCorner(corner); DhLog.i("demo: surface_pos corner=$corner") }
+            }
+            "event" -> {
+                // 그룹 이벤트 한 건을 로컬로 흘려 표면(패널 이벤트 줄·알림 카드·음성)을 확인한다 — 서버를 거치지 않는다
+                val type = intent.getStringExtra("type") ?: "LOW_ENERGY"
+                val speech = intent.getStringExtra("speech") ?: demoSpeech(type)
+                val source = intent.getStringExtra("source") ?: "veh_DEMO"
+                val severity = when (type) { "AIRBAG_DEPLOYED" -> Severity.ALERT; "HARD_BRAKE", "LOW_ENERGY", "MEMBER_OFFLINE", "DEVIATION" -> Severity.WARN; else -> Severity.INFO }
+                val now = System.currentTimeMillis()
+                val e = ReceivedGroupEvent(
+                    GroupEvent(eventId = "demo-$now", type = type, sourceVehicleId = source, severity = severity, speech = speech, payload = JsonObject(emptyMap())),
+                    envelopeTsMs = clockSync.serverNow() - intent.getIntExtra("age_s", 0) * 1_000L,
+                    receivedAtMs = now,
+                )
+                surfaceState.noteEvent(e)
+                val carded = surfaceCards.onEvent(e)
+                if (intent.getBooleanExtra("voice", true)) voice.onEvent(e)
+                DhLog.i("demo: event type=$type source=${TextMasking.maskVehicleId(source)} card=$carded mode=${surfaceState.mode.value} len=${speech.length}")
             }
             "navi_screen" -> {
                 // 지도 렌더링 확인용: 순정 내비의 경로 옵션 화면(전체 경로가 보이게 축소) 요청
@@ -167,17 +212,6 @@ class DemoControlReceiver : BroadcastReceiver() {
                 val dest = sessionStore.session.value?.destination
                 if (dest == null) DhLog.w("demo: navi_waypoint 그룹 없음")
                 else { navi.requestRouteWithWaypoints(dest, listOf(RouteSyncEngine.DEMO_WAYPOINT)); DhLog.i("demo: navi_waypoint → ${dest.toLogString()} + ${RouteSyncEngine.DEMO_WAYPOINT.name}") }
-            }
-            "fgs_text" -> {
-                // 상단 상시 카드(포그라운드 서비스 알림)가 내용 갱신을 반영하는지 — 같은 채널·ID 로 다시 올린다
-                val text = intent.getStringExtra("text") ?: "아빠 앞 1.2 km · 삼촌 뒤 2.1 km · 둘째 뒤 5.7 km"
-                val title = intent.getStringExtra("title") ?: "동행 · 강릉 가족 여행 · 그룹 도착 14:35"
-                // 서비스가 같은 ID 로 startForeground 를 다시 호출하게 한다(알림만 바꾸면 상단 카드가 안 바뀜 — 실측)
-                val svc = Intent(context, app.donghaeng.car.service.DriveSessionService::class.java)
-                    .putExtra(app.donghaeng.car.service.DriveSessionService.EXTRA_STATUS_TITLE, title)
-                    .putExtra(app.donghaeng.car.service.DriveSessionService.EXTRA_STATUS_TEXT, text)
-                runCatching { context.startForegroundService(svc) }.onFailure { DhLog.w("demo: fgs_text startForegroundService 실패 ${it.javaClass.simpleName}") }
-                DhLog.i("demo: fgs_text requested len=${text.length}")
             }
             "focus" -> ProbeAudioFocus.test(context, intent.getStringExtra("usage") ?: "nav")
             "status" -> {
@@ -191,6 +225,18 @@ class DemoControlReceiver : BroadcastReceiver() {
             }
             else -> DhLog.w("demo: 모르는 action=$action")
         }
+    }
+
+    /** 디버그 `event` 기본 문구(가상 닉네임) */
+    private fun demoSpeech(type: String): String = when (type) {
+        "HARD_BRAKE" -> "앞쪽 시연 차가 급제동했어요. 주의하세요."
+        "AIRBAG_DEPLOYED" -> "시연 차의 에어백이 터졌어요. 확인이 필요해요."
+        "WAYPOINT_ARRIVED" -> "시연 차가 덕평휴게소에 도착했어요."
+        "DESTINATION_ARRIVED" -> "시연 차가 목적지에 도착했어요."
+        "MEMBER_JOINED" -> "시연 차가 그룹에 들어왔어요."
+        "MEMBER_OFFLINE" -> "시연 차와 연결이 끊겼어요."
+        "PASSENGER_MESSAGE" -> "시연 차에서 온 메시지. 휴게소 들렀다 가요"
+        else -> "시연 차 배터리가 12% 남았어요."
     }
 
     private companion object {

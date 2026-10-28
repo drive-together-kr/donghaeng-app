@@ -33,6 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,7 +65,9 @@ import app.donghaeng.car.R
 
 /*
  * 주행 대시보드 (재설계안 2차 — docs/05 §5.1, 사용자 지침 2026-10-28)
- * 용도(방향 재정정): 정차 화면과 분할 패널. 주행 중 전면은 순정 내비이고 동행은 오버레이·알림·음성으로만 정보를 준다.
+ * 용도(방향 재정정): 그룹 주행 경로(GROUP_DRIVE)의 정차 화면 — 실데이터는 DriveDashboardMapper(GroupDriveViewModel 상태).
+ * 주행 중 전면은 순정 내비이고 동행은 플로팅 패널·알림 카드·음성으로만 정보를 준다(docs/05 §5.2).
+ * 정차 블록: 지난 소식(+더 보기)·그룹 관리·설정·홈. 프리셋(F8)·보내지 않은 무전(F16)은 데이터가 있을 때만.
  *
  * 가로: 대열 막대(내용 맞춤 높이) → [그룹 도착 | 다음 정차](남는 높이 전부, 숫자 84sp) → 휴식 추천 줄(순정 내비가 보일 때) 또는 제한속도·회전 줄
  *       → 이벤트 띠(이벤트 있을 때만) → 하단 [무전](라임)·[내비 보기]
@@ -113,12 +116,19 @@ fun DriveDashboardScreen(
     onManageGroup: () -> Unit = {},
     onSettings: () -> Unit = {},
     onResendUnsent: () -> Unit = {},
+    /** 정차 블록 '지난 소식' 의 [더 보기](이벤트 피드). null 이면 버튼 없음 */
+    onOpenEvents: (() -> Unit)? = null,
+    /** 정차 블록 [홈]. null 이면 버튼 없음 */
+    onHome: (() -> Unit)? = null,
+    /** 플로팅 창 권한 설정 화면 열기 — 기기에 그 화면이 없으면 null(버튼 숨김) */
+    onOpenOverlaySettings: (() -> Unit)? = null,
 ) {
     Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val landscape = maxWidth > maxHeight
             val narrow = maxWidth < 900.dp
             Column(Modifier.fillMaxSize()) {
+                if (ui.overlayNotice) OverlayNotice(onOpenOverlaySettings)
                 PttTopBand(ui.ptt)
                 Box(Modifier.weight(1f)) {
                     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -128,7 +138,7 @@ fun DriveDashboardScreen(
                             ui.nextStop?.let { NextStopCard(it, Modifier.fillMaxWidth(), compact = true) }
                             if (ui.naviVisible) RestRow(ui.myDrive, Modifier.fillMaxWidth()) else MyDriveLine(ui.myDrive, Modifier.fillMaxWidth(), compact = true)
                             ui.event?.let { EventBanner(it, Modifier.fillMaxWidth()) }
-                            if (ui.parked) ParkedExtras(ui, false, Modifier.weight(1f), onPreset, onManageGroup, onSettings, onResendUnsent) else Spacer(Modifier.weight(1f))
+                            if (ui.parked) ParkedExtras(ui, false, Modifier.weight(1f), onPreset, onManageGroup, onSettings, onResendUnsent, onOpenEvents, onHome) else Spacer(Modifier.weight(1f))
                         } else {
                             FormationBar(ui.formation, ui.groupName, Modifier.fillMaxWidth().height(FORMATION_HEIGHT))
                             // 카드가 남는 높이를 전부 가진다(이벤트 띠가 없으면 그만큼 더 커진다)
@@ -138,7 +148,7 @@ fun DriveDashboardScreen(
                             }
                             if (ui.naviVisible) RestRow(ui.myDrive, Modifier.fillMaxWidth(), big = true) else MyDriveLine(ui.myDrive, Modifier.fillMaxWidth(), big = true)
                             ui.event?.let { EventBanner(it, Modifier.fillMaxWidth(), big = true) }
-                            if (ui.parked) ParkedExtras(ui, landscape, Modifier.weight(1.4f), onPreset, onManageGroup, onSettings, onResendUnsent)
+                            if (ui.parked) ParkedExtras(ui, landscape, Modifier.weight(1.4f), onPreset, onManageGroup, onSettings, onResendUnsent, onOpenEvents, onHome)
                         }
                     }
                     if (ui.ptt.phase == PttPhase.RECORDING || ui.ptt.phase == PttPhase.CONFIRMING) {
@@ -146,6 +156,21 @@ fun DriveDashboardScreen(
                     }
                 }
                 BottomBar(ui, onPtt, onOpenNavi, compact = narrow)
+            }
+        }
+    }
+}
+
+/** '알림 카드 + 음성' 모드 안내 1줄(플로팅 창 권한 없음) — 설정 화면이 있는 기기에서만 [권한 열기] */
+@Composable
+private fun OverlayNotice(onOpenSettings: (() -> Unit)?) {
+    Surface(Modifier.fillMaxWidth(), color = DriveTone.caution.copy(alpha = 0.16f)) {
+        Row(Modifier.padding(horizontal = 24.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Info, contentDescription = null, tint = DriveTone.caution, modifier = Modifier.size(28.dp))
+            Spacer(Modifier.width(12.dp))
+            Text(stringResource(R.string.surface_cards_only_notice), fontSize = 22.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            onOpenSettings?.let { open ->
+                OutlinedButton(onClick = open, modifier = Modifier.height(52.dp)) { Text(stringResource(R.string.surface_open_permission), fontSize = 18.sp) }
             }
         }
     }
@@ -467,6 +492,14 @@ fun MyDriveLine(ui: MyDriveLineUi, modifier: Modifier = Modifier, compact: Boole
                         Text(turn, fontSize = if (big) 30.sp else 26.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
+                // 회전 안내가 없으면(정차 대시보드 — 회전은 순정 내비 몫) 그 자리에 다음 휴식 추천
+                if (ui.nextTurnText == null) ui.restSuggestionText?.let { rest ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Canvas(Modifier.size(if (big) 30.dp else 24.dp)) { drawFuel(Offset.Zero, size.height, DriveTone.info) }
+                        Spacer(Modifier.width(10.dp))
+                        Text(rest, fontSize = if (big) 28.sp else 24.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
                 Spacer(Modifier.weight(1f))
                 if (!compact) DrivingTime(ui, if (big) 26.sp else 22.sp)
             }
@@ -691,9 +724,12 @@ fun ParkedExtras(
     onManageGroup: () -> Unit,
     onSettings: () -> Unit,
     onResendUnsent: () -> Unit,
+    onOpenEvents: (() -> Unit)? = null,
+    onHome: (() -> Unit)? = null,
 ) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+        // 빠른 메시지(F8) — 프리셋이 없으면(미구현) 블록째 숨긴다
+        if (ui.presets.isNotEmpty()) Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
             Row(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(stringResource(R.string.dash_presets), fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 ui.presets.forEach { p -> OutlinedButton(onClick = { onPreset(p) }, modifier = Modifier.height(60.dp), shape = RoundedCornerShape(16.dp)) { Text(p, fontSize = 20.sp) } }
@@ -702,7 +738,11 @@ fun ParkedExtras(
         val lists: @Composable (Modifier) -> Unit = { m ->
             Surface(m, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
                 Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(stringResource(R.string.dash_recent_events), fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(stringResource(R.string.dash_recent_events), fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                        onOpenEvents?.let { open -> TextButton(onClick = open) { Text(stringResource(R.string.surface_more_events), fontSize = 18.sp) } }
+                    }
+                    if (ui.recentEvents.isEmpty()) Text(stringResource(R.string.dash_no_event), fontSize = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     ui.recentEvents.take(5).forEach { e ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(DriveTone.icon(e.tone), contentDescription = null, tint = DriveTone.color(e.tone), modifier = Modifier.size(22.dp))
@@ -716,12 +756,13 @@ fun ParkedExtras(
         }
         val side: @Composable (Modifier) -> Unit = { m ->
             Column(m, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+                // 보내지 않은 무전(F16) — 없으면 숨긴다
+                if (ui.unsentPtt.isNotEmpty()) Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
                     Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(stringResource(R.string.dash_unsent_ptt, ui.unsentPtt.size), fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(Modifier.weight(1f))
-                            if (ui.unsentPtt.isNotEmpty()) OutlinedButton(onClick = onResendUnsent, modifier = Modifier.height(52.dp)) { Text(stringResource(R.string.dash_resend), fontSize = 18.sp) }
+                            OutlinedButton(onClick = onResendUnsent, modifier = Modifier.height(52.dp)) { Text(stringResource(R.string.dash_resend), fontSize = 18.sp) }
                         }
                         ui.unsentPtt.forEach { u -> Row(verticalAlignment = Alignment.CenterVertically) { Canvas(Modifier.size(20.dp)) { drawMic(size, DriveTone.caution) }; Spacer(Modifier.width(10.dp)); Text(u, fontSize = 20.sp) } }
                     }
@@ -729,6 +770,7 @@ fun ParkedExtras(
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = onManageGroup, modifier = Modifier.weight(1f).height(64.dp), shape = RoundedCornerShape(16.dp)) { Text(stringResource(R.string.dash_manage_group), fontSize = 20.sp) }
                     OutlinedButton(onClick = onSettings, modifier = Modifier.weight(1f).height(64.dp), shape = RoundedCornerShape(16.dp)) { Text(stringResource(R.string.dash_settings), fontSize = 20.sp) }
+                    onHome?.let { home -> OutlinedButton(onClick = home, modifier = Modifier.weight(0.7f).height(64.dp), shape = RoundedCornerShape(16.dp)) { Text(stringResource(R.string.surface_home), fontSize = 20.sp) } }
                 }
             }
         }

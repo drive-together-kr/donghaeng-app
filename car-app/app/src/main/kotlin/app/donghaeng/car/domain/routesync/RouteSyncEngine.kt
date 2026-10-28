@@ -48,6 +48,11 @@ data class RouteSyncState(
     val routeChangedSent: Int = 0,
     val lastRouteChangedAtMs: Long? = null,
     val lastRouteChangedSummary: String? = null,
+    /**
+     * 그룹 다음 정차지(휴게소) — 마지막으로 **수락(멤버)·발행(선두)** 한 경로의 첫 경유지. 경유지 없는 경로를 수락하거나,
+     * 내비가 경유지 도착을 알리거나, 그룹이 바뀌면 null. 정차 대시보드의 '다음 정차'·휴식 추천에 쓴다(docs/05 §5.1).
+     */
+    val activeWaypoint: Place? = null,
 )
 
 /**
@@ -112,12 +117,13 @@ class RouteSyncEngine(
                     if (s == null) {
                         // 그룹이 끝나면 대기 중 제안은 의미 없다
                         expiryJob?.cancel()
-                        _state.update { it.copy(pending = null) }
+                        _state.update { it.copy(pending = null, activeWaypoint = null) }
                         lastSent = null
                         lastGroupId = null
                         return@collect
                     }
                     if (s.groupId == lastGroupId) return@collect
+                    if (lastGroupId != null) _state.update { it.copy(activeWaypoint = null) }
                     lastGroupId = s.groupId
                     // T30: 멤버로 막 합류했으면(복원된 세션 제외) 선두 목적지 안내를 제안한다
                     val justJoined = (clock() - s.joinedAtMs) in 0..joinWindowMs
@@ -198,7 +204,7 @@ class RouteSyncEngine(
         }.onFailure { DhLog.w("routesync: 내비 경로 요청 실패 ${it.javaClass.simpleName}") }.isSuccess
         val sent = if (p.local) false else publishAck(Ack(proposalId = p.proposalId, accepted = true))
         val label = if (p.local) "수락(선두 목적지 안내)" else "수락 ${TextMasking.maskVehicleId(p.proposalId)}"
-        _state.update { it.copy(accepted = it.accepted + 1, lastResult = "$label navi=${if (ok) "요청" else "실패"}${if (p.local) "" else " ack=$sent"}") }
+        _state.update { it.copy(accepted = it.accepted + 1, lastResult = "$label navi=${if (ok) "요청" else "실패"}${if (p.local) "" else " ack=$sent"}", activeWaypoint = p.waypoints.firstOrNull()) }
         DhLog.i("routesync: accepted ${TextMasking.maskVehicleId(p.proposalId)} local=${p.local} navi=$ok ack=$sent")
     }
 
@@ -221,6 +227,14 @@ class RouteSyncEngine(
         when (e) {
             is NaviEvent.DestinationChanged -> naviDestination = e.destination
             is NaviEvent.WaypointChanged -> naviWaypoints = e.waypoints
+            is NaviEvent.WaypointArrived -> {
+                // 휴게소에 도착했으면 '다음 정차지' 는 지난 것이다
+                if (_state.value.activeWaypoint != null) {
+                    _state.update { it.copy(activeWaypoint = null) }
+                    DhLog.i("routesync: waypoint arrived → activeWaypoint cleared")
+                }
+                return
+            }
             else -> return
         }
         val s = session.value ?: return
@@ -252,7 +266,12 @@ class RouteSyncEngine(
         val sent = publishRouteChanged(change)
         if (sent) lastSent = change
         val summary = "dest=${change.destination.name} waypoints=${change.waypoints.joinToString { it.name }}"
-        _state.update { it.copy(routeChangedSent = if (sent) it.routeChangedSent + 1 else it.routeChangedSent, lastRouteChangedAtMs = clock(), lastRouteChangedSummary = summary) }
+        _state.update {
+            it.copy(
+                routeChangedSent = if (sent) it.routeChangedSent + 1 else it.routeChangedSent, lastRouteChangedAtMs = clock(), lastRouteChangedSummary = summary,
+                activeWaypoint = if (sent) change.waypoints.firstOrNull() else it.activeWaypoint,
+            )
+        }
         DhLog.i("routesync: ROUTE_CHANGED published=$sent ${change.destination.toLogString()} waypoints=${change.waypoints.size}")
         return sent
     }

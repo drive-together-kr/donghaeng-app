@@ -1,7 +1,8 @@
 package app.donghaeng.car.feature.drive
 
 /**
- * 주행 대시보드(재설계안, docs/05 §5.1) 의 화면 전용 모델 — 문구는 ViewModel/매퍼가 만들어 넣는다(여기엔 로직 없음).
+ * 주행 대시보드(재설계안, docs/05 §5.1) 의 화면 전용 모델 — 문구는 [DriveDashboardMapper] 가 만들어 넣는다(여기엔 로직 없음).
+ * 방향 재정정(2026-10-28): 주행 중 앞 화면은 순정 내비이고, 이 화면은 그룹 생성·합류·**정차 중**에 쓴다(주행 중 정보는 플로팅 패널·알림 카드·음성).
  *
  * 원칙(사용자 지침 2026-10-28): 주행 중엔 스크롤·탭 없이 전부 보이고, 핵심 숫자 72sp↑·보조 22sp↑, 정보 덩어리 최대 6개,
  * 색+아이콘 이중 표기(빨강=위험, 주황=주의, 초록=정보), 주행 중 버튼은 [무전]·[내비 보기] 둘뿐.
@@ -124,4 +125,6 @@ data class DriveDashboardUi(
     val presets: List<String> = emptyList(),
     val recentEvents: List<RecentEventUi> = emptyList(),
     val unsentPtt: List<String> = emptyList(),
+    /** 플로팅 창 권한이 없어 '알림 카드 + 음성' 모드 — 상단 안내 1줄(docs/05 §5.2) */
+    val overlayNotice: Boolean = false,
 )
