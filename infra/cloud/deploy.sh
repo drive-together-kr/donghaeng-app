@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # 동행 클라우드(T32) 배포 — 로컬 PC 에서 실행한다(Windows Git Bash · macOS · Linux). infra/cloud/README.md
 #
-#   bash infra/cloud/deploy.sh <user>@<VM-IP> [-i <ssh 키>] [--skip-build] [--email <ACME 메일>] [--ip <공인 IPv4>]
+#   bash infra/cloud/deploy.sh <user>@<VM-IP> [-i <ssh 키>] [--skip-build] [--keep-tag] [--email <ACME 메일>] [--ip <공인 IPv4>]
 #   bash infra/cloud/deploy.sh --check-only <host>          # 배포 없이 헬스체크만 (예: 1-2-3-4.sslip.io)
 #
 #   -i <키>        ssh 개인키 (ssh -i 그대로)
 #   --skip-build   이미지 빌드·전송을 건너뛴다(설정 파일·.env 만 바꿀 때). VM 에 이미지가 이미 있어야 한다.
+#   --keep-tag     VM .env 가 DH_SERVER_TAG / DH_CADDY_TAG 를 롤백 태그로 고정하고 있어도 그대로 배포한다
+#                  (기본: 새 이미지를 올리는 배포면 멈춘다 — 고정된 옛 이미지가 뜨는데 헬스체크는 통과하므로).
 #   --email <메일>  ACME 계정 메일. VM 에 .env 가 처음 만들어질 때만 반영된다.
 #   --ip <IPv4>    공인 IP. <user>@<host> 의 host 가 ssh 별칭일 때 지정(기본: host 자체).
 #
 # 단계(재실행 안전 — 이미 돼 있는 것은 건너뛴다):
 #   1 ssh·sudo·OS → 2 Docker(get.docker.com)·docker 그룹·Compose ≥ 2.24.4 → 3 ufw 22/80/443/8883 tcp → 4 스왑 2 GB
-#   → 5 로컬 이미지 빌드(server·caddy) + docker save | gzip | ssh docker load (VM 과 같은 이미지면 생략)
-#   → 6 infra 파일 전송(tar | ssh, .env 제외) → 7 cloud/remote-env.sh(.env 없을 때만) → 8 compose up -d --wait
-#   → 9 헬스체크(HTTPS·리다이렉트·/internal 차단·8883 TLS·8883 MQTT CONNACK·WSS 101·WSS MQTT CONNACK) → 요약
+#   → 5 VM .env 이미지 태그 고정 확인 → 로컬 이미지 빌드(server·caddy + 롤백 태그 cloud-<커밋>·l4-<커밋>)
+#       + docker save | gzip | ssh docker load (VM 과 같은 이미지거나 지난번에 보낸 그 이미지면 생략)
+#   → 6 infra 파일 전송(tar | ssh, .env 제외) → 7 cloud/remote-env.sh(.env 없으면 생성, 있으면 새 항목만 덧붙임)
+#   → 8 compose up -d --wait → Caddyfile 해시 비교(컨테이너 ≠ VM 파일이면 caddy 재생성)
+#   → 9 헬스체크(HTTPS·리다이렉트·/internal 차단·dev 로그인 키 요구·8883 TLS·8883 MQTT CONNACK·WSS 101·WSS MQTT CONNACK) → 요약
 #
 # 실패하면 ERR trap 이 원격 compose ps·logs(caddy·server·emqx)를 찍고 멈춘다.
 # 헬스체크 환경 변수(로컬 스모크 테스트용, 평소에는 쓰지 않음):
@@ -28,8 +32,11 @@ INFRA_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_DIR="$(cd "$INFRA_DIR/.." && pwd)"
 REMOTE_DIR="donghaeng/infra"   # 원격 $HOME 기준
 REMOTE_COMPOSE_FILES="-f docker-compose.yml -f cloud/docker-compose.cloud.yml"
-SERVER_IMAGE="donghaeng/server:cloud"
-CADDY_IMAGE="donghaeng/caddy:l4"
+SERVER_TAG_DEFAULT="cloud"           # .env.example 의 DH_SERVER_TAG / DH_CADDY_TAG 기본값과 같다
+CADDY_TAG_DEFAULT="l4"
+SERVER_IMAGE="donghaeng/server:$SERVER_TAG_DEFAULT"
+CADDY_IMAGE="donghaeng/caddy:$CADDY_TAG_DEFAULT"
+SHIPPED_FILE="donghaeng/.shipped-images"   # 원격 $HOME 기준. 줄마다 "<이미지> <로컬 ID> <VM ID>" — 5단계 전송 생략 판단
 
 say()  { printf '%s\n' "$*"; }
 CURRENT_STEP="준비"
@@ -40,11 +47,12 @@ usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' 
 with_timeout() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; else shift; "$@"; fi; }
 
 # ------------------------------------------------------------------ 인자
-TARGET=""; SSH_KEY=""; SKIP_BUILD=0; EMAIL=""; PUBLIC_IP=""; CHECK_ONLY=""
+TARGET=""; SSH_KEY=""; SKIP_BUILD=0; KEEP_TAG=0; EMAIL=""; PUBLIC_IP=""; CHECK_ONLY=""
 while (($#)); do
   case "$1" in
     -i) SSH_KEY="${2:?-i 다음에 ssh 키 경로가 필요해요}"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
+    --keep-tag) KEEP_TAG=1; shift ;;
     --email) EMAIL="${2:?--email 다음에 메일 주소가 필요해요}"; shift 2 ;;
     --ip) PUBLIC_IP="${2:?--ip 다음에 IPv4 가 필요해요}"; shift 2 ;;
     --check-only) CHECK_ONLY="${2:?--check-only 다음에 호스트 이름이 필요해요}"; shift 2 ;;
@@ -153,7 +161,16 @@ run_checks() {
   code="$("${CURL[@]}" -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' "$base/internal/mqtt/acl" 2>/dev/null)"
   if [ "$code" = 404 ]; then record PASS "/internal/mqtt/acl 차단" "404"; else record FAIL "/internal/mqtt/acl 차단" "${code:-응답 없음} (404 기대)"; fi
 
-  # 5) 8883 TLS 핸드셰이크 + 인증서(443 사이트가 관리하는 같은 호스트 인증서를 SNI 로 고른다)
+  # 5) dev 간편 로그인은 접속 키(X-Dev-Login-Key = .env 의 DH_DEV_LOGIN_KEY) 없이는 403 — 공개 VM 에서 이메일만으로 남의 토큰을 받지 못한다.
+  #    키 검사가 본문 처리보다 먼저라 이 요청으로 사용자가 만들어지지 않는다.
+  code="$("${CURL[@]}" -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"provider":"dev","email":"probe@example.invalid","displayName":"probe"}' "$base/v1/auth/login" 2>/dev/null)"
+  if [ "$code" = 403 ]; then
+    record PASS "dev 로그인 키 없이 거부" "403"
+  else
+    record FAIL "dev 로그인 키 없이 거부" "${code:-응답 없음} (403 기대 — 서버에 DH_DEV_LOGIN_KEY 가 없으면 이메일만으로 로그인된다)"
+  fi
+
+  # 6) 8883 TLS 핸드셰이크 + 인증서(443 사이트가 관리하는 같은 호스트 인증서를 SNI 로 고른다)
   tls_out="$(tls_open "$MQTTS_PORT" -brief </dev/null 2>&1)"
   cert="$(tls_open "$MQTTS_PORT" </dev/null 2>/dev/null | openssl x509 -noout -ext subjectAltName -issuer -enddate 2>/dev/null | tr -s ' \n' ' ')"
   if [[ "$tls_out" == *"CONNECTION ESTABLISHED"* && "$cert" == *"DNS:$HOST"* ]]; then
@@ -162,7 +179,7 @@ run_checks() {
     record FAIL "8883 TLS 핸드셰이크" "$(printf '%s\n' "$tls_out" | tail -2 | tr '\n' ' ')· ${cert:-인증서 없음}"
   fi
 
-  # 6) 8883 위 MQTT CONNECT → CONNACK (TLS 종단 → emqx:1883)
+  # 7) 8883 위 MQTT CONNECT → CONNACK (TLS 종단 → emqx:1883)
   hex="$( { mqtt_connect_packet dh-probe; sleep 3; } | tls_open "$MQTTS_PORT" -quiet 2>/dev/null | to_hex)"
   if [[ "$hex" == 2002* ]]; then
     rc="${hex:6:2}"; record PASS "8883 MQTT CONNACK" "0x$rc $(connack_meaning "$rc")"
@@ -170,13 +187,13 @@ run_checks() {
     record FAIL "8883 MQTT CONNACK" "받은 바이트: ${hex:0:24}"
   fi
 
-  # 7) WSS 핸드셰이크(443 /mqtt → emqx:8083) — 101 Switching Protocols
+  # 8) WSS 핸드셰이크(443 /mqtt → emqx:8083) — 101 Switching Protocols
   code="$("${CURL[@]}" --http1.1 --max-time 5 -o /dev/null -w '%{http_code}' \
     -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
     -H "Sec-WebSocket-Key: $WSS_KEY" -H 'Sec-WebSocket-Protocol: mqtt' "$base/mqtt" 2>/dev/null)"
   if [ "$code" = 101 ]; then record PASS "WSS /mqtt 핸드셰이크" "101"; else record FAIL "WSS /mqtt 핸드셰이크" "${code:-응답 없음} (101 기대)"; fi
 
-  # 8) WSS 위 MQTT CONNECT → CONNACK (클라이언트 프레임: FIN+binary, 마스크 키 0)
+  # 9) WSS 위 MQTT CONNECT → CONNACK (클라이언트 프레임: FIN+binary, 마스크 키 0)
   pkt="$(mqtt_connect_packet dh-wss | to_hex)"
   frame="\\x82\\x$(printf '%02x' $((0x80 | ${#pkt} / 2)))\\x00\\x00\\x00\\x00$(printf '%s' "$pkt" | sed 's/../\\x&/g')"
   hex="$( {
@@ -353,24 +370,48 @@ EOF
 
 # ------------------------------------------------------------------ 5. 이미지
 if [ "$SKIP_BUILD" = 1 ]; then
-  step 5/9 "이미지 빌드·전송 건너뜀(--skip-build)"
+  step 5/9 "VM .env 이미지 태그 확인 · 이미지 빌드·전송 건너뜀(--skip-build)"
+else
+  step 5/9 "VM .env 이미지 태그 확인 → 로컬 이미지 빌드(server·caddy) → VM 으로 전송"
+fi
+# VM .env 가 DH_SERVER_TAG / DH_CADDY_TAG 를 롤백 태그(cloud-<커밋> / l4-<커밋>)로 고정하고 있으면 compose 는 새로 올린
+# cloud / l4 이미지 대신 그 태그로 띄운다 — 헬스체크는 그대로 통과해 옛 버전이 도는 것을 알아채기 어렵다(README §6).
+PINNED="$(rsh "grep -E '^(DH_SERVER_TAG|DH_CADDY_TAG)=' $REMOTE_DIR/.env 2>/dev/null" | grep -vxE "DH_SERVER_TAG=($SERVER_TAG_DEFAULT)?|DH_CADDY_TAG=($CADDY_TAG_DEFAULT)?" | tr '\n' ' ' || true)"
+if [ -n "$PINNED" ]; then
+  if [ "$SKIP_BUILD" = 0 ] && [ "$KEEP_TAG" = 0 ]; then
+    die "VM .env 가 이미지 태그를 고정하고 있어요: ${PINNED}— 이대로면 새로 빌드한 이미지 대신 고정된 이미지가 뜨고 헬스체크는 통과한다. 롤백을 끝내려면 VM ~/$REMOTE_DIR/.env 를 DH_SERVER_TAG=$SERVER_TAG_DEFAULT · DH_CADDY_TAG=$CADDY_TAG_DEFAULT 로 되돌리고 다시 실행, 고정을 유지하려면 --keep-tag (README §6)"
+  fi
+  warn "VM .env 의 이미지 태그 고정을 유지한다: ${PINNED}— 이번 배포도 그 이미지로 뜬다(README §6)"
+fi
+
+if [ "$SKIP_BUILD" = 1 ]; then
   rsh "$RDOCKER image inspect $SERVER_IMAGE $CADDY_IMAGE >/dev/null" || die "VM 에 $SERVER_IMAGE / $CADDY_IMAGE 가 없어요 — --skip-build 없이 실행"
 else
-  step 5/9 "로컬 이미지 빌드(server·caddy) → VM 으로 전송"
   REV="$(git -C "$REPO_DIR" rev-parse --short=10 HEAD 2>/dev/null || echo unknown)"
   if [ -n "$(git -C "$REPO_DIR" status --porcelain -- server protocol infra/cloud/caddy 2>/dev/null || true)" ]; then REV="$REV-dirty"; fi
-  # 빌드는 기존 compose 정의(server: context .. + server/Dockerfile)를 그대로 쓰고, 이미지 이름만 오버라이드의 cloud 태그다.
+  # 빌드는 기존 compose 정의(server: context .. + server/Dockerfile)를 그대로 쓰고, 이미지 이름만 오버라이드의 cloud / l4 태그다.
+  # 태그 변수는 명령 앞에 직접 준다 — 이 셸에 DH_SERVER_TAG 등이 export 돼 있어도 빌드 결과 이름이 바뀌지 않게.
   # 프로비넌스 attestation 을 끄면 save/load 가 단일 플랫폼 이미지로 단순해진다.
-  BUILDX_NO_DEFAULT_ATTESTATIONS=1 "${DOCKER[@]}" compose --env-file infra/cloud/.env.example \
+  DH_SERVER_TAG="$SERVER_TAG_DEFAULT" DH_CADDY_TAG="$CADDY_TAG_DEFAULT" BUILDX_NO_DEFAULT_ATTESTATIONS=1 \
+    "${DOCKER[@]}" compose --env-file infra/cloud/.env.example \
     -f infra/docker-compose.yml -f infra/cloud/docker-compose.cloud.yml build server caddy
   "${DOCKER[@]}" tag "$SERVER_IMAGE" "donghaeng/server:cloud-$REV"
-  say "server 이미지 태그: $SERVER_IMAGE + donghaeng/server:cloud-$REV (롤백용)"
+  "${DOCKER[@]}" tag "$CADDY_IMAGE" "donghaeng/caddy:l4-$REV"
+  say "이미지 태그: $SERVER_IMAGE + donghaeng/server:cloud-$REV · $CADDY_IMAGE + donghaeng/caddy:l4-$REV (롤백용)"
 
+  # 같은 이미지는 다시 보내지 않는다. 로컬(Docker Desktop)과 VM 의 이미지 저장소 종류(classic / containerd)·save 형식이 다르면
+  # 같은 이미지라도 .Id(설정 다이제스트 / 매니페스트 다이제스트)가 다를 수 있다 → ID 가 같거나, 지난 전송 때 VM 에 남긴
+  # "<이미지> <로컬 ID> <VM ID>" 기록과 지금 두 ID 가 모두 맞으면 같은 이미지로 본다(VM 쪽 이미지를 손으로 바꿨으면 다시 보낸다).
   SHIP=()
   for img in "$SERVER_IMAGE" "$CADDY_IMAGE"; do
     local_id="$("${DOCKER[@]}" image inspect -f '{{.Id}}' "$img")"
     remote_id="$(rsh "$RDOCKER image inspect -f '{{.Id}}' $img 2>/dev/null" || true)"
-    if [ "$local_id" = "$remote_id" ]; then say "  $img: VM 과 같음 → 전송 생략"; else SHIP+=("$img"); fi
+    shipped="$(rsh "grep -F '$img ' $SHIPPED_FILE 2>/dev/null | tail -1" || true)"
+    if [ -n "$remote_id" ] && { [ "$local_id" = "$remote_id" ] || [ "$shipped" = "$img $local_id $remote_id" ]; }; then
+      say "  $img: VM 과 같은 이미지 → 전송 생략"
+    else
+      SHIP+=("$img")
+    fi
   done
   if [ "${#SHIP[@]}" -gt 0 ]; then
     save_help="$("${DOCKER[@]}" save --help 2>/dev/null || true)"
@@ -378,8 +419,14 @@ else
     [[ "$save_help" != *--platform* ]] || SAVE_ARGS+=(--platform linux/amd64)
     say "  전송: ${SHIP[*]} (gzip, 회선에 따라 수 분)"
     "${DOCKER[@]}" "${SAVE_ARGS[@]}" "${SHIP[@]}" | gzip -1 | rsh "gunzip | $RDOCKER load"
+    for img in "${SHIP[@]}"; do
+      local_id="$("${DOCKER[@]}" image inspect -f '{{.Id}}' "$img")"
+      remote_id="$(rsh "$RDOCKER image inspect -f '{{.Id}}' $img")"
+      rsh "mkdir -p \"\$(dirname $SHIPPED_FILE)\" && { grep -vF '$img ' $SHIPPED_FILE 2>/dev/null || true; echo '$img $local_id $remote_id'; } > $SHIPPED_FILE.tmp && mv $SHIPPED_FILE.tmp $SHIPPED_FILE"
+      [ "$local_id" = "$remote_id" ] || say "  $img: 로컬 ID 와 VM ID 가 다름(이미지 저장소 차이) → 기록해 두고 다음 배포에서 같은 이미지면 생략"
+    done
   fi
-  rsh "$RDOCKER tag $SERVER_IMAGE donghaeng/server:cloud-$REV"
+  rsh "$RDOCKER tag $SERVER_IMAGE donghaeng/server:cloud-$REV && $RDOCKER tag $CADDY_IMAGE donghaeng/caddy:l4-$REV"
   rsh "$RDOCKER image ls --format '{{.Repository}}:{{.Tag}}  {{.Size}}' | grep -E '^donghaeng/' | head -12 || true"
 fi
 
@@ -393,7 +440,7 @@ COPYFILE_DISABLE=1 tar -C "$INFRA_DIR" -czf - \
 REMOTE_READY=1
 
 # ------------------------------------------------------------------ 7. .env
-step 7/9 "VM .env (없을 때만 생성 — cloud/remote-env.sh)"
+step 7/9 "VM .env (없으면 생성, 있으면 새 항목만 덧붙임 — cloud/remote-env.sh)"
 rsh "cd $REMOTE_DIR && bash cloud/remote-env.sh $(printf '%q' "$PUBLIC_IP") $(printf '%q' "$EMAIL")"
 HOST="$(rsh "grep -E '^DH_PUBLIC_HOST=' $REMOTE_DIR/.env | cut -d= -f2-")"
 [ -n "$HOST" ] || die "VM .env 에 DH_PUBLIC_HOST 가 없어요"
@@ -406,13 +453,14 @@ step 8/9 "DB 백업(재배포일 때) → docker compose up -d --wait (바뀐 �
 { printf 'RCOMPOSE=%q\nREMOTE_DIR=%q\n' "$RCOMPOSE" "$REMOTE_DIR"; cat <<'EOF'
 set -Eeuo pipefail
 cd "$REMOTE_DIR"
-$RCOMPOSE config -q
-if [ -n "$($RCOMPOSE ps -q --status running postgres 2>/dev/null || true)" ]; then
+# 이 스크립트는 stdin(파이프)으로 읽히므로 docker 명령은 </dev/null — 아니면 compose exec 등이 남은 스크립트 줄을 stdin 으로 먹는다.
+$RCOMPOSE config -q </dev/null
+if [ -n "$($RCOMPOSE ps -q --status running postgres </dev/null 2>/dev/null || true)" ]; then
   umask 077
   mkdir -p ../backups
   f="../backups/pg-$(date +%Y%m%d-%H%M%S).sql.gz"
   # shellcheck disable=SC2016  # $POSTGRES_* 는 postgres 컨테이너 안에서 풀린다(의도)
-  $RCOMPOSE exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB"' | gzip > "$f"
+  $RCOMPOSE exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB"' </dev/null | gzip > "$f"
   echo "DB 백업: ~/donghaeng/backups/$(basename "$f") ($(du -h "$f" | cut -f1))"
   # shellcheck disable=SC2012  # 파일 이름은 이 스크립트가 만든 pg-<시각>.sql.gz 뿐
   ls -1t ../backups/pg-*.sql.gz | tail -n +6 | xargs -r rm -f
@@ -421,7 +469,46 @@ else
 fi
 EOF
 } | rscript
-rsh "cd $REMOTE_DIR && $RCOMPOSE up -d --no-build --remove-orphans --wait --wait-timeout 300 && $RCOMPOSE ps"
+rsh "cd $REMOTE_DIR && $RCOMPOSE up -d --no-build --remove-orphans --wait --wait-timeout 300"
+# Caddyfile 은 단일 파일 바인드 마운트다. (1) 내용만 바뀌면 compose 설정 해시가 같아 위 up 이 caddy 를 다시 만들지 않고,
+# (2) 6단계 tar(GNU)는 기존 파일을 지우고 새로 만들어 실행 중인 컨테이너는 옛 inode(옛 내용)를 계속 본다 — caddy reload 도 옛 내용을 읽는다.
+# (3) 제자리 편집(같은 inode)이면 컨테이너 안 파일은 새 내용이지만 Caddy 는 시작 때 읽은 설정 그대로다.
+# 그래서 "컨테이너 ID + 그 컨테이너가 시작 때 읽은 Caddyfile sha256" 을 VM(~/donghaeng/.caddyfile-applied)에 기록해 두고,
+# 지금 VM 파일과 다르면 caddy 만 다시 만든다(인증서는 caddy-data 볼륨에 남아 재발급 없음). 기록 뒤 컨테이너가 새로 만들어졌으면
+# (이번 up 이 만들었거나 손으로) 컨테이너 시작 시각이 파일의 마지막 변경(ctime)보다 뒤인지로 판단한다.
+# 앞선 배포가 중간에 실패해 파일만 바뀐 경우도 기록과 달라 잡힌다.
+{ printf 'RDOCKER=%q\nRCOMPOSE=%q\nREMOTE_DIR=%q\n' "$RDOCKER" "$RCOMPOSE" "$REMOTE_DIR"; cat <<'EOF'
+set -Eeuo pipefail
+cd "$REMOTE_DIR"
+# 이 스크립트는 stdin(파이프)으로 읽히므로 docker 명령은 </dev/null — 아니면 compose 가 남은 스크립트 줄을 stdin 으로 먹는다.
+record=../.caddyfile-applied
+want="$(sha256sum cloud/Caddyfile | cut -d' ' -f1)"
+cid="$($RCOMPOSE ps -q caddy </dev/null)"
+[ -n "$cid" ] || { echo "실행 중인 caddy 컨테이너가 없어요" >&2; exit 1; }
+rec_cid=""; rec_sha=""
+if [ -r "$record" ]; then read -r rec_cid rec_sha < "$record" || true; fi
+if [ "$rec_cid" = "$cid" ]; then
+  loaded="$rec_sha"; basis="지난 배포 기록"
+else
+  started="$(date -d "$($RDOCKER inspect -f '{{.State.StartedAt}}' "$cid" </dev/null)" +%s)"
+  changed="$(stat -c %Z cloud/Caddyfile)"
+  if [ "$started" -gt "$changed" ]; then loaded="$want"; else loaded="(시작 뒤 변경)"; fi
+  basis="컨테이너 시작 시각"
+fi
+if [ "$loaded" = "$want" ]; then
+  echo "Caddyfile: 실행 중인 caddy 가 읽은 것과 같음 (sha256 ${want:0:12}, 판단 근거: $basis)"
+else
+  echo "Caddyfile 이 caddy 시작 뒤에 바뀜 (${loaded:0:12} → ${want:0:12}, $basis) → caddy 재생성"
+  $RCOMPOSE up -d --no-build --no-deps --force-recreate --wait --wait-timeout 120 caddy </dev/null
+  cid="$($RCOMPOSE ps -q caddy </dev/null)"
+  have="$($RCOMPOSE exec -T caddy sha256sum /etc/caddy/Caddyfile </dev/null | cut -d' ' -f1)"
+  [ "$want" = "$have" ] || { echo "caddy 를 다시 만들었는데도 컨테이너의 Caddyfile 이 VM 파일과 달라요" >&2; exit 1; }
+  echo "Caddyfile: 새 컨테이너에 반영됨 (sha256 ${have:0:12})"
+fi
+printf '%s %s\n' "$cid" "$want" > "$record"
+$RCOMPOSE ps </dev/null
+EOF
+} | rscript
 LISTEN="$(rsh "sudo ss -Htln" | awk '{print $4}' | grep -vE '^(127\.|\[::1\]|::1:)' | sort -u || true)"
 say "인터넷 쪽 TCP 리스너(기대: ssh·80·443·8883):"
 printf '%s\n' "$LISTEN" | sed 's/^/  /'
@@ -438,14 +525,19 @@ if [ "$FAILED" -gt 0 ]; then
   die "헬스체크 $FAILED 개 실패 — README §7(문제 해결). 인증서가 안 나오면 클라우드 보안 그룹의 80/443 인바운드부터 확인"
 fi
 
+RUNNING="$(rsh "cd $REMOTE_DIR && $RCOMPOSE ps --format '{{.Image}}' server caddy" 2>/dev/null | tr '\n' ' ' || true)"
+
 cat <<EOT
 
 ================================================================ 배포 완료
   서버 공개 주소   DH_PUBLIC_BASE_URL = https://$HOST
   MQTT 기본        DH_MQTT_PUBLIC_URI = ssl://$HOST:8883
   MQTT 대체        wss://$HOST/mqtt  (443 — 8883 이 막힌 망)
+  실행 중 이미지    ${RUNNING:-확인 실패}
   차량 앱 빌드     cd car-app && ./gradlew :app:assemblePleosDebug -PdhPublicBaseUrl=https://$HOST -PdhMqttPublicUri=ssl://$HOST:8883
-  시연 스크립트    python tools/demo/demo.py --server https://$HOST …
+  dev 로그인 키    ssh $TARGET "grep ^DH_DEV_LOGIN_KEY= $REMOTE_DIR/.env"   (화면·채팅에 붙이지 말 것 — README §3)
+  demo-host 빌드   cd companion && ./gradlew :demo-host:assembleDebug -PdhPublicBaseUrl=https://$HOST -PdhDevLoginKey=<키>
+  시연 스크립트    DH_DEV_LOGIN_KEY=<키> python tools/demo/demo.py --server https://$HOST …
   EMQX 대시보드    ssh -L 18083:127.0.0.1:18083 $TARGET  → http://localhost:18083 (admin / VM .env 의 EMQX_DASHBOARD_PASSWORD)
-  롤백             README §6 — VM .env 의 DH_SERVER_TAG=cloud-<이전 커밋> 후 up -d server
+  롤백             README §6 — 시험: DH_SERVER_TAG=cloud-<커밋> dc up -d server / 고정: VM .env (고정 중이면 다음 deploy.sh 가 멈춘다)
 EOT
