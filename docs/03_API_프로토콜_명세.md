@@ -4,7 +4,7 @@
   - 로컬(에뮬레이터) `http://10.0.2.2:8080` · 로컬(실기기, 같은 Wi-Fi) `http://<PC-IP>:8080` · 클라우드 `https://<VM-IP>.sslip.io` (예: `https://1-2-3-4.sslip.io`, Caddy 자동 인증서)
 - REST Base URL: `{DH_PUBLIC_BASE_URL}/v1` (로컬: `http://10.0.2.2:8080/v1` — 에뮬레이터 기준)
 - MQTT 공개 주소 설정값 **`DH_MQTT_PUBLIC_URI`**: 로컬 `tcp://10.0.2.2:1883`, 클라우드 `ssl://<VM-IP>.sslip.io:8883`. MQTT 5.0
-  - **WSS 폴백 주소 규칙 (T32)**: `DH_PUBLIC_BASE_URL` 이 `https://{host}[:{port}]` 이면 같은 서버가 **`wss://{host}[:{port}]/mqtt`**(포트 생략 시 443, WebSocket 서브프로토콜 `mqtt`)에서도 MQTT 를 받아야 한다(클라우드: Caddy 가 `/mqtt` 를 EMQX WebSocket 리스너 8083 으로 프록시). 별도 설정값·응답 필드는 없다 — 클라이언트가 베이스 URL 에서 파생한다. 차량 앱은 `mqtt.uri`(ssl 8883)가 연속 2회 실패하거나 첫 연결이 10초 안에 안 되면 이 주소로 바꾼다(docs/05 §7). `http://` 베이스(로컬)에는 파생 주소가 없다.
+  - **WSS 폴백 주소 규칙 (T32)**: `DH_PUBLIC_BASE_URL` 이 `https://{host}[:{port}]` 이면 같은 서버가 **`wss://{host}[:{port}]/mqtt`**(포트 생략 시 443, WebSocket 서브프로토콜 `mqtt`)에서도 MQTT 를 받아야 한다(클라우드: Caddy 가 `/mqtt` 를 EMQX WebSocket 리스너 8083 으로 프록시). 별도 설정값·응답 필드는 없다 — 클라이언트가 베이스 URL 에서 파생한다. 차량 앱은 `mqtt.uri`(ssl 8883)로 브로커에 닿지 못한 시도가 연속 2회이거나(CONNACK 응답·망 없음은 세지 않음) 첫 연결이 10초 안에 안 되면 이 주소로 바꾼다(docs/05 §7). `http://` 베이스(로컬)에는 파생 주소가 없다.
   - 허용 스킴: `tcp://`·`mqtt://`(1883) · `ssl://`·`mqtts://`·`tls://`(8883) · `ws://`(80) · `wss://`(443). 베이스 URL 이 https 면 평문(`tcp://`·`ws://`)은 클라이언트가 거부한다.
 - QR·딥링크 URL은 항상 `{DH_PUBLIC_BASE_URL}` + 경로(`/pair?c=…`, `/j/{token}`)로 **서버가 생성**하고, companion 모듈은 호스트가 아니라 **경로로 종류를 판별**한다(07 문서 §5)
 - 직렬화: JSON (UTF-8), 필드명 camelCase, 시간은 epoch milliseconds(`ts`), 좌표는 WGS84 소수점 7자리
