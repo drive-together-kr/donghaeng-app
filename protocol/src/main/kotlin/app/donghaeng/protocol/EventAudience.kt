@@ -3,7 +3,8 @@ package app.donghaeng.protocol
 /**
  * 그룹 이벤트 수신 대상 규칙 (docs/03 §5.4 `audience`) — 서버(대상 고르기)·차량 앱(수신 필터)·companion(알림)이 **같은 정의**를 쓴다.
  *
- * - [GroupEvent.audience] null = 그룹 전체, 목록 = 그 vehicleId 들만, 빈 목록 = 아무도 알리지 않는다(이벤트는 기록·피드용으로 남는다).
+ * - [GroupEvent.audience] null = 그룹 전체, 목록 = 그 vehicleId 들만, 빈 목록 = 아무도 알리지 않는다
+ *   (서버 기록·REST `recentEvents` 원문에만 남고 차량·companion 의 음성·카드·패널·피드 어디에도 나오지 않는다).
  * - 앞뒤로 대상을 고르는 종류([BEHIND_ONLY_TYPES] = `HARD_BRAKE`): "앞쪽 ○○ 차가 급제동"은 **출처보다 경로상 뒤에 있는 차**만 들어야 한다.
  *   "뒤" = 그룹 스냅샷 `distanceToLeaderM` 이 출처보다 큰 멤버 — 플로팅 패널 간격(상대 − 나, 양수 = "뒤")과 같은 기준(선두 0, 클수록 뒤).
  * - 가정: 선두가 맨 앞이다(`distanceToLeaderM` 은 선두까지 직선 거리라, 선두를 앞지른 차는 뒤로 계산된다 — 패널 간격과 같은 한계).

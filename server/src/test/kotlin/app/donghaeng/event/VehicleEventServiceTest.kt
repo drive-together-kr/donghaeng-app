@@ -16,6 +16,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.JsonObject
 import org.junit.jupiter.api.Test
+import org.springframework.transaction.support.SimpleTransactionStatus
+import org.springframework.transaction.support.TransactionCallback
+import org.springframework.transaction.support.TransactionOperations
 import java.time.Duration
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -47,21 +50,34 @@ class VehicleEventServiceTest {
         }
     }
 
-    private class RecordingSink : GroupEventSink {
-        data class Rec(val groupId: String, val type: GroupEventType, val vid: String?, val severity: Severity, val speech: String?, val payload: JsonObject, val audience: List<String>?)
+    private class RecordingSink(private val tx: RecordingTx) : GroupEventSink {
+        data class Rec(val groupId: String, val type: GroupEventType, val vid: String?, val severity: Severity, val speech: String?, val payload: JsonObject, val audience: List<String>?, val inTx: Boolean)
         val recorded = mutableListOf<Rec>()
         override fun record(groupId: String, type: GroupEventType, sourceVehicleId: String?, severity: Severity, speech: String?, payload: JsonObject, audience: List<String>?): GroupEvent {
-            recorded += Rec(groupId, type, sourceVehicleId, severity, speech, payload, audience)
+            recorded += Rec(groupId, type, sourceVehicleId, severity, speech, payload, audience, tx.active)
             return GroupEvent("evt_${recorded.size}", type.name, sourceVehicleId, severity, speech, payload, audience)
         }
     }
 
-    /** 그룹별 스냅샷을 테스트가 정한다. [fail] 이면 Redis 장애처럼 예외 */
-    private class FakePresence(var states: Map<String, GroupState> = emptyMap(), var fail: Boolean = false) : PresenceApi {
+    /** 트랜잭션 안인지 기록하는 [TransactionOperations] — 저장만 트랜잭션 안에서 하는지 확인 */
+    private class RecordingTx : TransactionOperations {
+        var active = false
+        var count = 0
+        override fun <T> execute(action: TransactionCallback<T>): T? {
+            count++
+            active = true
+            try { return action.doInTransaction(SimpleTransactionStatus()) } finally { active = false }
+        }
+    }
+
+    /** 그룹별 스냅샷을 테스트가 정한다. [fail] 이면 명단 DB 오류처럼 예외 */
+    private class FakePresence(private val tx: RecordingTx, var states: Map<String, GroupState> = emptyMap(), var fail: Boolean = false) : PresenceApi {
         var calls = 0
+        var callsInTx = 0
         override fun snapshotOf(groupId: String): GroupState? {
             calls++
-            if (fail) throw IllegalStateException("redis down")
+            if (tx.active) callsInTx++
+            if (fail) throw IllegalStateException("roster query failed")
             return states[groupId]
         }
     }
@@ -72,12 +88,13 @@ class VehicleEventServiceTest {
     private val convoy = GroupState("grp_1", "veh_A", listOf(member("veh_A", 0), member("veh_B", 1_000), member("veh_C", 2_100)))
 
     private val dedup = InMemoryDedup()
-    private val sink = RecordingSink()
-    private val presence = FakePresence()
+    private val tx = RecordingTx()
+    private val sink = RecordingSink(tx)
+    private val presence = FakePresence(tx)
     private val service = VehicleEventService(
         FakeMembership(mapOf("veh_A" to "grp_1")),
         FakeIdentity(mapOf("veh_A" to "아빠 차")),
-        dedup, SpeechComposer(), sink, presence,
+        dedup, SpeechComposer(), sink, presence, tx,
     )
 
     private fun convoyService(states: Map<String, GroupState> = mapOf("grp_1" to convoy)): VehicleEventService {
@@ -85,7 +102,7 @@ class VehicleEventServiceTest {
         return VehicleEventService(
             FakeMembership(mapOf("veh_A" to "grp_1", "veh_B" to "grp_1", "veh_C" to "grp_1", "veh_D" to "grp_1")),
             FakeIdentity(mapOf("veh_A" to "아빠 차", "veh_B" to "둘째 차", "veh_C" to "삼촌 차")),
-            InMemoryDedup(), SpeechComposer(), sink, presence,
+            InMemoryDedup(), SpeechComposer(), sink, presence, tx,
         )
     }
 
@@ -134,7 +151,7 @@ class VehicleEventServiceTest {
 
     @Test
     fun `unknown nickname falls back to the vehicle id and EV wording is used for batteries`() {
-        val svc = VehicleEventService(FakeMembership(mapOf("veh_B" to "grp_2")), FakeIdentity(emptyMap()), InMemoryDedup(), SpeechComposer(), sink, presence)
+        val svc = VehicleEventService(FakeMembership(mapOf("veh_B" to "grp_2")), FakeIdentity(emptyMap()), InMemoryDedup(), SpeechComposer(), sink, presence, tx)
         val e = svc.handle("veh_B", VehicleEventType.LOW_ENERGY, buildJsonObject { put("kind", "EV"); put("pct", 8) })
         assertEquals("veh_B 배터리가 8% 남았어요.", e!!.speech)
     }
@@ -153,7 +170,7 @@ class VehicleEventServiceTest {
     fun `last car brakes - stored but nobody is addressed`() {
         // impl_02: A 패널에 상대가 "뒤 2.1 km" — 그 뒤차의 급제동을 앞차 A 가 '앞쪽 급제동'으로 들으면 안 된다
         val e = convoyService().handle("veh_C", VehicleEventType.HARD_BRAKE, hardBrake())
-        assertNotNull(e, "이벤트는 기록·피드용으로 남는다")
+        assertNotNull(e, "이벤트는 기록(DB·REST recentEvents 원문)으로만 남는다 — 어느 차량·companion 화면에도 안 나온다")
         assertEquals(emptyList(), e.audience)
         assertEquals(1, sink.recorded.size)
     }
@@ -177,6 +194,19 @@ class VehicleEventServiceTest {
         assertNull(convoyService(emptyMap()).handle("veh_B", VehicleEventType.HARD_BRAKE, hardBrake())!!.audience, "스냅샷 없음 → 그룹 전체(차량이 다시 판정)")
         presence.fail = true
         assertNull(convoyService().handle("veh_B", VehicleEventType.HARD_BRAKE, hardBrake())!!.audience, "스냅샷 읽기 실패 → 그룹 전체")
+    }
+
+    @Test
+    fun `the audience snapshot is read outside the write transaction and only the record runs inside it`() {
+        // PostgreSQL: 트랜잭션 안의 실패한 문장은 같은 트랜잭션의 INSERT 까지 거부한다(25P02) — 실제 재현은 PresenceIT
+        val svc = convoyService()
+        assertNotNull(svc.handle("veh_A", VehicleEventType.HARD_BRAKE, hardBrake()))
+        presence.fail = true
+        assertNotNull(svc.handle("veh_B", VehicleEventType.HARD_BRAKE, hardBrake()), "읽기 실패여도 저장된다")
+        assertEquals(2, presence.calls)
+        assertEquals(0, presence.callsInTx, "스냅샷은 트랜잭션 밖에서 읽는다")
+        assertEquals(2, tx.count)
+        assertTrue(sink.recorded.all { it.inTx }, "저장은 트랜잭션 안")
     }
 
     @Test

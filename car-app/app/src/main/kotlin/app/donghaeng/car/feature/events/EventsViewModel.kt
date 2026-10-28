@@ -48,7 +48,8 @@ data class EventsUiState(
 /**
  * 이벤트 피드 (T26): `MqttSessionManager.groupEvents`(replay 20) 로 실시간 수신한 것과 `GET /groups/{id}` 의 `recentEvents` 를 eventId 로 합친다.
  * 실시간분이 먼저(최신순), 그 뒤 서버 조회분. 내 차가 대상이 아닌 이벤트([EventAudience] — 뒤차의 급제동 등)는 둘 다에서 뺀다
- * (audience 가 없으면 받을 때·조회할 때의 스냅샷으로 앞뒤 판정, 모르면 넣는다).
+ * (audience 가 없으면 이 ViewModel 이 받을 때(replay 20 — 화면을 다시 열면 다시 판정)·조회할 때의 스냅샷으로 앞뒤 판정, 모르면 넣는다.
+ * `[]`·급제동한 차 자신의 급제동은 여기에도 없다 — 기록은 서버 DB·REST 원문에만, docs/05).
  */
 @HiltViewModel
 class EventsViewModel @Inject constructor(

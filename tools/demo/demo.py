@@ -320,8 +320,14 @@ class Demo:
         self.say("장면 9: VC 급제동(55 km/h → 브레이크 80%) → " + str([r[0] for r in self.vc.hard_brake(55, 80)]))
         obs = wa.wait(r"HARD_BRAKE", 20)
         self.record("9 (A 발행)", "A: vehicle event HARD_BRAKE", obs)
-        obs = wb.wait(r"voice: speak HARD_BRAKE|HARD_BRAKE", 20)
-        self.record("9 (B 음성)", "B: voice: speak HARD_BRAKE", obs)
+        # B 는 선두 A 보다 뒤 → 수신 대상(docs/03 §5.4 audience). `voice: speak` 만 성공으로 센다 — 넓은 `HARD_BRAKE` 는
+        # 대상에서 빠졌을 때의 `voice: skip not-for-me HARD_BRAKE`·`surface: skip not-for-me HARD_BRAKE` 에도 맞아 회귀를 못 잡는다
+        obs = wb.wait(r"voice: speak HARD_BRAKE|skip not-for-me HARD_BRAKE", 20)
+        skipped = wb.find(r"skip not-for-me HARD_BRAKE")
+        if skipped:
+            self.say("장면 9 실패: 뒤차 B 가 급제동 대상에서 빠졌다 → " + skipped[-1][-110:])
+            obs = None
+        self.record("9 (B 음성)", "B: voice: speak HARD_BRAKE (뒤차 = 대상, skip not-for-me 없음)", obs)
 
     # ---- 마무리 ----
     def finish(self, wa: LogWatcher, wb: LogWatcher):
