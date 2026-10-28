@@ -62,6 +62,7 @@ fun DongHaengMainScreen(
     val notifications by DongHaengStore.notifications.collectAsStateWithLifecycle()
     val past by DongHaengStore.pastGroups.collectAsStateWithLifecycle()
     val mode by DongHaengStore.mode.collectAsStateWithLifecycle()
+    val voices by DongHaengStore.voices.collectAsStateWithLifecycle()
     var showMessage by rememberSaveable { mutableStateOfFalse() }
 
     Column(
@@ -117,6 +118,8 @@ fun DongHaengMainScreen(
                         }
                     } else {
                         ActiveGroupCard(group = g, snapshot = snapshot, latestNotification = notifications.firstOrNull(), onSendMessage = { showMessage = true }, onOpen = {})
+                        Spacer(Modifier.height(12.dp))
+                        VoiceMessagesCard(items = voices)
                         Spacer(Modifier.height(12.dp))
                         KiaCard {
                             Text("최근 소식", style = MaterialTheme.typography.titleMedium)

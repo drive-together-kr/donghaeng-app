@@ -30,7 +30,7 @@ companion/
 | `suspend DongHaeng.joinGroup(qrPayload: String, vehicleId: String? = null): GroupJoinResult` | 그룹 QR(`{base}/j/{token}`)로 합류 (`POST /groups/join`). vehicleId 생략 시 대표 차량 |
 | `suspend DongHaeng.pairVehicle(qrPayload: String, nickname: String): PairResult` | **대체 수단**: 계정에 차가 없을 때 차 화면 QR(`{base}/pair?c=CODE`)로 등록 (Device Authorization Grant 승인, `POST /device/approve`) |
 | `suspend DongHaeng.sendPassengerMessage(groupId: String, text: String)` | 동승자 메시지 → 그룹 차량에서 음성으로 읽힘 (`POST /groups/{id}/messages`) |
-| `DongHaeng.observeGroup(groupId: String): Flow<GroupSnapshot>` | 그룹 스냅샷 스트림. MVP 는 `GET /v1/groups/{id}` **15초 폴링**(수집 취소 시 종료) → 이후 푸시로 즉시(docs/07 §3). 서버 응답의 `snapshot.members` 가 있으면 그대로, 없으면 Member 목록을 `online=false`·`OFFLINE` 으로 채운다. `events` 는 `recentEvents` 를 오래된 것부터로 뒤집은 것. 서버 오류는 흐름 예외(`Api`) |
+| `DongHaeng.observeGroup(groupId: String): Flow<GroupSnapshot>` | 그룹 스냅샷 스트림. MVP 는 `GET /v1/groups/{id}` **15초 폴링**(수집 취소 시 종료) → 이후 푸시로 즉시(docs/07 §3). 서버 응답의 `snapshot.members` 가 있으면 그대로, 없으면 Member 목록을 `online=false`·`OFFLINE` 으로 채운다. `events` 는 `recentEvents` 를 오래된 것부터로 뒤집은 것. 서버 오류는 흐름 예외(`Api`). **무전(`VOICE_MESSAGE`, F16)** 은 모듈이 오디오를 미리 받아 payload 에 `localAudioStatus`(READY·PENDING·EXPIRED·FAILED)·`localAudioPath` 를 붙인다(아래 §1.1) |
 | `data class DongHaengConfig(publicBaseUrl, provider, appVersion)` | `publicBaseUrl` = 서버 `DH_PUBLIC_BASE_URL`(끝 `/` 허용) |
 | `enum AccountProvider { BLUELINK, MYHYUNDAI, KIA_CONNECT, GENESIS_CONNECTED, DEV }` | 모듈을 내장한 공식 앱(= 서버가 검증할 IdP) |
 | `fun interface TokenProvider { suspend fun accessToken(): String }` | 호스트 앱의 OAuth 2.0 액세스 토큰. 모듈이 `POST /v1/auth/exchange { provider, accessToken }` 로 동행 JWT 와 교환해 캐시한다(401 → 재교환 1회 → `Unauthorized`, docs/07 §4.1). 빈 문자열 → `Unauthorized`(요청 없음). dev 는 `POST /v1/auth/login` 응답의 accessToken — 모듈은 토큰 형식을 해석하지 않는다(만료 판단에 JWT `exp` 만 읽는다) |
@@ -61,6 +61,27 @@ QR 은 서버가 `{DH_PUBLIC_BASE_URL}` + 경로로 만든다. 모듈은 **호�
 ```
 교환 자체가 401 이면 `Unauthorized`, 501 `PROVIDER_NOT_SUPPORTED` 등은 `Api(code, message)`.
 
+### 1.1 무전 수신 (F16 — docs/07 §3.1)
+공개 함수는 그대로 6개다. 호스트는 동행 JWT 를 모르므로 `GET /v1/groups/{id}/voice/{voiceId}` 를 모듈이 대신 부른다(`internal/VoiceInbox`):
+
+```
+observeGroup 폴링 ─► recentEvents 에 VOICE_MESSAGE ─► 만료(서버 시계 = 응답 Date 헤더) 확인
+   ─► GET /v1/groups/{gid}/voice/{voiceId}  (Bearer 동행 JWT, Accept: audio/*, 폴링당 최신 3건, 1 MB 상한)
+   ─► {java.io.tmpdir}/donghaeng-voice/{gid}/{voiceId}.m4a   (안드로이드: 앱 캐시 디렉터리)
+   ─► event.payload + { localAudioStatus: "READY", localAudioPath: "/data/user/0/<앱>/cache/donghaeng-voice/…" }
+404·410·expiresAtMs 지남 → EXPIRED(파일 삭제 — 이전 프로세스가 받은 파일·recentEvents 밖으로 밀려난 무전 포함)
+status ENDED·GROUP_ENDED → 그 그룹 캐시 삭제 · 그룹 404(나감) → 캐시 삭제 후 예외 · 일시 오류 3회 → FAILED
+이벤트와 무관: 첫 처리(폴링·listMyVehicles) + 1시간마다 받은 지 25시간 넘은 파일 정리(더 보지 않는 그룹의 캐시)
+파일 작업·내려받기는 Dispatchers.IO — 호스트가 메인 스레드에서 수집해도 된다
+```
+호스트 코드(공식 앱이 가져갈 부분 — demo-host `donghaeng/VoiceItems.kt`·`VoicePlayer.kt`):
+```kotlin
+val voice = DhJson.payloadAs<VoiceMessagePayload>(event.payload)          // voiceId, durationMs, mime, sizeBytes, expiresAtMs
+val status = (event.payload["localAudioStatus"] as? JsonPrimitive)?.content // READY 일 때만
+val path = (event.payload["localAudioPath"] as? JsonPrimitive)?.content     // → MediaPlayer.setDataSource(path)
+```
+폰은 자동 재생하지 않는다(차량 앱이 자동 재생 — 같은 차의 폰과 겹침 방지). 로그: `voice: cached voiceId=… bytes=… durMs=…`, `voice: expired … basis=…`.
+
 ### 내부 구조
 | 파일 | 역할 |
 |---|---|
@@ -70,6 +91,7 @@ QR 은 서버가 `{DH_PUBLIC_BASE_URL}` + 경로로 만든다. 모듈은 **호�
 | `internal/Wire.kt` | `AccountProvider.wireName`(교환 요청의 provider 문자열), `JwtClaims.expiresAtMs`(exp 만 읽음, 서명 검증 없음) |
 | `internal/FakeDongHaengApi.kt` | 메모리 구현 — **단위 테스트 전용**(`DongHaeng.initWithApi` 로만 끼운다): 내 차 2대, 3대짜리 그룹, 2초 틱 스냅샷, 10틱마다 `LOW_ENERGY`, 메시지 → `PASSENGER_MESSAGE` |
 | `internal/QrParser.kt` | 경로 기반 QR 판별 (단위 테스트 있음) |
+| `internal/VoiceInbox.kt` | F16 무전 수신 — `VoiceMessages`(payload 해석·경로·키 덧붙이기, 순수) + `VoiceInbox`(캐시·서버 시계 만료·404·그룹 종료/나감 삭제·재시도·한도). `HttpDongHaengApi.fetchGroup` 이 폴링마다 부른다 |
 | `consumer-rules.pro` | 호스트 앱 R8 에 합쳐지는 규칙(serialization·공개 API 유지) |
 
 ## 2. 호스트 앱(공식 앱)에 넣는 법
@@ -110,6 +132,7 @@ QR 은 서버가 `{DH_PUBLIC_BASE_URL}` + 경로로 만든다. 모듈은 **호�
 |---|---|
 | 로그인 | dev 로그인(`DevAuthClient` → `POST /v1/auth/login`) → `DongHaeng.init(…, DEV, DevTokenProvider)` + `SdkGateway`. **"서버 없이 둘러보기 (시연 모드)"** 는 `FakeGateway`(호스트 쪽 가짜 그룹: 서울시청에서 움직이는 3대 + 시간표 이벤트)로 B·D·F·G 가 그대로 움직인다 |
 | 홈 / 지도 / 제어 / 스토어 / 마이카 | `feature/*` — 기아 앱 레이아웃 재현. 디자인 토큰 `ui/theme/KiaTheme.kt`(배경 `#08131B`, 카드 `#18222B`, 라임 `#8CC63F`, Pretendard), 공용 조각 `ui/components/`(KiaTopBar·KiaBottomBar·KiaCard·CarArt 벡터 실루엣·OsmMap) |
+| 무전(F16) | C 동행 메인 진행 중 탭의 **무전 카드**(`VoiceMessagesCard`: 보낸 차 색·이름·길이·보낸 시각·[재생]/[멈춤]·진행 바)와 F 알림의 무전 행 [재생]. 상태는 `DongHaengStore.voices`(`VoiceItems.kt` — sdk 가 덧붙인 키 읽기·합치기, 이번 스냅샷의 무전은 sdk 상태 그대로·밀려난 것만 폰 시계 + 1시간), 재생은 `VoicePlayer`(MediaPlayer, `USAGE_MEDIA`·`CONTENT_TYPE_SPEECH`, `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`, 다른 앱 안내 음성(CAN_DUCK)이면 일시정지 후 이어 재생 — `VoiceFocusPolicy`). 시연 모드는 30초에 아빠 차 무전(코드로 만든 신호음 WAV, `FakeVoiceTone`) |
 | 동행 삽입 지점 | `donghaeng/` 패키지 하나에 모아 둔다 — **A** 상단 QR 스캔(`ScanScreen` + `JoinGroupSheet`: 초대 미리보기 → 차 선택 → `joinGroup`), **B** 홈 "동행 중" 카드(`ActiveGroupCard`), **C** 동행 메인(`DongHaengMainScreen`), **D** 지도 "동행" 칩 → 그룹 마커 + `GroupDriveSheet`, **E** 마이카 > 연동 서비스 > 동행 그룹 주행(`DongHaengSettingsScreen`), **F** 알림 벨(`NotificationsScreen`, 백그라운드면 시스템 알림), **G** 메시지 시트(`PassengerMessageSheet`, 프리셋 4 + 60자). 상태는 `DongHaengStore`, 서버/SDK 호출은 `DongHaengGateway` 로만 |
 
 - 서버 주소는 `BuildConfig.DH_PUBLIC_BASE_URL` — Gradle 속성 `dhPublicBaseUrl`(기본 `http://10.0.2.2:8080`). 클라우드: `-PdhPublicBaseUrl=https://<VM-IP>.sslip.io`
@@ -120,14 +143,15 @@ QR 은 서버가 `{DH_PUBLIC_BASE_URL}` + 경로로 만든다. 모듈은 **호�
 - 권한: `CAMERA`(스캔 진입 시), `POST_NOTIFICATIONS`(API 33+, 알림 화면 진입 시). 에뮬레이터: `adb shell pm grant app.donghaeng.companion.demo android.permission.CAMERA`
 - 카메라 없는 에뮬레이터: 스캔 화면 톱니(디버그) → "QR 문자열 붙여넣기" 에 차 화면 QR 문자열(초대 `url` / `verifyUri`)을 그대로. 시연 모드에서는 "그룹 QR 예시" 버튼으로 가짜 그룹에 합류한다
 - 브랜드 자산 미사용: 로고 자리 "KIA (시연)", 차량은 벡터 실루엣, 폰트 Pretendard(OFL, `res/font`), 아이콘 Material Symbols Outlined(Apache-2.0, `res/drawable/ms_*.xml`). 모든 화면 하단에 "본 앱은 공모전 시연용 재현 화면이며 기아 공식 앱이 아닙니다". 참고 스크린샷은 저장소 밖에만 둔다
-- 로그: `Log.i("DongHaeng", …)` — 토큰·닉네임·좌표는 찍지 않는다
+- 로그: `Log.i("DongHaeng", …)` — 토큰·닉네임·좌표는 찍지 않는다. 무전: `voice: received voiceId=… status=READY durMs=… mine=…`(목록 반영), `voice: play voiceId=…` → (`voice: duck_pause|resume voiceId=…`) → `voice: done|user|focus_loss|focus_timeout|error voiceId=…`
 
 ## 4. 빌드 · 테스트
 
 ```powershell
 cd companion
 .\gradlew.bat :sdk:assembleDebug :demo-host:assembleDebug --console=plain   # AAR + APK
-.\gradlew.bat :sdk:testDebugUnitTest --console=plain                        # QrParserTest, DongHaengFakeFlowTest, HttpDongHaengApiTest(MockWebServer)
+.\gradlew.bat :sdk:testDebugUnitTest --console=plain                        # QrParserTest, DongHaengFakeFlowTest, HttpDongHaengApiTest(MockWebServer), VoiceInboxTest, HttpVoiceDownloadTest
+.\gradlew.bat :demo-host:testDebugUnitTest --console=plain                  # VoiceItemsTest(무전 목록·서버 시계 상태 유지·포커스 정책·신호음 WAV)
 .\gradlew.bat :sdk:assembleRelease                                          # 배포용 AAR
 
 adb install -r demo-host\build\outputs\apk\debug\demo-host-debug.apk
@@ -142,3 +166,4 @@ adb logcat -s DongHaeng
 - **T14** 서버 그룹 API(생성·초대·합류·조회·메시지) — 모듈은 이미 `GroupJoinResponse`/`GroupDetailResponse` DTO 로 구현돼 있어 서버가 생기면 그대로 붙는다
 - **T18** 그룹 합류 데모(차량 AVD 2대 + 데모 호스트)
 - 서버 실연결 후 `observeGroup` 을 15초 폴링 → 푸시로 교체, `refreshToken`(`POST /v1/auth/refresh`) 으로 재교환 없이 갱신
+- F16 다음 단계: **폰에서 녹음해 보내기** — 서버 업로드가 차량 JWT 전용(docs/03 §2.6)이라 사용자 JWT 업로드(보낼 내 차 지정) 계약 + 공개 API(`sendVoiceMessage`) 추가 결정이 먼저다. 무전 수신 지연(폴링 15초)은 푸시 전환 때 즉시로

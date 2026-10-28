@@ -24,7 +24,10 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
 import java.util.Base64
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -34,6 +37,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * 토큰 값은 테스트용 가짜 JWT(서명 없음)다.
  */
 class HttpDongHaengApiTest {
+
+    /** 무전 캐시 루트 — 실제 java.io.tmpdir 를 건드리지 않게 */
+    @get:Rule
+    val tmp = TemporaryFolder()
 
     private lateinit var server: MockWebServer
     private lateinit var baseUrl: String
@@ -65,6 +72,7 @@ class HttpDongHaengApiTest {
         tokenProvider = token,
         client = client,
         pollIntervalMs = 10, // 가상 시간이 아니라 실제 지연이 걸려도 테스트가 느려지지 않게
+        voiceInbox = VoiceInbox(rootDir = File(tmp.root, "voice")),
     )
 
     // ---------- 도우미 ----------
