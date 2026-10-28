@@ -80,3 +80,6 @@ tools/demo/out/
 # ---------- Python 보조 스크립트(tools/) ----------
 __pycache__/
 *.pyc
+
+# ---------- 로컬 도구(에이전트 작업 트리) ----------
+.claude/worktrees/
