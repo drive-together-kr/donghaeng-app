@@ -243,4 +243,33 @@
     <string name="diag_lat_event">이벤트 지연</string>
     <string name="diag_lat_state">상태 지연</string>
     <string name="diag_lat_action_resync">지금 동기화</string>
+
+    <!-- 주행 대시보드 재설계안 (시안) -->
+    <string name="dash_group_arrival">그룹 도착 예상</string>
+    <string name="dash_my_arrival">내 도착</string>
+    <string name="dash_next_stop">다음 정차</string>
+    <string name="dash_fuel">주유</string>
+    <string name="dash_charge">충전</string>
+    <string name="dash_rest_hint">휴식을 권해요</string>
+    <string name="dash_no_event">새 소식 없음</string>
+    <string name="dash_ptt">무전</string>
+    <string name="dash_ptt_seconds">%1$d초</string>
+    <string name="dash_open_navi">내비 보기</string>
+    <string name="dash_connected">연결</string>
+    <string name="dash_reconnecting">재연결 중</string>
+    <string name="dash_latency">지연 %1$d ms</string>
+    <string name="dash_ptt_recording">녹음 중</string>
+    <string name="dash_ptt_seconds_left">%1$d초 남음</string>
+    <string name="dash_ptt_confirm_q">동행하는 차에게 보낼까요?</string>
+    <string name="dash_ptt_confirm_hint">"네" 또는 "아니"라고 말하세요</string>
+    <string name="dash_ptt_confirm_fallback">%1$d초 뒤 전송합니다. 취소하려면 버튼을 누르세요</string>
+    <string name="dash_ptt_listening">듣는 중</string>
+    <string name="dash_ptt_sent">전송됨 · %1$d대</string>
+    <string name="dash_ptt_playing">%1$s 무전 재생 중</string>
+    <string name="dash_presets">빠른 메시지</string>
+    <string name="dash_recent_events">지난 소식</string>
+    <string name="dash_unsent_ptt">보내지 않은 무전 %1$d개</string>
+    <string name="dash_resend">재전송</string>
+    <string name="dash_manage_group">그룹 관리</string>
+    <string name="dash_settings">설정</string>
 </resources>

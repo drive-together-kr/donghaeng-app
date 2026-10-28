@@ -28,6 +28,7 @@ object DhRoutes {
     const val PRESETS = "presets"            // T53
     const val SETTINGS = "settings"
     const val DIAGNOSTICS = "diagnostics"    // T11 확인용 화면
+    const val DESIGN = "design"              // 주행 대시보드 시안(변형 인자) — 인텐트 extra screen=design&variant=…
 }
 
 @Composable
@@ -84,5 +85,6 @@ fun DhNavHost(
             )
         }
         composable(DhRoutes.DIAGNOSTICS) { DiagnosticsRoute(onBack = { navController.popBackStack() }) }
+        composable("${DhRoutes.DESIGN}/{variant}") { entry -> app.donghaeng.car.feature.drive.DesignPreviewHost(entry.arguments?.getString("variant") ?: "drive_landscape") }
     }
 }

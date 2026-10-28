@@ -133,6 +133,7 @@ class DemoControlReceiver : BroadcastReceiver() {
                 val launch = Intent(context, app.donghaeng.car.MainActivity::class.java)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                     .putExtra(app.donghaeng.car.MainActivity.EXTRA_SCREEN, screen)
+                intent.getStringExtra("variant")?.let { launch.putExtra(app.donghaeng.car.MainActivity.EXTRA_VARIANT, it) }
                 context.startActivity(launch)
                 DhLog.i("demo: open screen=$screen")
             }

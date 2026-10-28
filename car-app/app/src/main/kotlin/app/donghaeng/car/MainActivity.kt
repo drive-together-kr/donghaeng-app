@@ -43,10 +43,20 @@ class MainActivity : ComponentActivity() {
         "create", "create_group" -> app.donghaeng.car.ui.navigation.DhRoutes.CREATE_GROUP
         "settings" -> app.donghaeng.car.ui.navigation.DhRoutes.SETTINGS
         "diagnostics", "diag" -> app.donghaeng.car.ui.navigation.DhRoutes.DIAGNOSTICS
+        "design" -> app.donghaeng.car.ui.navigation.DhRoutes.DESIGN + "/" + (intent.getStringExtra(EXTRA_VARIANT) ?: "drive_landscape")
         else -> null
+    }
+
+    /** 핸들 버튼 조사(F16): 포그라운드에서 어떤 키가 액티비티까지 오는지 로그로 남긴다(debug 빌드만) */
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (BuildConfig.DEBUG && event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            app.donghaeng.car.core.common.DhLog.i("key: ${android.view.KeyEvent.keyCodeToString(event.keyCode)} source=${event.source} device=${event.deviceId}")
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     companion object {
         const val EXTRA_SCREEN = "screen"
+        const val EXTRA_VARIANT = "variant"
     }
 }
