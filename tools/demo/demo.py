@@ -8,7 +8,7 @@
   python tools/demo/demo.py --car-a emulator-5556 --car-b emulator-5558 --vc-port 8089 [--email dev@example.com]
 
 순서
-  0 preflight  : 기기·앱·서버·Virtual Console·차 B GPX 역할(follow) 확인
+  0 preflight  : 기기·앱·서버·Virtual Console·차 B GPX 역할(follow)·플로팅 창 권한·차 A 위치 소스(android_first) 확인
   2~3 대기     : 차 A '같이 가기 시작' → 폰(demo-host)으로 QR 합류(또는 api.py join). 차 B 의 합류를 로그로 감지하면 합류 제안을 자동 수락(--no-auto-accept 면 화면에서)
   4 함께 주행  : T0 — 차 A GPS 재생 시작 + Virtual Console 기어 D·속도. 차 B 는 수락 순간부터 스스로 달린다
   5 저잔량     : T0+20s  VC soc=12 → 차 B 음성 "…배터리가 12% 남았어요"
@@ -154,6 +154,13 @@ class Demo:
         rows.append(("A 최근 2분 내 LOW_ENERGY 발행 없음(서버 중복 억제 120 s)", self.seconds_since_last_event(self.A, "LOW_ENERGY") > 125))
         sa = status(self.A)
         rows.append(("A 리시버 응답", bool(sa)))
+        # 주행 중 표면(2026-10-28): 플로팅 창 권한 — 없으면 알림 카드 + 음성 모드로 동작하므로 경고만
+        for name, s in (("A", self.A), ("B", self.B)):
+            mode = sh(s, f"appops get --user 10 {PKG} SYSTEM_ALERT_WINDOW")
+            rows.append((f"{name} 플로팅 창 허용(없으면 카드+음성 모드)", "allow" in mode))
+        # 차 A 위치 소스: 순정 내비 위치가 고정된 에뮬레이터에서는 android_first 여야 GPX 재생이 반영된다(docs/09 §1.2)
+        order_lines = [l for l in sh(self.A, "logcat -d -s DongHaeng").splitlines() if "location: 소스 순서" in l]
+        rows.append(("A 위치 소스 android_first", bool(order_lines) and order_lines[-1].rstrip().endswith("android_first")))
         print("\n== preflight ==")
         bad = 0
         for k, ok in rows:

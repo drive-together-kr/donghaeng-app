@@ -37,6 +37,11 @@ python tools/demo/api.py --email <dev 이메일> join --vehicle DemoCarB  # 폰 
 `auto_follow --ez on true`, `speak --es text …`, `voice --ez on false`, `navi_route`(그룹 목적지로 내비 요청), `gpx --es role lead|follow`, `open --es screen home|drive|events|create|settings|diagnostics`(화면 열기), `status`. 결과는 `logcat -s DongHaeng` 의 `demo:` 줄.
 release 빌드에는 들어가지 않는다(`src/debug`).
 
+## 주행 중 표면 준비 (2026-10-28)
+- 주행 장면에서는 두 대 모두 **순정 내비를 전면**에 둔다. 동행 정보는 내비 위 플로팅 패널·이벤트 알림 카드(8초)·음성으로 나온다.
+- 플로팅 창 권한(Pleos 에는 설정 화면이 없다): `adb -s <serial> shell appops set --user 10 app.donghaeng.car SYSTEM_ALERT_WINDOW allow`. 권한이 없으면 앱이 '알림 카드 + 음성' 모드로 바꾼다.
+- 차 A(Pleos AVD, 실 SDK)는 순정 내비 위치가 고정돼 있어 위치 소스를 Android 먼저로: `… DemoControlReceiver --es action loc_order --es order android_first` → 앱 재시작. 그래야 `replay_gpx.py` 의 `geo fix` 가 동행 위치·간격에 반영된다(docs/09 §1.2). 순정 내비 화면의 내 차 아이콘은 에뮬레이터에서 움직이지 않는다.
+
 ## 리허설 사이 초기화 (실측에서 걸린 것들)
 - 차 B 를 다시 합류시키려면 먼저 내보낸다: `api.py` 로 `POST /groups/{id}/leave {vehicleId}` → 차 B 앱이 자기 `MEMBER_LEFT` 를 받고 세션을 지운다(홈이 '그룹 없음' 으로). 그 뒤 `api.py join`.
 - 서버는 같은 차의 `LOW_ENERGY` 를 **120 s 동안 중복 억제**한다. 차 A 앱을 재시작하면 현재 잔량이 15% 이하일 때 바로 한 번 발행하므로, 재시작 전에 `vc.py soc 80` 으로 올려 두고 2분 뒤에 시연을 시작한다(preflight 가 검사한다).
