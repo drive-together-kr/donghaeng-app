@@ -4,6 +4,7 @@
   - 로컬(에뮬레이터) `http://10.0.2.2:8080` · 로컬(실기기, 같은 Wi-Fi) `http://<PC-IP>:8080` · 클라우드 `https://<VM-IP>.sslip.io` (예: `https://1-2-3-4.sslip.io`, Caddy 자동 인증서)
 - REST Base URL: `{DH_PUBLIC_BASE_URL}/v1` (로컬: `http://10.0.2.2:8080/v1` — 에뮬레이터 기준)
 - MQTT 공개 주소 설정값 **`DH_MQTT_PUBLIC_URI`**: 로컬 `tcp://10.0.2.2:1883`, 클라우드 `ssl://<VM-IP>.sslip.io:8883`. MQTT 5.0
+- MQTT 대체 주소(WSS): **`wss://{DH_PUBLIC_BASE_URL 호스트}/mqtt` (443)** — 클라우드 Caddy 가 EMQX WebSocket 리스너로 넘긴다(서브프로토콜 `mqtt`, 인증·토픽·ACL 은 1차 주소와 같음). 8883 이 막힌 망에서 쓰며 별도 설정값 없이 `DH_PUBLIC_BASE_URL` 이 `https://` 일 때만 이 규칙으로 만든다(로컬 `http://` 는 1883 직결만). 예: `https://1-2-3-4.sslip.io` → `wss://1-2-3-4.sslip.io/mqtt` (infra/cloud, T32)
 - QR·딥링크 URL은 항상 `{DH_PUBLIC_BASE_URL}` + 경로(`/pair?c=…`, `/j/{token}`)로 **서버가 생성**하고, companion 모듈은 호스트가 아니라 **경로로 종류를 판별**한다(07 문서 §5)
 - 직렬화: JSON (UTF-8), 필드명 camelCase, 시간은 epoch milliseconds(`ts`), 좌표는 WGS84 소수점 7자리
 - 시각 기준: 모든 `ts` 는 **서버 시계**가 기준이다. `GET /v1/time`(인증 없음) → 200 `{ "serverTimeMs": 1730000000000 }`. 차량 앱은 3회 호출 중 왕복이 가장 짧은 표본으로 `offset = serverTime − (t0 + rtt/2)` 를 잡아(T31 `ClockSync`, 5분마다) 메시지 지연(ms) 표시와 음성 신선도(5 s) 판정에 쓴다 — 차량 시계가 틀려도 동작한다(에뮬레이터 실측: 호스트보다 1.2~1.9 s 늦어 보정 없이는 지연이 음수).
