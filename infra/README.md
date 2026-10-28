@@ -7,7 +7,8 @@
 infra/
 ├── docker-compose.yml   # postgres 16 · redis 7 · emqx 5.8 · server
 ├── .env.example         # 환경 변수 예시 → 복사해서 .env 로 사용 (.env 는 커밋 금지)
-└── README.md
+├── README.md
+└── cloud/               # 클라우드 VM(T32): compose 오버라이드 · Caddy(+layer4) · deploy.sh · remote-env.sh — §8, cloud/README.md
 ```
 
 ## 1. 사전 준비
@@ -111,9 +112,17 @@ Flyway 마이그레이션은 서버 기동 시 자동 적용되므로 DB 를 지
 - 에뮬레이터에서 `10.0.2.2:8080` 이 안 열림 — 서버 컨테이너가 떠 있는지(`docker compose ps server`) 와 `http://localhost:8080/actuator/health` 를 먼저 확인.
 - 폰에서 `<PC-IP>:8080` 이 안 열림 — §5 2-1 네트워크 프로필과 2-2 Docker Block 규칙을 먼저 확인 (`Get-NetConnectionProfile`, `Get-NetFirewallRule -DisplayName "Docker Desktop Backend"`).
 
-## 8. 클라우드 배포 (T32 예정)
-VM 1대에 같은 compose 를 올리고 Caddy 를 앞에 둔다: HTTPS 443 → `server:8080`, TLS 8883 → `emqx:1883`.
-도메인 없이 `https://<VM-IP>.sslip.io` 로 인증서를 자동 발급받는다. `.env` 에
-`DH_PUBLIC_BASE_URL=https://<VM-IP>.sslip.io`, `DH_MQTT_PUBLIC_URI=ssl://<VM-IP>.sslip.io:8883` 을 넣고, `.env` 는 절대 커밋하지 않는다.
-클라우드에서는 `.env` 의 `POSTGRES_PASSWORD`·`EMQX_DASHBOARD_PASSWORD` 를 반드시 바꾸고(개발용 기본값 `dh`/`public` 금지), Redis 에 `requirepass` 를 건다.
-15432/6379/8083/18083 은 loopback 바인딩을 유지해 외부에 열지 않는다 — 인터넷에 노출되는 것은 Caddy 의 443/8883 뿐이어야 한다.
+## 8. 클라우드 배포 (T32) — `cloud/`
+VM 1대(Ubuntu 24.04 · x86_64 · 4 GB)에 이 compose 를 그대로 올리고 `cloud/docker-compose.cloud.yml` 로 덧씌운다. 자세한 절차·롤백·문제 해결은 **[cloud/README.md](cloud/README.md)**.
+
+```bash
+# 로컬 PC(저장소 루트, Windows 는 Git Bash) — Docker 설치·ufw·스왑·이미지 전송·.env 생성·기동·헬스체크까지 한 번에
+bash infra/cloud/deploy.sh ubuntu@<VM-IP> -i <ssh 키>
+```
+
+- 앞단은 Caddy(+caddy-l4) 하나: 443 `https://<VM-IP>.sslip.io` → `server:8080`, 443 `/mqtt` → `emqx:8083`(MQTT over WSS, 대체 경로), 443 `/internal/*` → 404(EMQX 인가 훅 외부 차단),
+  8883 → TLS 종단 → `emqx:1883`(MQTT over TLS, 기본 경로), 80 → ACME + https 리다이렉트. 인증서는 Let's Encrypt 자동 발급(80/443 이 인터넷에서 닿아야 함).
+- 공개 포트는 Caddy 의 80/443/8883 뿐. server 8080·emqx 1883/8083 은 publish 하지 않고, 15432/6379/18083 은 loopback 만(ssh -L). Docker publish 포트는 ufw 를 우회하므로 compose 쪽에서 막는다.
+- 개발용 기본 비밀(`dh`/`public`, 빈 JWT 키·내부 토큰)은 쓰지 않는다 — VM 의 `infra/.env` 를 `cloud/remote-env.sh` 가 랜덤 값으로 한 번만 만든다(chmod 600, 커밋·복사 금지). Redis 는 `requirepass`(서버 `DH_REDIS_PASSWORD`).
+- 4 GB 메모리 예산: server 1024 · emqx 512 · postgres 384 · redis 128 · caddy 128 MB(합 2176 MB) + 스왑 2 GB — cloud/README.md §4.
+- 로컬 스택과의 차이는 이 오버라이드뿐이라 로컬 `docker compose up` 은 영향이 없다(서버의 `DH_REDIS_PASSWORD` 는 비어 있으면 AUTH 를 보내지 않음).

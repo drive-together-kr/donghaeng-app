@@ -1,0 +1,165 @@
+# 동행(DongHaeng) 클라우드 VM 오버라이드 (T32) — docs/06 §7, infra/cloud/README.md
+#
+# 기존 로컬 스택(infra/docker-compose.yml)에 덧씌워 쓴다. VM 의 ~/donghaeng/infra 에서:
+#   docker compose -f docker-compose.yml -f cloud/docker-compose.cloud.yml up -d --no-build
+# (.env 는 infra/.env — cloud/remote-env.sh 가 cloud/.env.example 로 만든다. 커밋 금지)
+#
+# 이 파일이 바꾸는 것
+#   1) 공개 포트는 caddy 의 80/443/8883 뿐. server 8080·emqx 1883/8083 은 호스트에 publish 하지 않고
+#      compose 네트워크 안에서 caddy 만 닿는다. postgres 15432·redis 6379·emqx 대시보드 18083 은 127.0.0.1 만.
+#      ※ Docker 가 publish 한 포트는 iptables DOCKER 체인을 타 ufw 를 우회한다 → 막는 수단은 "publish 안 함 / loopback 바인딩" 뿐.
+#      ※ ports 는 오버라이드에서 병합(append)되므로 지울 때는 !override / !reset 을 쓴다(Compose ≥ 2.24.4).
+#   2) 개발용 기본 비밀(dh/dh, admin/public, 빈 내부 토큰·JWT 키)을 쓰지 않는다 — ${VAR:?} 로 .env 에 없으면 기동 거부.
+#   3) 4 GB VM 메모리 상한(mem_limit) + 서비스 내부 상한(JVM 힙·Postgres shared_buffers·Redis maxmemory·Go GOMEMLIMIT).
+#      예산표는 cloud/README.md §4.
+#
+# 상대 경로(./cloud/...)는 첫 번째 -f 파일(infra/docker-compose.yml)의 디렉터리 기준이다.
+
+x-logging: &logging
+  # 디스크(작은 VM) 보호 — 컨테이너당 json 로그 10 MB × 3
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ---------------------------------------------------------------- PostgreSQL 16 (상한 384 MB)
+  postgres:
+    # ports 는 기본 파일 그대로(127.0.0.1:15432) — ssh -L 로만 접근
+    environment:
+      # 첫 기동(빈 pgdata 볼륨) 때만 적용된다. 이후 바꾸려면 ALTER USER 로 DB 안에서 바꾼다.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 가 .env 에 필요해요 (cloud/remote-env.sh)}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - effective_cache_size=256MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=32MB
+      # 서버 Hikari 기본 풀 10 + 여유. 연결당 수 MB 라 상한을 낮게 둔다.
+      - -c
+      - max_connections=40
+    mem_limit: 384m
+    logging: *logging
+
+  # ---------------------------------------------------------------- Redis 7 (상한 128 MB)
+  redis:
+    # requirepass + 메모리 상한. 정책 volatile-lru: TTL 있는 키(presence·dedup·제안)만 내보낸다.
+    # 그룹 소속 캐시(veh:{vid}:group, grp:{gid}:members)는 TTL 이 없고 MQTT ACL 훅이 먼저 보는 키라 allkeys-* 정책은 쓰지 않는다
+    # (빠지면 ACL 이 매 판정마다 DB 로 떨어진다). 시연 규모 데이터는 수 MB 라 64 MB 에 닿지 않는다.
+    # AOF + 이름 있는 볼륨: Redis 를 다시 만들어도 소속 캐시·presence 가 이어진다.
+    command:
+      - redis-server
+      - --requirepass
+      - ${DH_REDIS_PASSWORD:?DH_REDIS_PASSWORD 가 .env 에 필요해요 (cloud/remote-env.sh)}
+      - --maxmemory
+      - 64mb
+      - --maxmemory-policy
+      - volatile-lru
+      - --appendonly
+      - "yes"
+    environment:
+      # redis-cli 가 이 환경 변수로 AUTH 한다(헬스체크용). -a 인자보다 ps 노출·경고가 적다.
+      REDISCLI_AUTH: ${DH_REDIS_PASSWORD:?DH_REDIS_PASSWORD 가 .env 에 필요해요}
+    healthcheck:
+      # 인증 실패(NOAUTH)도 redis-cli 종료 코드는 0 이라 PONG 을 직접 확인한다.
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+    volumes:
+      - redis-data:/data
+    mem_limit: 128m
+    logging: *logging
+
+  # ---------------------------------------------------------------- EMQX 5.8 (상한 512 MB)
+  emqx:
+    ports: !override
+      # 대시보드만 loopback. 접속: ssh -L 18083:127.0.0.1:18083 <user>@<IP> → http://localhost:18083
+      # 1883(MQTT)·8083(WebSocket)은 publish 하지 않는다 — caddy 가 compose 네트워크로 emqx:1883 / emqx:8083 에 붙는다.
+      - "127.0.0.1:18083:18083"
+    environment:
+      # 첫 기동(빈 emqx-data 볼륨) 때만 적용. 첫 로그인 때 변경을 강제한다.
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:?EMQX_DASHBOARD_PASSWORD 가 .env 에 필요해요}
+      # Erlang 분산 쿠키(기본값 emqxsecretcookie 대신). 컨테이너 밖으로 열리지 않지만 기본값은 쓰지 않는다.
+      EMQX_NODE__COOKIE: ${EMQX_NODE_COOKIE:?EMQX_NODE_COOKIE 가 .env 에 필요해요}
+      # TLS 는 caddy 가 종단한다 → EMQX 자체 ssl(8883)·wss(8084) 기본 리스너는 끈다(미사용 + 메모리 절약).
+      # JWT 인증(JWKS)·HTTP ACL 훅은 기본 파일 그대로 내부 주소 http://server:8080 을 본다(바꾸지 않음).
+      EMQX_LISTENERS__SSL__DEFAULT__ENABLE: "false"
+      EMQX_LISTENERS__WSS__DEFAULT__ENABLE: "false"
+      # Erlang 프로세스·포트 표는 기동 때 미리 잡힌다(기본 2,097,152 / 1,048,576). 시연 규모(차량 수십 대)에 맞게 줄인다.
+      EMQX_NODE__PROCESS_LIMIT: "131072"
+      EMQX_NODE__MAX_PORTS: "65536"
+      # memsup 은 VM 전체 메모리를 본다 — JVM·Postgres 가 같이 쓰는 4 GB VM 에서 기본 70% 경보가 상시 울리지 않게.
+      EMQX_SYSMON__OS__SYSMEM_HIGH_WATERMARK: "92%"
+    mem_limit: 512m
+    logging: *logging
+
+  # ---------------------------------------------------------------- 동행 서버 (상한 1024 MB)
+  server:
+    # 이미지는 로컬 PC 에서 빌드해 docker save | ssh docker load 로 올린다(VM 에서 Gradle 빌드 안 함).
+    # 롤백: .env 의 DH_SERVER_TAG=cloud-<이전 커밋> 으로 바꾸고 up -d server (cloud/README.md §6).
+    image: donghaeng/server:${DH_SERVER_TAG:-cloud}
+    platform: linux/amd64
+    pull_policy: never
+    ports: !reset []     # 8080 미공개 — caddy 만 server:8080 으로 닿는다
+    environment:
+      # local 프로필(app.donghaeng DEBUG)을 쓰지 않는다. application-cloud.yml 은 없어도 된다(기본 INFO).
+      SPRING_PROFILES_ACTIVE: cloud
+      DH_DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 가 .env 에 필요해요}
+      DH_REDIS_PASSWORD: ${DH_REDIS_PASSWORD:?DH_REDIS_PASSWORD 가 .env 에 필요해요}
+      DH_PUBLIC_BASE_URL: ${DH_PUBLIC_BASE_URL:?DH_PUBLIC_BASE_URL(https://<IP>.sslip.io) 가 .env 에 필요해요}
+      DH_MQTT_PUBLIC_URI: ${DH_MQTT_PUBLIC_URI:?DH_MQTT_PUBLIC_URI(ssl://<IP>.sslip.io:8883) 가 .env 에 필요해요}
+      # 비우면 재시작마다 키가 바뀌어 발급 토큰이 전부 무효 → 클라우드에서는 필수
+      DH_JWT_PRIVATE_KEY_PEM: ${DH_JWT_PRIVATE_KEY_PEM:?DH_JWT_PRIVATE_KEY_PEM 이 .env 에 필요해요}
+      DH_CAR_ID_SALT: ${DH_CAR_ID_SALT:?DH_CAR_ID_SALT 가 .env 에 필요해요}
+      # EMQX ACL 훅 공유 비밀 — emqx 서비스의 x-internal-token 헤더(기본 파일)도 같은 변수를 읽는다. 비우면 훅이 검사를 건너뛰므로 필수.
+      DH_INTERNAL_TOKEN: ${DH_INTERNAL_TOKEN:?DH_INTERNAL_TOKEN 이 .env 에 필요해요}
+      # JVM 메모리 상한(Dockerfile ENTRYPOINT 는 옵션 없는 java -jar → JVM 이 이 변수를 자동으로 읽는다).
+      #   힙 512 + 메타스페이스 ≤192 + 코드 캐시 ≤96 + 다이렉트 ≤128 + 스레드 스택(≤64 Tomcat + 기타) ≈ 실사용 700~850 MB < 1024 MB
+      #   SerialGC: 2 vCPU·작은 힙에서 오버헤드가 가장 작다. OOM 이면 즉시 종료 → restart: unless-stopped 가 다시 띄운다.
+      JAVA_TOOL_OPTIONS: >-
+        -Xms128m -Xmx512m -XX:MaxMetaspaceSize=192m -XX:ReservedCodeCacheSize=96m
+        -XX:MaxDirectMemorySize=128m -Xss512k -XX:+UseSerialGC -XX:+ExitOnOutOfMemoryError
+      SERVER_TOMCAT_THREADS_MAX: "64"
+    mem_limit: 1024m
+    logging: *logging
+
+  # ---------------------------------------------------------------- Caddy 2 + layer4 (상한 128 MB)
+  caddy:
+    build:
+      context: ./cloud/caddy
+    image: donghaeng/caddy:${DH_CADDY_TAG:-l4}
+    platform: linux/amd64
+    pull_policy: never
+    restart: unless-stopped
+    ports:
+      # 인터넷에 열리는 포트는 이 셋뿐(+ VM 의 ssh 22). 80 = ACME HTTP-01 + HTTPS 리다이렉트.
+      # h3(UDP 443)는 Caddyfile 에서 끈다.
+      - "80:80"
+      - "443:443"
+      - "8883:8883"
+    environment:
+      DH_PUBLIC_HOST: ${DH_PUBLIC_HOST:?DH_PUBLIC_HOST(<IP>.sslip.io) 가 .env 에 필요해요}
+      # ACME 계정 메일(선택): 있으면 Caddyfile 전역 블록에 "email <주소>" 한 줄, 없으면 빈 값(줄 자체가 없어짐).
+      CADDY_EMAIL_OPTION: ${CADDY_EMAIL:+email ${CADDY_EMAIL}}
+      # Go 런타임 소프트 상한 — 컨테이너 상한(128 MB) 전에 GC 가 먼저 돈다.
+      GOMEMLIMIT: 96MiB
+    volumes:
+      - ./cloud/Caddyfile:/etc/caddy/Caddyfile:ro
+      # 인증서·ACME 계정. 지우면 재발급(Let's Encrypt 같은 이름 주 5회 한도) → down -v 금지.
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      # 관리 API(컨테이너 안 127.0.0.1:2019)가 응답하면 설정이 올라가 있는 것이다.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    mem_limit: 128m
+    logging: *logging
+
+volumes:
+  redis-data:
+  caddy-data:
+  caddy-config:
