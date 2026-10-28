@@ -9,10 +9,38 @@ plugins {
     alias(libs.plugins.hilt)
 }
 
-// 서버 주소: gradle.properties 기본값(에뮬레이터 → 호스트) 또는 -P 로 덮어쓰기 (클라우드 빌드)
-//   .\gradlew.bat :app:assemblePleosRelease -PdhPublicBaseUrl=https://1-2-3-4.sslip.io -PdhMqttPublicUri=ssl://1-2-3-4.sslip.io:8883
-val dhPublicBaseUrl: String = (findProperty("dhPublicBaseUrl") as String?)?.takeIf { it.isNotBlank() } ?: "http://10.0.2.2:8080"
-val dhMqttPublicUri: String = (findProperty("dhMqttPublicUri") as String?)?.takeIf { it.isNotBlank() } ?: "tcp://10.0.2.2:1883"
+// 서버 주소 (T32) — 빌드 타입별 기본값. 앱 안에서는 설정 화면 숨은 메뉴(제목 5번 탭)로 바꿀 수 있다(docs/05 §7).
+//   debug  : dhPublicBaseUrl / dhMqttPublicUri (gradle.properties 기본값 = 에뮬레이터 → 호스트, -P 로 덮어쓰기)
+//   release: dhCloudHost 가 있으면 https://{dhCloudHost} / ssl://{dhCloudHost}:8883 (클라우드 기본).
+//            비어 있으면 debug 값을 그대로 쓰고 경고만 낸다(빌드는 계속).
+//   .\gradlew.bat :app:assemblePleosRelease -PdhCloudHost=1-2-3-4.sslip.io
+fun dhProperty(name: String): String? = (findProperty(name) as String?)?.trim()?.takeIf { it.isNotEmpty() }
+
+val dhPublicBaseUrl: String = dhProperty("dhPublicBaseUrl") ?: "http://10.0.2.2:8080"
+val dhMqttPublicUri: String = dhProperty("dhMqttPublicUri") ?: "tcp://10.0.2.2:1883"
+val dhCloudHost: String? = dhProperty("dhCloudHost")?.removePrefix("https://")?.trimEnd('/')?.also { host ->
+    if (!host.matches(Regex("[A-Za-z0-9.-]+"))) {
+        throw GradleException("dhCloudHost 는 호스트 이름만 넣는다(스킴·포트·경로 없이). 예: 1-2-3-4.sslip.io — 받은 값: $host")
+    }
+}
+val releasePublicBaseUrl: String = dhCloudHost?.let { "https://$it" } ?: dhPublicBaseUrl
+val releaseMqttPublicUri: String = dhCloudHost?.let { "ssl://$it:8883" } ?: dhMqttPublicUri
+
+// 평문 http 정책: 기본 서버 주소가 http:// 면 평문 전부 허용(로컬 개발), https:// 면 에뮬레이터 호스트·localhost 만 허용(숨은 메뉴의 현장 로컬 서버 폴백, docs/10 R9).
+//   res/xml/network_security_config_{open,cloud}.xml 을 매니페스트 placeholder 로 고른다. HiveMQ(Netty) 에는 적용되지 않으므로 MQTT 평문은 MqttUriPolicy 가 막는다.
+//   cleartextLocalHosts 는 network_security_config_cloud.xml 의 domain 목록과 같아야 한다(숨은 메뉴의 주소 검증이 BuildConfig.DH_CLEARTEXT_HOSTS 로 읽는다).
+val cleartextLocalHosts = listOf("10.0.2.2", "localhost", "127.0.0.1")
+fun cleartextHostsFor(baseUrl: String): String = if (baseUrl.startsWith("http://")) "*" else cleartextLocalHosts.joinToString(",")
+fun networkSecurityConfigFor(baseUrl: String): String =
+    if (baseUrl.startsWith("http://")) "@xml/network_security_config_open" else "@xml/network_security_config_cloud"
+
+gradle.taskGraph.whenReady {
+    if (allTasks.none { it.name.contains("Release") }) return@whenReady
+    if (dhCloudHost == null) {
+        // 콘솔 인코딩(Windows CP949)에서 깨지지 않게 영어로 남긴다
+        logger.warn("w: [donghaeng] dhCloudHost is empty - release keeps the debug server ($releasePublicBaseUrl, $releaseMqttPublicUri). Set -PdhCloudHost=<VM-IP>.sslip.io (or dhCloudHost in gradle.properties) for the cloud default.")
+    }
+}
 
 android {
     namespace = "app.donghaeng.car"
@@ -29,12 +57,7 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField("String", "DH_PUBLIC_BASE_URL", "\"$dhPublicBaseUrl\"")
-        buildConfigField("String", "DH_MQTT_PUBLIC_URI", "\"$dhMqttPublicUri\"")
-
-        // 평문 HTTP 허용 여부를 서버 주소 스킴에 묶는다: http://(로컬 개발) → true, https://(클라우드) → false
-        //   AndroidManifest.xml 의 android:usesCleartextTraffic="${usesCleartext}" 로 들어간다
-        manifestPlaceholders["usesCleartext"] = dhPublicBaseUrl.startsWith("http://").toString()
+        // 서버 주소·평문 정책은 buildTypes 에서 정한다(debug = 로컬, release = 클라우드)
     }
 
     // 어댑터 구현 선택: pleos = 실 SDK (Pleos Connect AVD), fake = 전부 Fake (일반 AVD 에서도 실행)
@@ -55,11 +78,20 @@ android {
     buildTypes {
         debug {
             isMinifyEnabled = false
+            buildConfigField("String", "DH_PUBLIC_BASE_URL", "\"$dhPublicBaseUrl\"")
+            buildConfigField("String", "DH_MQTT_PUBLIC_URI", "\"$dhMqttPublicUri\"")
+            buildConfigField("String", "DH_CLEARTEXT_HOSTS", "\"${cleartextHostsFor(dhPublicBaseUrl)}\"")
+            manifestPlaceholders["networkSecurityConfig"] = networkSecurityConfigFor(dhPublicBaseUrl)
         }
         release {
             // 축소·난독화와 서명은 T40 에서 결정한다 (Pleos SDK keep 규칙 확인 필요)
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // T32: 클라우드 기본 주소(dhCloudHost). 비어 있으면 debug 값 + 경고(위 taskGraph.whenReady)
+            buildConfigField("String", "DH_PUBLIC_BASE_URL", "\"$releasePublicBaseUrl\"")
+            buildConfigField("String", "DH_MQTT_PUBLIC_URI", "\"$releaseMqttPublicUri\"")
+            buildConfigField("String", "DH_CLEARTEXT_HOSTS", "\"${cleartextHostsFor(releasePublicBaseUrl)}\"")
+            manifestPlaceholders["networkSecurityConfig"] = networkSecurityConfigFor(releasePublicBaseUrl)
         }
     }
 
@@ -127,6 +159,7 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging.interceptor)
     implementation(libs.hivemq.mqtt.client)
+    implementation(libs.netty.codec.http)   // T32 MQTT over WebSocket(wss) 전송 — HiveMQ POM 에서 optional
     implementation(libs.zxing.core)
 
     debugImplementation(libs.androidx.compose.ui.tooling)

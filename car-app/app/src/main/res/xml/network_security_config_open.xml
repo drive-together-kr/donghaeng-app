@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- T32: 빌드 기본 서버 주소가 http:// 인 빌드(로컬 개발 — 에뮬레이터 10.0.2.2, 같은 Wi-Fi 의 PC). 평문 http 를 모든 호스트에 허용한다.
+     app/build.gradle.kts 의 networkSecurityConfigFor() 가 매니페스트 placeholder 로 고른다. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
