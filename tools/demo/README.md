@@ -13,6 +13,8 @@ adb 는 환경변수 `ADB` 또는 `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb
 | `test_demo.py` | 위 스크립트 단위 테스트(표준 라이브러리 unittest, adb·서버 없이) — `python -m unittest discover -s tools/demo -p "test_*.py"` |
 | `ptt.py` | F16 무전 확인 — 테스트 음성 WAV 만들기(Windows 한국어 음성)·기기에 음성/Vosk 모델 넣기(`run-as`)·2대 시나리오(핸들 키 → 주입 녹음 → "보낼까요?" → 답 주입 → 보냄 → 차 B 재생)·확인 표(`out/<시각>_ptt/summary.md`) |
 | `test_ptt.py` | `ptt.py` 순수 부분 단위 테스트(WAV 헤더·모델 폴더·run-as/tar 명령·`ptt_status` 해석·시나리오 단계) |
+| `latency.py` | 로컬 vs 클라우드 지연 측정(docs/09 §4.2) — PC → 서버 HTTP 왕복, 차마다 앱 REST 왕복(`net_rtt`)·MQTT PUBACK(`net_mqtt_rtt`), 그룹 메시지 K 개의 'PC 송신 → 차 수신'(기기 시계 adb 보정), 서버 발행 → 차 수신 누적 P50·P95(`latency_dump`) → `out/latency_<label>_<시각>.json·.md`, `compare` 로 비교표 |
+| `test_latency.py` | `latency.py` 단위 테스트(백분위·로그 줄 해석·시계 보정·메시지 매칭·비교표·흐름 — adb·서버 없이) |
 
 GPX 는 `car-app/app/src/main/assets/gpx/{lead,follow}.gpx` 를 그대로 쓴다(단일 원본). 두 파일은 같은 가상 복도(직선 보간, 실제 도로·주소와 무관)를
 선두가 1.2 km 앞서 달리는 구성이며 덕평휴게소 좌표(37.2963, 127.4120)를 지난다 — `RouteSyncEngine.DEMO_WAYPOINT` 와 같아 차 B(fake)의 `WaypointArrived` 가 난다.
@@ -51,6 +53,7 @@ preflight 표의 `WARN` 은 알리기만 하고 실패로 세지 않는다(`FAIL
 `auto_follow --ez on true`, `speak --es text …`, `voice --ez on false`, `navi_route`(그룹 목적지로 내비 요청), `gpx --es role lead|follow`, `open --es screen home|drive|events|create|settings|diagnostics`(화면 열기), `status`, `surface`(표면 상태 한 줄), `event --es type HARD_BRAKE`(로컬 이벤트로 패널·카드·음성 확인), `tbt --ei m 120 --ei for_s 60`(카드 TBT 게이트가 읽는 다음 회전 거리 덮어쓰기, `m=-1` 해제 — docs/09 §1.3).,
 `is_me --es vid <vehicleId> [--es tag <꼬리표>]`(이 차인가 — `demo: is_me=true|false tag=…` 만, id 원문 없음), `nickname --es name_b64 <UTF-8 base64>`(저장된 내 차 닉네임 바꾸기 — `demo: nickname changed=… len=N`). 결과는 `logcat -s DongHaeng` 의 `demo:` 줄.
 F16 무전: `ptt_press`, `ptt_inject_record --es file ptt_test/msg_rest.wav`, `ptt_answer --es answer yes|no|none`(또는 `--es file <wav>`), `ptt_status`, `ptt_unsent [--es op resend|delete]`, `ptt_handle --ez on false`, `ptt_countdown --ez on true`, `vosk_install --es dir <폴더>` — 보통은 `ptt.py` 가 부른다.
+지연 진단(`debug/DemoNetActions.kt`): `net_rtt --ei n 30 --ei gap_ms 300 [--ez fresh true]`(앱 OkHttp `GET /v1/time` → `net: http_rtt n=… first=…ms p50=…ms p95=…ms … base=…`), `net_mqtt_rtt --ei n 30 --ei gap_ms 300`(QoS 1 PUBACK = 브로커 왕복, 서버 앱 미경유 → `net: mqtt_rtt …`), `latency_dump`(`latency: summary event … | state … | clockRtt=… offset=…`), `latency_reset` — 보통은 `latency.py` 가 부른다(`--es n 30` 도 받는다).
 release 빌드에는 들어가지 않는다(`src/debug`).
 
 ## 주행 중 표면 준비 (2026-10-28)
@@ -80,6 +83,18 @@ python tools/demo/ptt.py status --car-a emulator-5556 --car-b emulator-5558     
 - 기본 트리거는 `adb shell input keyevent KEYCODE_HEADSETHOOK`(핸들 키와 같은 경로). `--key SEARCH` 는 동행 화면이 앞일 때만 — 내비가 앞이면 Pleos 전역 검색이 열린다. `--trigger debug` 는 리시버 `ptt_press`.
 - `resend` 는 `none` 이 남긴 '보내지 않은 무전'을 다시 보낸다 — 정차 중이어야 한다(Virtual Console 기어 P). 시나리오 사이는 4초(서버 차량당 3초 빈도 제한).
 - 기대 로그·캡처 목록은 docs/09 §4.1. preflight `FAIL` 이 있으면 멈춘다(`--skip-preflight`), `--dry-run` 은 preflight + 단계 목록만.
+
+## 지연 측정(로컬 vs 클라우드) — `latency.py` (2026-10-28)
+두 차가 같은 그룹일 때(측정할 서버에서 만든 그룹, debug 빌드):
+```
+python tools/demo/latency.py run --server http://127.0.0.1:8080 --label local --car-a emulator-5556 --car-b emulator-5558 --email <dev 이메일>
+$env:DH_DEV_LOGIN_KEY = "<VM infra/.env 값>"   # 클라우드 dev 로그인 접속 키 — 출력·파일에 남기지 않는다
+python tools/demo/latency.py run --server https://<VM-IP>.sslip.io --label cloud --car-a emulator-5556 --car-b emulator-5558 --email <dev 이메일>
+python tools/demo/latency.py compare out/latency_local_<시각>.json out/latency_cloud_<시각>.json
+```
+- 순서: ① PC → 서버 HTTP(keep-alive, 첫 표본 따로) ② 차마다 `latency_reset` → `net_rtt`(`fresh` — 첫 표본에 연결 수립) → `net_mqtt_rtt` ③ 메시지 K 개(`--messages 20`, 간격 `--msg-gap-s 1.5`, 그동안 음성 끔) ④ `latency_dump` ⑤ 결과 파일.
+- 'PC 송신 → 차 수신' 은 호스트 시계와 기기 시계를 잇는다: 상주 `adb shell -T` 세션에서 `date +%s%N` 을 15번 재 최소 왕복 표본으로 오프셋(±왕복/2), 메시지 앞뒤로 재서 평균(+표류/2). 앱 ClockSync 경로로 한 번 더 계산해 교차 확인한다. 방법과 오차는 결과 `.md` 의 '시계 보정' 에.
+- 차가 `--server` 와 다른 서버를 보면(숨은 메뉴 주소·빌드 기본값) 결과 `.md` '주의' 에 남는다. 서버를 바꾸면 토큰이 지워져 다시 페어링해야 하므로 로컬 측정을 먼저 한다.
 
 ## 리허설 사이 초기화 (실측에서 걸린 것들)
 - 차 B 를 다시 합류시키려면 먼저 내보낸다: `api.py` 로 `POST /groups/{id}/leave {vehicleId}` → 차 B 앱이 자기 `MEMBER_LEFT` 를 받고 세션을 지운다(홈이 '그룹 없음' 으로). 그 뒤 `api.py join`.
