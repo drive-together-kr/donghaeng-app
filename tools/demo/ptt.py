@@ -10,7 +10,12 @@
   python tools/demo/ptt.py audio [--out DIR]                                   # 테스트 WAV 5개(16 kHz 모노 16 bit) 만들기
   python tools/demo/ptt.py setup --car-a S [--car-b S] [--audio-dir DIR] [--model-zip ZIP | --model-dir DIR] [--model-on a|b|both] [--grant-mic]
   python tools/demo/ptt.py run --car-a S --car-b S [--scenarios yes,no,none,resend,press_cancel,countdown] [--answer-wav] [--trigger key|debug] [--key HEADSETHOOK] [--shots]
+  python tools/demo/ptt.py run --car-a S --car-b S --scenarios interrupt,persist [--shots]   # 기본 목록 밖(사용자 결정 2026-10-28)
   python tools/demo/ptt.py status --car-a S [--car-b S]
+
+- interrupt: 차 B 가 받은 무전을 트는 중 B 에서 무전 키 → 끊김('다 못 들음', resume=after-flow) → B 의 녹음·확인 흐름 끝(IDLE) → 처음부터 다시(resume=true) → 다 들음.
+- persist: 차 A 무응답 보관(앱 내부 저장소 files/ptt_unsent) → `am force-stop` → 다시 시작 → `ptt_unsent` 에 같은 id·길이 그대로.
+  다시 시작은 동행 화면을 앞으로 연다 — 다음 시나리오 전에 순정 내비를 다시 앞으로 둔다.
 
 - 테스트 음성은 저장소에 넣지 않는다(합성 음성 재배포 회피). `audio` 가 Windows `System.Speech`(한국어 음성 Microsoft Heami)로 만들거나 `--audio-dir` 로 받은 폴더를 쓴다.
 - Vosk 모델(vosk-model-small-ko-0.22, zip 82 MB·풀면 253 MB, Apache 2.0)도 저장소·APK 에 넣지 않는다 — `--model-zip`(받은 zip) 또는 `--model-dir`(풀린 폴더).
@@ -49,7 +54,9 @@ APP_AUDIO_DIR = "ptt_test"          # 앱 files/ptt_test/*.wav
 MODEL_DIR = "vosk-ko-small"         # 앱 files/vosk-ko-small/{am,conf,graph,ivector}
 TMP_ROOT = "/data/local/tmp/dh_ptt"  # run-as 를 못 쓸 때
 DEFAULT_AUDIO_DIR = os.path.join(HERE, "out", "ptt_audio")
-SCENARIOS = ["yes", "no", "none", "resend", "press_cancel", "countdown"]
+SCENARIOS = ["yes", "no", "none", "resend", "press_cancel", "countdown", "interrupt", "persist"]
+# `run` 기본 — 2026-10-28 기기 증명(OK 49/49)과 같은 여섯. interrupt·persist 는 --scenarios 로 고른다(persist 는 앱을 다시 띄운다)
+DEFAULT_SCENARIOS = ["yes", "no", "none", "resend", "press_cancel", "countdown"]
 TRIGGER_RX = r"ptt: trigger source=(MEDIA_SESSION|ACTIVITY_KEY|DEBUG)"
 
 
@@ -185,7 +192,7 @@ def parse_kv(text: str) -> dict:
 
 
 def parse_status(line: str) -> dict:
-    """`demo: ptt_status …` 한 줄 → {stage, unsent, mic, handleButton, vosk, group, session, recognizers:{KIND: state}, …}"""
+    """`demo: ptt_status …` 한 줄 → {stage, unsent, persisted, mic, handleButton, vosk, group, session, sessionState, resumeWaiting, recognizers:{KIND: state}, …}"""
     body = line.split("demo: ptt_status", 1)[-1]
     out = parse_kv(body)
     m = re.search(r"recognizers=\[([^\]]*)\]", body)
@@ -215,18 +222,24 @@ def recognizer_ready(status: dict) -> bool:
     return any(v == "ready" for v in status.get("recognizers", {}).values())
 
 
+def scenario_names(text: str) -> list[str]:
+    """`yes, none,,persist` → ['yes', 'none', 'persist']"""
+    return [n.strip() for n in (text or "").split(",") if n.strip()]
+
+
 # ---------------------------------------------------------------- 시나리오(데이터 — 단위 테스트 대상)
 @dataclass
 class Step:
-    kind: str                 # bcast | press | sleep | expect | absent | shot
+    kind: str                 # bcast | press | sleep | expect | absent | shot | shell | mark | note
     car: str = "A"
-    action: str = ""
-    extras: dict = field(default_factory=dict)
+    action: str = ""          # bcast = 리시버 액션, shell = 기기 명령
+    extras: dict = field(default_factory=dict)   # 값의 {이름} 은 앞 단계에서 잡은 값으로(원문 그대로)
     label: str = ""
-    pattern: str = ""
+    pattern: str = ""         # expect·absent = 로그 정규식, shell = 명령 출력 정규식(있으면 확인 행)
     timeout: float = 15.0
     seconds: float = 0.0
     always: bool = False      # 앞 단계가 실패해도 한다(정리 단계)
+    poll: float = 1.0         # expect 로그 확인 간격(초) — 짧은 창을 잡아야 할 때 줄인다
 
 
 @dataclass
@@ -255,6 +268,80 @@ def _record(opts, steps, answer_wav: str | None = None):
         Step("press", "A"),
         Step("expect", "A", label="녹음 끝(다시 누름)", pattern=r"ptt: recorded end=press dur=\d+ms", timeout=8),
         Step("expect", "A", label="확인 시작", pattern=r"ptt: confirm mode=(voice|countdown)", timeout=8),
+    ]
+
+
+def _send_yes(opts, steps):
+    """A: 주입 녹음 → 확인 → 답 '네'(주입) → 보냄 — voiceId 를 잡는다"""
+    _record(opts, steps)
+    steps += [
+        Step("sleep", seconds=opts.confirm_delay_s),
+        Step("bcast", "A", "ptt_answer", {"answer": "yes"}),
+        Step("expect", "A", label="답 YES (주입)", pattern=r"ptt: recognizer=\w+ answer=YES", timeout=15),
+        Step("expect", "A", label="보냄", pattern=r"ptt: sent voiceId=(?P<voiceId>\S+) to=(?P<to>\d+)", timeout=20),
+    ]
+
+
+def _interrupt(opts, steps):
+    """차 B 가 받은 무전을 트는 중(알림 포함) B 에서 무전 키 → 끊김 '다 못 들음' → B 의 흐름 끝(IDLE) → 처음부터 → 다 들음(사용자 결정 2026-10-28)"""
+    _send_yes(opts, steps)
+    steps += [
+        Step("expect", "B", label="B 받음", pattern=r"ptt: voice received voiceId={voiceId}", timeout=opts.b_timeout),
+        # 알림("아빠 차 무전" ~1–2 s) + 녹음(~2.5 s) 창 안에 눌러야 한다 — 로그를 0.3 s 마다 본다
+        Step("expect", "B", label="B 재생 시작(알림부터)", pattern=r"ptt: play start voiceId={voiceId} manual=false resume=false", timeout=opts.b_timeout, poll=0.3),
+        Step("press", "B"),
+        Step("expect", "B", label="B 재생 중 누름 → 끊김(다 못 들음), 흐름이 끝나면 다시", timeout=10,
+             pattern=r"ptt: playback interrupted voiceId={voiceId} why=ptt-press status=INTERRUPTED resume=after-flow"),
+        Step("expect", "B", label="B 녹음 시작(마이크 권한이 없으면 안내)", pattern=r"ptt: press source=\S+ stage=IDLE", timeout=8),
+    ]
+    if opts.shots:
+        steps.append(Step("shot", "B", label="interrupted"))
+    steps += [
+        Step("bcast", "B", "ptt_status"),
+        Step("expect", "B", label="B 끊긴 무전이 흐름 끝을 기다림(resumeWaiting=true, INTERRUPTED)", timeout=8,
+             pattern=r"demo: ptt_status .*resumeWaiting=true past=\d+\[[^\]]*INTERRUPTED=[1-9]"),
+        Step("sleep", seconds=1.5),
+        Step("press", "B"),       # 녹음 끝 → '보낼까요?'(마이크 권한이 없으면 안내 중 새 누름)
+        Step("sleep", seconds=1.0),
+        Step("press", "B"),       # 확인 중 누름 = 취소 → 안내 3초 → IDLE
+        Step("expect", "B", label="B 흐름 끝(IDLE) → 끊긴 무전 풀림", pattern=r"ptt: resume released why=send-flow-idle", timeout=25),
+        Step("expect", "B", label="B 처음부터 다시(resume=true)", timeout=15,
+             pattern=r"ptt: playing from=\S+ voiceId={voiceId} dur=\d+ms manual=true resume=true"),
+    ]
+    if opts.shots:
+        steps.append(Step("shot", "B", label="resumed"))
+    steps.append(Step("expect", "B", label="B 다 들음(들음)", pattern=r"ptt: playback done voiceId={voiceId} resume=true", timeout=30))
+
+
+def _persist(opts, steps):
+    """A 무응답 보관(앱 내부 저장소) → am force-stop → 다시 시작 → ptt_unsent 에 같은 id·길이 그대로 → 정리(정차 중이면 지운다)"""
+    _record(opts, steps)
+    user = getattr(opts, "user_a", 0)
+    steps += [
+        Step("sleep", seconds=opts.confirm_delay_s),
+        Step("bcast", "A", "ptt_answer", {"answer": "none"}),
+        Step("expect", "A", label="무응답 → 보관(앱 내부 저장소)", pattern=r"ptt: kept unsent reason=NO_ANSWER n=\d+ persisted=yes", timeout=15),
+        Step("bcast", "A", "ptt_unsent"),
+        Step("expect", "A", label="재시작 전 목록(persisted = n)", timeout=8,
+             pattern=r"demo: ptt_unsent n=(?P<unsentN>[1-9]\d*) persisted=(?P=unsentN) \[(?P<unsentId>u[\w-]+) dur=(?P<unsentDur>\d+)ms .*?stored=yes"),
+        Step("shell", "A", f"am force-stop {PKG}", label="앱 강제 종료(am force-stop)"),
+        Step("sleep", seconds=2.0),
+        Step("shell", "A", f"pidof {PKG}", label="프로세스 없음(pidof 빈 출력)", pattern=r"^\s*$"),
+        Step("mark", "A", label="여기부터 새 프로세스 로그만"),
+        Step("shell", "A", f"am start --user {user} -n {PKG}/.MainActivity", label="앱 다시 시작"),
+        Step("expect", "A", label="새 프로세스 시작", pattern=r"car app started", timeout=30),
+        Step("expect", "A", label="저장소에서 복원(같은 그룹)", pattern=r"ptt: unsent restored kept=[1-9]\d* dropped=0", timeout=40),
+        Step("sleep", seconds=1.0),
+        Step("bcast", "A", "ptt_unsent"),
+        Step("expect", "A", label="재시작 뒤 목록 그대로(같은 id·길이, 저장소)", timeout=10,
+             pattern=r"demo: ptt_unsent n={unsentN} persisted={unsentN} \[{unsentId} dur={unsentDur}ms .*?stored=yes"),
+    ]
+    if opts.shots:
+        steps.append(Step("shot", "A", label="restored_dashboard"))
+    steps += [
+        # 정리 — 정차 중일 때만 지워진다(주행 중이면 deleted=false 로 남는다)
+        Step("bcast", "A", "ptt_unsent", {"op": "delete", "id": "{unsentId}"}, always=True),
+        Step("note", "A", label="동행 화면이 앞에 있다 — 다음 시나리오 전에 순정 내비를 다시 앞으로 둔다", always=True),
     ]
 
 
@@ -337,6 +424,12 @@ def build_scenario(name: str, opts) -> Scenario:
         _received_on_b(steps, opts)
         steps.append(Step("bcast", "A", "ptt_countdown", {"on": False}, always=True))
         return Scenario(name, "인식기 없음 → 카운트다운 모드 5초 → 자동 보냄 → 차 B 재생", steps)
+    if name == "interrupt":
+        _interrupt(opts, steps)
+        return Scenario(name, "차 B 재생 중 무전 키 → 끊김(다 못 들음) → B 흐름 끝 → 처음부터 다시 → 다 들음", steps)
+    if name == "persist":
+        _persist(opts, steps)
+        return Scenario(name, "무응답 보관 → 앱 강제 종료·재시작 → 보내지 않은 무전 그대로(앱 내부 저장소)", steps)
     raise ValueError(f"모르는 시나리오 {name} (가능: {', '.join(SCENARIOS)})")
 
 
@@ -348,6 +441,20 @@ def fill(pattern: str, captures: dict) -> str | None:
     out = pattern
     for n in names:
         out = out.replace("{" + n + "}", re.escape(captures[n]))
+    return out
+
+
+def fill_extras(extras: dict, captures: dict) -> dict | None:
+    """브로드캐스트 값의 {이름} 을 잡은 값 **원문**으로(이스케이프 없음) — 모르는 이름이 있으면 None. 문자열이 아닌 값은 그대로"""
+    out = {}
+    for k, v in extras.items():
+        if isinstance(v, str):
+            names = re.findall(r"\{(\w+)\}", v)
+            if any(n not in captures for n in names):
+                return None
+            for n in names:
+                v = v.replace("{" + n + "}", captures[n])
+        out[k] = v
     return out
 
 
@@ -567,8 +674,9 @@ def cmd_status(a) -> int:
         print(f"== 차 {name} {serial}")
         print(f"  {line.split('demo: ', 1)[-1] if line else '응답 없음(debug 빌드·앱 실행 확인)'}")
         if st:
-            print(f"  → stage={st.get('stage')} group={st.get('group')} session={st.get('session')} handleButton={st.get('handleButton')} "
-                  f"mic={st.get('mic')} unsent={st.get('unsent')} vosk={st.get('vosk')} recognizers={st.get('recognizers')}")
+            print(f"  → stage={st.get('stage')} group={st.get('group')} session={st.get('session')} sessionState={st.get('sessionState')} "
+                  f"handleButton={st.get('handleButton')} mic={st.get('mic')} unsent={st.get('unsent')} persisted={st.get('persisted')} "
+                  f"resumeWaiting={st.get('resumeWaiting')} vosk={st.get('vosk')} recognizers={st.get('recognizers')}")
     return 0
 
 
@@ -580,6 +688,8 @@ class Opts:
         self.confirm_delay_s = a.confirm_delay_s
         self.b_timeout = a.b_timeout
         self.shots = a.shots
+        # 차 A 의 현재 사용자(Pleos AVD = 10) — persist 의 `am start --user`
+        self.user_a = df.user if df else 0
 
     def file(self, name: str) -> str:
         rel = f"{APP_AUDIO_DIR}/{name}.wav"
@@ -614,15 +724,22 @@ class Runner:
             rows.append((f"{name} 그룹 있음(trigger group=true)", st[name].get("group") == "true"))
             rows.append((f"{name} 무전 대기(stage=IDLE, 지금 {st[name].get('stage')})", st[name].get("stage") == "IDLE"))
         sa = st.get("A", {})
-        if sa:
-            if sa.get("handleButton") != "true":
+        # 키를 누르는 차 — 기본은 A, interrupt 는 B 에서도 누른다
+        key_cars = ["A"] + (["B"] if "interrupt" in scenario_names(getattr(self.a, "scenarios", "")) else [])
+        for name in key_cars:
+            sx = st.get(name, {})
+            if not sx:
+                continue
+            if sx.get("handleButton") != "true":
                 if self.a.dry_run:
-                    rows.append(("A 설정 '핸들 버튼으로 무전' 꺼짐 — 실행 때 켠다(dry-run 이라 그대로)", None))
+                    rows.append((f"{name} 설정 '핸들 버튼으로 무전' 꺼짐 — 실행 때 켠다(dry-run 이라 그대로)", None))
                 else:
-                    broadcast(self.cars["A"], "ptt_handle", on=True)
-                    rows.append(("A 설정 '핸들 버튼으로 무전' 켬(꺼져 있어 켰다)", None))
+                    broadcast(self.cars[name], "ptt_handle", on=True)
+                    rows.append((f"{name} 설정 '핸들 버튼으로 무전' 켬(꺼져 있어 켰다)", None))
             if self.a.trigger == "key":
-                rows.append((f"A MediaSession 활성(session={sa.get('session')}, otherMedia={sa.get('otherMedia')}) — 아니면 내비가 앞일 때 키가 안 온다", True if sa.get("session") == "true" else None))
+                rows.append((f"{name} MediaSession 활성(session={sx.get('session')}, sessionState={sx.get('sessionState', '?')}, otherMedia={sx.get('otherMedia')}) — 아니면 내비가 앞일 때 키가 안 온다",
+                             True if sx.get("session") == "true" else None))
+        if sa:
             rows.append((f"A 마이크 권한(mic={sa.get('mic')}) — 주입 녹음은 없어도 된다", True if sa.get("mic") == "true" else None))
             if sa.get("mic") == "true" and fgs_has_mic(sa) is False:
                 rows.append((f"A 그룹 서비스에 microphone 타입 없음(fgs={sa.get('fgs')}) — 내비가 앞일 때 실마이크 녹음·듣기가 무음. 동행 화면을 한 번 열면 붙는다(주입 녹음·답은 상관없다)", None))
@@ -674,20 +791,41 @@ class Runner:
 
     def run_scenario(self, sc: Scenario):
         print(f"\n== 시나리오 {sc.name}: {sc.title}")
-        w = {car: LogWatcher(s) for car, s in self.cars.items()}
+        base = {car: LogWatcher(s) for car, s in self.cars.items()}   # 로그 파일용(시나리오 시작부터 전부)
+        w = dict(base)                                                 # 확인용 — mark 가 차마다 새로 건다
         time.sleep(1.1)   # 시작 초의 이전 줄과 섞이지 않게
         captures, failed = {}, False
         for st in sc.steps:
-            if failed and not st.always and st.kind in ("bcast", "press", "sleep", "shot"):
+            if failed and not st.always and st.kind in ("bcast", "press", "sleep", "shot", "shell", "mark"):
+                if st.kind == "shell" and st.pattern:
+                    self.record(sc.name, st, "SKIP", "(앞 단계 실패)")
                 continue
             if st.kind == "bcast":
-                broadcast(self.cars[st.car], st.action, **st.extras)
+                extras = fill_extras(st.extras, captures)
+                if extras is None:
+                    self.say(f"  건너뜀 {st.car}: {st.action} (앞 단계 값 없음)")
+                    continue
+                broadcast(self.cars[st.car], st.action, **extras)
             elif st.kind == "press":
                 self.press(st.car)
             elif st.kind == "sleep":
                 time.sleep(st.seconds)
             elif st.kind == "shot":
                 self.shot(st.car, st.label, sc.name)
+            elif st.kind == "note":
+                self.say(f"  참고: {st.label}")
+            elif st.kind == "mark":
+                # 이 뒤 확인은 지금부터 생긴 줄만 본다(앱을 다시 띄우기 전 같은 줄과 섞이지 않게)
+                w[st.car] = LogWatcher(self.cars[st.car])
+                time.sleep(1.1)
+            elif st.kind == "shell":
+                out = sh(self.cars[st.car], st.action)
+                if st.pattern:
+                    ok = re.search(st.pattern, out) is not None
+                    self.record(sc.name, st, "OK" if ok else "MISS", out.strip()[:120] or "(빈 출력)")
+                    failed = failed or not ok
+                else:
+                    self.say(f"  {st.car}$ {st.action} → {out.strip()[:80] or '(빈 출력)'}")
             elif st.kind in ("expect", "absent"):
                 pat = fill(st.pattern, captures)
                 if pat is None:
@@ -704,7 +842,7 @@ class Runner:
                 if failed:
                     self.record(sc.name, st, "SKIP", "(앞 단계 실패)")
                     continue
-                hit = w[st.car].wait(pat, st.timeout, poll_s=1.0)
+                hit = w[st.car].wait(pat, st.timeout, poll_s=st.poll)
                 if hit:
                     m = re.search(pat, hit)
                     captures.update({k: v for k, v in (m.groupdict() if m else {}).items() if v})
@@ -712,7 +850,7 @@ class Runner:
                 else:
                     failed = True
                     self.record(sc.name, st, "MISS", "(못 봄)")
-        for car, ww in w.items():
+        for car, ww in base.items():
             self.watch.setdefault(car, []).extend(ww.new())
         time.sleep(self.a.gap_s)   # 서버 빈도 제한(차량당 3초) + 안내 3초가 지나도록
 
@@ -742,7 +880,7 @@ class Runner:
 
 
 def cmd_run(a) -> int:
-    names = [n.strip() for n in a.scenarios.split(",") if n.strip()]
+    names = scenario_names(a.scenarios)
     for n in names:
         if n not in SCENARIOS:
             print(f"모르는 시나리오 {n} (가능: {', '.join(SCENARIOS)})")
@@ -794,7 +932,8 @@ def main():
 
     p = sub.add_parser("run", help="2대 시나리오 실행 + 확인 표")
     cars(p, b_required=True)
-    p.add_argument("--scenarios", default=",".join(SCENARIOS), help=f"쉼표로(기본 {','.join(SCENARIOS)})")
+    p.add_argument("--scenarios", default=",".join(DEFAULT_SCENARIOS),
+                   help=f"쉼표로(기본 {','.join(DEFAULT_SCENARIOS)} — 그 밖에 interrupt·persist, 전체 {','.join(SCENARIOS)})")
     p.add_argument("--answer-wav", action="store_true", help="네/아니 를 WAV 로 인식기(Vosk)에 흘린다(모델 필요). 기본은 판정 직접 주입")
     p.add_argument("--trigger", default="key", choices=["key", "debug"], help="key = adb input keyevent(핸들 키와 같은 경로), debug = 리시버 ptt_press")
     p.add_argument("--key", default="HEADSETHOOK", choices=["HEADSETHOOK", "MEDIA_PLAY_PAUSE", "MEDIA_PLAY", "SEARCH"])
