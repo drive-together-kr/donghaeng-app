@@ -54,6 +54,21 @@ def adb(serial: str, *args, timeout: int = 30) -> str:
         return f"ERR {type(e).__name__}"
 
 
+def adb_devices(adb_path: str | None = None) -> str | None:
+    """`adb devices` 출력 — adb 실행 파일이 없거나 실행이 안 되면 None(트레이스백 대신 preflight 의 FAIL 행으로)"""
+    try:
+        return subprocess.run([adb_path or ADB, "devices"], capture_output=True, text=True, timeout=30).stdout or ""
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def device_connected(devices: str | None, serial: str) -> bool:
+    """`adb devices` 출력에서 serial 이 device 상태인가(출력이 없으면 False)"""
+    if not devices or not serial:
+        return False
+    return "device" in [l.split("\t")[-1] for l in devices.splitlines() if l.startswith(serial)]
+
+
 def sh(serial: str, cmd: str, timeout: int = 30) -> str:
     return adb(serial, "shell", cmd, timeout=timeout)
 
@@ -166,10 +181,12 @@ class Demo:
     # ---- 0 ----
     def preflight(self):
         rows = []
-        devices = adb(self.A, "devices") if False else subprocess.run([ADB, "devices"], capture_output=True, text=True).stdout
+        devices = adb_devices()
+        if devices is None:
+            rows.append((f"adb 실행 파일 없음({ADB}) — Android SDK platform-tools 를 깔거나 환경 변수 ADB 로 경로를 준다", False))
         for name, s in (("A", self.A), ("B", self.B)):
             sh(s, "logcat -G 8M")   # 1 Hz 로그가 링 버퍼를 밀어내지 않게 (증거 수집용)
-            rows.append((f"{name} {s} 연결", "device" in [l.split("\t")[-1] for l in devices.splitlines() if l.startswith(s)]))
+            rows.append((f"{name} {s} 연결", device_connected(devices, s)))
             rows.append((f"{name} 부팅 완료", sh(s, "getprop sys.boot_completed") == "1"))
             rows.append((f"{name} 앱 설치", "package:" in sh(s, f"pm path {PKG}")))
             rows.append((f"{name} 서버 도달(10.0.2.2)", "1 received" in sh(s, "ping -c 1 -W 2 10.0.2.2") or "1 packets received" in sh(s, "ping -c 1 -W 2 10.0.2.2")))

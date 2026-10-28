@@ -3,6 +3,12 @@ package app.donghaeng.car.adapter.voice
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.model.Priority
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -143,6 +149,30 @@ class ChainedVoiceAdapter(
             throw e
         } catch (e: Exception) {
             onSignal(UtteranceSignal.Failed(route.path, tag, clock(), "speak 예외 ${e.javaClass.simpleName}"))
+        }
+    }
+
+    private val waitSeq = AtomicLong(0)
+
+    /**
+     * F16(무전 "보낼까요?" 뒤에만 마이크, 수신 무전은 "○○ 무전" 알림 뒤 재생): 지금 경로로 읽고 그 문장이 끝날 때까지 기다린다 — 경로와 무관하게
+     * [signals] 로 판정한다(전용 꼬리표 `wait-N`; 이벤트 eventId 가 아니라 위험 강조와 섞이지 않는다). Done → SPOKEN, 화면만(NoAudio) → FALLBACK,
+     * Failed·Dropped → FAILED, 상한 → TIMEOUT. 신호를 놓치지 않게 구독을 먼저 시작하고(UNDISPATCHED) 읽는다.
+     */
+    override suspend fun speakAndWait(text: String, priority: Priority, timeoutMs: Long): SpeakResult = coroutineScope {
+        val tag = "wait-${waitSeq.incrementAndGet()}"
+        val end = async(start = CoroutineStart.UNDISPATCHED) {
+            _signals.first { it.tag == tag && it !is UtteranceSignal.Started }
+        }
+        speak(text, priority, tag)
+        val sig = withTimeoutOrNull(timeoutMs) { end.await() }
+        if (sig == null) end.cancel()
+        when (sig) {
+            is UtteranceSignal.Done -> SpeakResult.SPOKEN
+            is UtteranceSignal.NoAudio -> SpeakResult.FALLBACK
+            is UtteranceSignal.Failed, is UtteranceSignal.Dropped -> SpeakResult.FAILED
+            null -> SpeakResult.TIMEOUT
+            else -> SpeakResult.UNKNOWN
         }
     }
 

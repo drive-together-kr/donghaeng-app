@@ -13,7 +13,6 @@
     <!-- 플로팅 패널 -->
     <string name="surface_panel_more">외 %1$d대</string>
     <string name="surface_panel_waiting">다른 차 정보를 기다리는 중</string>
-    <string name="surface_ptt_soon">무전은 곧 지원돼요</string>
 
     <!-- 정차 대시보드 -->
     <string name="surface_cards_only_notice">플로팅 창 권한이 없어 알림 카드와 음성으로 안내해요</string>

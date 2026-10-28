@@ -134,6 +134,11 @@ object SignalsModule {
 
     @Provides
     @Singleton
-    fun provideDriveSessionController(@ApplicationContext context: Context, sessionManager: MqttSessionManager): DriveSessionController =
-        DriveSessionController(context, sessionManager.session)
+    fun provideDriveSessionController(
+        @ApplicationContext context: Context,
+        sessionManager: MqttSessionManager,
+        tracker: app.donghaeng.car.surface.AppForegroundTracker,
+    ): DriveSessionController =
+        // F16: 포그라운드 타입 갱신(location·microphone)은 동행 화면이 보일 때만 — 백그라운드에서 다시 시작하면 dataSync 로 떨어진다
+        DriveSessionController(context, sessionManager.session, appVisible = { tracker.appVisible.value })
 }

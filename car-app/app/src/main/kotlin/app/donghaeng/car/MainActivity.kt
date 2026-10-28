@@ -17,6 +17,17 @@ import dagger.hilt.android.AndroidEntryPoint
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    /** F16 무전 ③ — 동행 화면이 앞일 때 핸들 키(SEARCH·HEADSETHOOK·MEDIA_PLAY_PAUSE·MEDIA_PLAY) */
+    @javax.inject.Inject
+    lateinit var voiceTrigger: app.donghaeng.car.adapter.trigger.VoiceTriggerAdapter
+
+    /** F16: 화면이 앞에 올 때 포그라운드 서비스 타입(microphone·location)을 권한에 맞춘다 */
+    @javax.inject.Inject
+    lateinit var driveSession: app.donghaeng.car.service.DriveSessionController
+
+    @javax.inject.Inject
+    lateinit var sessionManager: app.donghaeng.car.domain.session.MqttSessionManager
+
     private val requestedRoute = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -28,6 +39,15 @@ class MainActivity : ComponentActivity() {
                 DhNavHost(requestedRoute = requestedRoute, onRouteConsumed = { requestedRoute.value = null })
             }
         }
+    }
+
+    /**
+     * F16: 백그라운드에서 시작·재시작된 그룹 서비스(폰 합류·START_STICKY)는 microphone·location 이 빠져 있을 수 있다 — 화면이 앞인 지금 다시 맞춘다.
+     * 권한이 '새로 생긴' 순간만 보면 이미 권한이 있던 차는 끝까지 microphone 없이 남는다(순정 내비가 앞일 때 무전 녹음·듣기가 무음).
+     */
+    override fun onResume() {
+        super.onResume()
+        driveSession.ensureType(sessionManager.session.value)
     }
 
     override fun onNewIntent(intent: android.content.Intent) {
@@ -47,11 +67,15 @@ class MainActivity : ComponentActivity() {
         else -> null
     }
 
-    /** 핸들 버튼 조사(F16): 포그라운드에서 어떤 키가 액티비티까지 오는지 로그로 남긴다(debug 빌드만) */
+    /**
+     * F16 무전 ③: 동행 화면이 앞일 때 핸들 키를 무전으로 쓴다(그룹이 있고 '핸들 버튼으로 무전'이 켜져 있을 때만 — 아니면 평소처럼 흘려보낸다).
+     * down 1회만 누름, 반복·up 은 소비([app.donghaeng.car.adapter.trigger.PttKeyFilter]). 키 조사 로그는 debug 빌드만.
+     */
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         if (BuildConfig.DEBUG && event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
             app.donghaeng.car.core.common.DhLog.i("key: ${android.view.KeyEvent.keyCodeToString(event.keyCode)} source=${event.source} device=${event.deviceId}")
         }
+        if (voiceTrigger.onActivityKey(event.keyCode, event.action, event.repeatCount, event.eventTime)) return true
         return super.dispatchKeyEvent(event)
     }
 

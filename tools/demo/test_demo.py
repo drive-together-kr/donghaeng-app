@@ -220,6 +220,20 @@ class EnsureTtsEngineTest(unittest.TestCase):
         self.assertFalse(rows[-1][1])
 
 
+class AdbDevicesTest(unittest.TestCase):
+    """adb 가 없는 PC 에서 preflight 가 트레이스백 대신 FAIL 행으로 끝나야 한다(ptt.py run --dry-run·demo.py)"""
+
+    def test_missing_adb_is_none_not_a_traceback(self):
+        self.assertIsNone(demo.adb_devices(os.path.join(HERE, "out", "no_such_dir", "adb.exe")))
+
+    def test_device_connected(self):
+        out = "List of devices attached\nemulator-5556\tdevice\nemulator-5558\toffline\n"
+        self.assertTrue(demo.device_connected(out, "emulator-5556"))
+        self.assertFalse(demo.device_connected(out, "emulator-5558"))
+        self.assertFalse(demo.device_connected(out, "emulator-5560"))
+        self.assertFalse(demo.device_connected(None, "emulator-5556"))
+
+
 class GwaWaTest(unittest.TestCase):
 
     def test_matches_the_car_app_rule(self):

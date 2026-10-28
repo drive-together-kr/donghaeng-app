@@ -131,6 +131,7 @@ class EventsViewModel @Inject constructor(
             GroupEventType.REST_STOP_VOTE_RESULT -> "휴게소 투표"
             GroupEventType.DEVIATION -> "경로 이탈"
             GroupEventType.PASSENGER_MESSAGE -> "동승자 메시지"
+            GroupEventType.VOICE_MESSAGE -> "무전"
             GroupEventType.GROUP_ENDED -> "그룹 종료"
             else -> type
         }

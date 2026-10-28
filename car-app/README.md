@@ -108,13 +108,14 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 | `adapter.uxr` (pleos) | `CarUxDrivingStateMonitor`(CarUxRestrictionsManager → `DrivingStateMonitor.isDriving()`/`status`) · fake 는 `AlwaysParkedDrivingStateMonitor` | T29 |
 | `domain.time` / `domain.latency` | `ClockSync`(GET /v1/time 3회 → 왕복 최소 표본 오프셋, 5분) · `LatencyMeter`(그룹 EVENT/STATE 봉투 ts → 수신 지연, 60 s 창 통계, 오버레이 on/off) | T31 |
 | `domain.routesync` | `RouteSyncEngine`(선두: 내비 목적지/경유지 변경 → ROUTE_CHANGED 발행 · 멤버: ROUTE_FOLLOW_PROPOSAL → 음성·제안 카드 → 수락 시 내비 재요청 + ACK, 30초 자동 거절, 자동 따라가기 · 합류 직후 로컬 제안 "선두차 목적지까지 안내할까요?" ACK 없음) | T28/T30 |
-| `debug` (debug 빌드만, `src/debug`) | `DemoControlReceiver` — adb broadcast 로 시연 조작(route_test/accept/decline/auto_follow/speak/voice/voice_sample/navi_route/gpx/status), `tools/demo/demo.py` 가 사용. `core.common.DemoPrefs`(fake GPX 역할). pleos debug(`src/pleosDebug`): `PleosTtsProbeReceiver`(Pleos TTS SDK 날것 프로브) | T30/R19 |
+| `debug` (debug 빌드만, `src/debug`) | `DemoControlReceiver` — adb broadcast 로 시연 조작(route_test/accept/decline/auto_follow/speak/voice/voice_sample/navi_route/gpx/status, F16 `ptt_*`·`vosk_install` = `DemoPttActions`), `tools/demo/demo.py` 가 사용. `core.common.DemoPrefs`(fake GPX 역할). pleos debug(`src/pleosDebug`): `PleosTtsProbeReceiver`(Pleos TTS SDK 날것 프로브) | T30/R19 |
 | `domain.voice` | `VoiceAnnouncer`(그룹 이벤트 → 음성 큐: 신선도 5s·내 차 생략·우선순위·중복 10s·큐 대기 30s, 문장에 eventId 꼬리표) · `VoiceCueTracker`(eventId 별 음성 시작 + 경로·평균 지연 → 위험 이벤트 강조) | T27/R19 |
 | T33 안정화 | `domain.pairing.TokenRefresher`(차량 토큰 선제 갱신 만료 2h 전·30분 점검, 거부 후 갱신 single-flight, 선제 갱신 401 은 access 유효 시 보류 → '다시 연결 필요', MQTT 발 회전 1→30분 백오프) · `core.network.VehicleTokenAuthenticator`(REST 401 → 1회 갱신·재시도, 갱신은 `@RefreshClient` 별도 클라이언트) · `TokenStoreState.Unavailable`·`clear(reason)`·`DiagPrefs`(`dh_diag` 삭제 기록) · `SessionClearReason` · `HiveMqttGateway` 인증 거부 감지·재연결 게이트 · 홈 `HomeBanner` · `ui.components.DestructiveConfirmDialog` · `DhLog` 링 버퍼 + `files/dh_log.txt` · `domain.health.HealthLogger`(30초 `health …`, `tools/demo/soak.py`) — docs/05 §8 | T33 |
 | `adapter.voice` | 음성 체인 `ChainedVoiceAdapter` = `AndroidTtsVoiceAdapter`(오디오 포커스·선행 묵음 200 ms·완료 콜백·ko_KR 불가면 다음 경로) → pleos `PleosTtsVoiceAdapter` → 화면 표시만, `status`(경로·사유·지연) | T04/T27/R19 |
 | `domain.event` | `EventDetector`(저잔량·급제동·정차/재출발·에어백·도착 판정, 순수 로직) + `VehicleEventEngine`(활성 그룹 동안 1Hz 판정 → `…/event` QoS 1, 진단 상태) | T26 |
 | `feature.events` | `EventsViewModel`(실시간 그룹 이벤트 + 서버 최근 20 합침) · `EventsScreen`(이벤트 피드) | T26 |
 | `feature.presets` | 자리표시자 | T53 |
+| F16 무전 | `adapter.trigger`(`VoiceTriggerAdapter` — MediaSession·화면 키·탭, `TriggerPolicy` 순수 판단) · `adapter.audio`(`VoiceRecorder`·`VoiceClipPlayer`) · `adapter.speech`(`RecognizerChain` — pleos `PleosSttYesNoRecognizer` → `AndroidSpeechYesNoRecognizer` → `VoskYesNoRecognizer`) · `domain.ptt`(`PttController` 상태 기계·`VoicePlayback`·`PttRuntime`·`PttSettings`·`YesNoParser`) · `core.network.VoiceApi`/`VoiceMessageClient` · `surface.PttUiMapper` · `feature.drive.PttDisplay`(무전 줄 판단) · `feature.groupdrive.PttDashboardViewModel` · debug `DemoPttActions` | F16 |
 
 규칙: Pleos SDK 타입은 `adapter.*` 밖으로 내보내지 않는다. 밖에서는 `domain.model` 타입만 쓴다.
 
@@ -272,6 +273,15 @@ mqtt subscribed topic=dh/v1/group/grp_…**/state  /  …/event
 - 장면 4~9 자동 실행: `python tools/demo/demo.py --email <dev 이메일>` — preflight → 합류 감지·자동 수락 → GPS 재생(차 A) + Virtual Console(저잔량·급제동) + ROUTE_CHANGED → 두 차 logcat 수집과 확인 표. 세부는 `tools/demo/README.md`.
 - 디버그 리시버는 `android.permission.DUMP` 를 요구한다(adb shell 은 보유). release 빌드에는 없다.
 - 함께 고친 것: 그룹 생성 화면 진입 크래시(pleos, `CreateGroupViewModel` init 순서) · 내 차의 `MEMBER_LEFT` 수신 시 세션 정리(`MqttSessionManager`). 리허설에서 차 B 를 다시 합류시키려면 `api.py join` 전에 B 를 내보내면 된다(`POST /groups/{id}/leave`).
+
+### F16 — 무전 (`adb logcat -s DongHaeng | grep -E "ptt:|demo: ptt"`, docs/05 §5.3)
+- 보내는 차: `ptt: trigger source=MEDIA_SESSION key=HEADSETHOOK`(내비 전면) / `ACTIVITY_KEY`(동행 화면 앞) / `PANEL`·`DASHBOARD`(탭) → `ptt: recording start` → `ptt: recorded end=press dur=…ms` → `ptt: confirm mode=voice|countdown` → `ptt: recognizer=… answer=YES|NO|NONE` → `ptt: sent voiceId=… to=N` 또는 `ptt: cancelled …`·`ptt: kept unsent …`. 받는 차: `ptt: voice received voiceId=…` → `ptt: playing from=<vid 끝 4자리> …` → `ptt: playback done …`. 녹음 내용·인식 원문·닉네임은 남기지 않는다.
+- 핸들 키는 **그룹 주행 중 + 설정 '핸들 버튼으로 무전'(기본 켬)** 일 때만 가로챈다. 다른 앱이 음악을 재생 중이면 양보한다(`ptt: other media active=true`, `ptt: media session released why=other-media`).
+- 디버그(리시버 `DemoControlReceiver`, 구현 `src/debug/.../DemoPttActions.kt`): `ptt_press` · `ptt_inject_record --es file ptt_test/msg_rest.wav` · `ptt_answer --es answer yes|no|none`(또는 `--es file <wav>` → Vosk) · `ptt_status` · `ptt_unsent [--es op resend|delete]` · `ptt_handle --ez on false` · `ptt_countdown --ez on true` · `vosk_install --es dir <폴더>`. 경로는 `/` 로 시작하지 않으면 앱 files 기준.
+- 두 대 시나리오·테스트 음성(Windows 한국어 음성으로 생성 — 저장소에 넣지 않음)·Vosk 모델 넣기: `python tools/demo/ptt.py audio|setup|run|status`(docs/09 §4.1).
+- 의존성: pleos flavor `ai.pleos.playground:SpeechToText:3.3.1`(선택적 — `registerApp` 없이 ON_DEVICE 만, `pleos.car.permission.STT_SERVICE`, universal-access 가 끌어오는 appcompat·material 제외, security-crypto-ktx 는 모든 구성에서 제외 — 토큰 저장소는 security-crypto 1.0.0 하나. registerApp 을 켜려면 1.1.x 로 올려야 한다: UA 보안 저장소가 MasterKey(1.1.x API)를 쓴다, docs/10 Q9), 공통 `com.alphacephei:vosk-android:0.3.75`(Apache 2.0, JNA 5.18.1, 32비트 `libvosk.so` 제외). Vosk 모델(82 MB zip·253 MB)은 APK 밖 `files/vosk-ko-small` — 없으면 그 단계를 건너뛴다.
+- APK 크기(깨끗한 빌드, 기준 e9579c4 대비): fake debug **+22.2 MB**(39.6 → 61.8 — libvosk 64비트 두 벌 20.4 + JNA 1.0), pleos debug **+32.3 MB**(43.9 → 76.1), pleos release **+32.1 MB**(33.8 → 65.9 — libvosk 20.4 + universal-access 의 libuacore 3 ABI 9.7 + JNA 1.0). 증분 빌드 파일은 빈자리 때문에 더 크게 보인다(docs/10 R14).
+- 권한: `RECORD_AUDIO`(위치·알림과 같은 다이얼로그), FGS 타입 `microphone`(마이크 권한이 있을 때 — 내비가 앞이어도 녹음이 무음이 되지 않게). AVD 는 `hw.audioInput=no` 라 실마이크 녹음은 무음 — 확인은 녹음 주입으로 한다.
 
 ### Virtual Console (차량 상태 조작, docs/09 §1)
 

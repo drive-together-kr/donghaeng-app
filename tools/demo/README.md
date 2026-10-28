@@ -11,6 +11,8 @@ adb 는 환경변수 `ADB` 또는 `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb
 | `api.py` | 서버 REST 보조 (dev 로그인, 페어링 승인, 닉네임 바꾸기, 초대·합류, 동승자 메시지) — 폰 없이 리허설할 때 |
 | `soak.py` | T33 30분 연속 실행 점검 — 1분마다 두 차의 앱 pid 불변·MQTT 연결·텔레메트리 증가·그룹 STATE 나이 < 10 s·그 분(직전 점검 이후)의 logcat E/FATAL 0 확인(E/FATAL 줄은 실행 전체 누적·중복 제거로 보고서에) → `out/<시각>_soak/soak.md` |
 | `test_demo.py` | 위 스크립트 단위 테스트(표준 라이브러리 unittest, adb·서버 없이) — `python -m unittest discover -s tools/demo -p "test_*.py"` |
+| `ptt.py` | F16 무전 확인 — 테스트 음성 WAV 만들기(Windows 한국어 음성)·기기에 음성/Vosk 모델 넣기(`run-as`)·2대 시나리오(핸들 키 → 주입 녹음 → "보낼까요?" → 답 주입 → 보냄 → 차 B 재생)·확인 표(`out/<시각>_ptt/summary.md`) |
+| `test_ptt.py` | `ptt.py` 순수 부분 단위 테스트(WAV 헤더·모델 폴더·run-as/tar 명령·`ptt_status` 해석·시나리오 단계) |
 
 GPX 는 `car-app/app/src/main/assets/gpx/{lead,follow}.gpx` 를 그대로 쓴다(단일 원본). 두 파일은 같은 가상 복도(직선 보간, 실제 도로·주소와 무관)를
 선두가 1.2 km 앞서 달리는 구성이며 덕평휴게소 좌표(37.2963, 127.4120)를 지난다 — `RouteSyncEngine.DEMO_WAYPOINT` 와 같아 차 B(fake)의 `WaypointArrived` 가 난다.
@@ -48,6 +50,7 @@ preflight 표의 `WARN` 은 알리기만 하고 실패로 세지 않는다(`FAIL
 `adb shell am broadcast -n app.donghaeng.car/.debug.DemoControlReceiver --es action <action>` — `route_test`(선두: 덕평휴게소 경유 ROUTE_CHANGED), `accept`, `decline`,
 `auto_follow --ez on true`, `speak --es text …`, `voice --ez on false`, `navi_route`(그룹 목적지로 내비 요청), `gpx --es role lead|follow`, `open --es screen home|drive|events|create|settings|diagnostics`(화면 열기), `status`, `surface`(표면 상태 한 줄), `event --es type HARD_BRAKE`(로컬 이벤트로 패널·카드·음성 확인), `tbt --ei m 120 --ei for_s 60`(카드 TBT 게이트가 읽는 다음 회전 거리 덮어쓰기, `m=-1` 해제 — docs/09 §1.3).,
 `is_me --es vid <vehicleId> [--es tag <꼬리표>]`(이 차인가 — `demo: is_me=true|false tag=…` 만, id 원문 없음), `nickname --es name_b64 <UTF-8 base64>`(저장된 내 차 닉네임 바꾸기 — `demo: nickname changed=… len=N`). 결과는 `logcat -s DongHaeng` 의 `demo:` 줄.
+F16 무전: `ptt_press`, `ptt_inject_record --es file ptt_test/msg_rest.wav`, `ptt_answer --es answer yes|no|none`(또는 `--es file <wav>`), `ptt_status`, `ptt_unsent [--es op resend|delete]`, `ptt_handle --ez on false`, `ptt_countdown --ez on true`, `vosk_install --es dir <폴더>` — 보통은 `ptt.py` 가 부른다.
 release 빌드에는 들어가지 않는다(`src/debug`).
 
 ## 주행 중 표면 준비 (2026-10-28)
@@ -62,6 +65,21 @@ release 빌드에는 들어가지 않는다(`src/debug`).
 - 스크립트 단위 테스트(adb·서버 없이): `python -m unittest discover -s tools/demo -p "test_*.py" -v` — 닉네임 단계의 서버 꺼짐·PATCH 실패·dry-run·같음·차 A 미확인, `DhApi` 연결 실패.
 - 서버 쪽 이름(그룹 스냅샷의 패널 이름·음성 문구·멤버 목록)은 서버가 매번 DB 에서 읽어 다음 스냅샷(2초)부터 바뀐다. 차 앱의 저장값(홈 "연결됨: …"·그룹 기본 이름)은 그룹 스냅샷으로도 따라오지만 그룹 전에는 알 길이 없어, preflight 가 리시버 `nickname` 으로 같은 값을 넣는다(`차 A 앱 저장 닉네임 맞춤` 행).
 - 패널 머리글 = 그룹 이름. 닉네임을 맞춘 **뒤에** 차 A 에서 그룹을 만들면 기본 이름이 "아빠 차와 같이 가기"(받침에 따라 와/과). 옛 이름의 그룹이 살아 있으면 preflight 가 `(활성 그룹 '…')` 로 알려 준다 — 끝내고 새로 만든다.
+
+## 무전(F16) — `ptt.py` (2026-10-28)
+두 차가 같은 그룹일 때(장면 3 이후) 순정 내비를 앞에 두고:
+```
+python tools/demo/ptt.py audio                                                    # 테스트 WAV 5개 → out/ptt_audio (Microsoft Heami 한국어 음성, 16 kHz 모노 16 bit)
+python tools/demo/ptt.py setup --car-a emulator-5556 --car-b emulator-5558 [--model-zip vosk-model-small-ko-0.22.zip]   # 앱 files/ptt_test·files/vosk-ko-small
+python tools/demo/ptt.py run --car-a emulator-5556 --car-b emulator-5558 --shots   # yes,no,none,resend,press_cancel,countdown
+python tools/demo/ptt.py run … --scenarios yes,no --answer-wav                     # Vosk 모델이 있으면 WAV '네, 보내'·'아니요, 취소' 를 실제로 인식
+python tools/demo/ptt.py status --car-a emulator-5556 --car-b emulator-5558       # 두 차 ptt_status 한 줄
+```
+- 테스트 음성·Vosk 모델은 저장소·APK 에 넣지 않는다(합성 음성 재배포·크기). Windows 가 아니면 `--audio-dir` 로 같은 이름의 WAV(`yes_ne`·`yes_ne_bonae`·`no_ani`·`no_aniyo_chwiso`·`msg_rest`) 폴더를 준다.
+- 기기에 넣기는 debug 빌드 `run-as --user <현재 사용자>`(Pleos AVD = 10)로 앱 files 아래에 tar 를 흘린다(`adb exec-in`). 안 되면 `/data/local/tmp/dh_ptt` 로 push 하고 앱에 절대 경로를 준다(모델은 리시버 `vosk_install` 이 복사).
+- 기본 트리거는 `adb shell input keyevent KEYCODE_HEADSETHOOK`(핸들 키와 같은 경로). `--key SEARCH` 는 동행 화면이 앞일 때만 — 내비가 앞이면 Pleos 전역 검색이 열린다. `--trigger debug` 는 리시버 `ptt_press`.
+- `resend` 는 `none` 이 남긴 '보내지 않은 무전'을 다시 보낸다 — 정차 중이어야 한다(Virtual Console 기어 P). 시나리오 사이는 4초(서버 차량당 3초 빈도 제한).
+- 기대 로그·캡처 목록은 docs/09 §4.1. preflight `FAIL` 이 있으면 멈춘다(`--skip-preflight`), `--dry-run` 은 preflight + 단계 목록만.
 
 ## 리허설 사이 초기화 (실측에서 걸린 것들)
 - 차 B 를 다시 합류시키려면 먼저 내보낸다: `api.py` 로 `POST /groups/{id}/leave {vehicleId}` → 차 B 앱이 자기 `MEMBER_LEFT` 를 받고 세션을 지운다(홈이 '그룹 없음' 으로). 그 뒤 `api.py join`.

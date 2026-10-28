@@ -123,6 +123,12 @@ android {
             excludes += "META-INF/INDEX.LIST"
             excludes += "META-INF/io.netty.versions.properties"
         }
+        jniLibs {
+            // F16 Vosk: ABI 당 약 10 MB(4개 = APK +40 MB). 대상 기기는 64비트(Pleos AVD x86_64, 차량 arm64)라 32비트 사본만 뺀다.
+            // 32비트 기기에서는 Vosk 적재가 실패(UnsatisfiedLinkError)하고 인식 체인이 그 단계를 건너뛴다 — 다른 라이브러리의 ABI 지원은 그대로
+            excludes += "lib/x86/libvosk.so"
+            excludes += "lib/armeabi-v7a/libvosk.so"
+        }
     }
 
     testOptions {
@@ -136,6 +142,16 @@ kotlin {
     }
 }
 
+// Pleos SDK(SpeechToText·TextToSpeech 3.3.1)가 universal-access 0.6.0 을 거쳐 끌어오는 security-crypto-ktx 1.1.0-alpha06 을 **모든 구성**에서 뺀다 —
+// debug·release, 어느 Pleos SDK 줄이든 토큰 저장소 라이브러리가 security-crypto 1.0.0(EncryptedTokenStore, MasterKeys API) 하나로 같게.
+// 주의: UA 의 보안 저장소(`ai.pleos.playground.security.ua.s` — MasterKey·MasterKey$Builder·EncryptedSharedPreferences.create(…, MasterKey, …))는
+// **1.1.x API 라 1.0.0 에는 없다**(javap 확인 — 1.0.0 은 MasterKeys 만). 이 클래스는 UniversalAccess.create 에서만 만들어지고, STT SDK 는 registerApp(UA 변형)으로
+// useUaSdk 를 켤 때만 그 경로를 탄다 → 우리는 registerApp 을 부르지 않고 ON_DEVICE 만 쓰므로 닿지 않는다. registerApp(SERVER 모드)을 켜려면
+// security-crypto 를 1.1.x 로 올리고(토큰 저장소 검증) 이 exclude 를 함께 바꾼다 — 안 그러면 NoClassDefFoundError(docs/10 Q9).
+configurations.configureEach {
+    exclude(group = "androidx.security", module = "security-crypto-ktx")
+}
+
 dependencies {
     // 공용 메시지 스키마 (합성 빌드)
     implementation(libs.donghaeng.protocol)
@@ -145,8 +161,15 @@ dependencies {
     "pleosImplementation"(libs.pleos.navihelper)
     "pleosImplementation"(libs.pleos.fusedlocation)
     // Pleos TextToSpeech SDK(준비 중 SDK — CLAUDE.md 규칙 5: 가능하면 쓰고 실패하면 다음 수단) — 음성 체인 2순위 PleosTtsVoiceAdapter(R19 해결).
-    // pleos debug 의 날것 프로브(PleosTtsProbe)도 같은 의존성을 쓴다
+    // pleos debug 의 날것 프로브(PleosTtsProbe)도 같은 의존성을 쓴다. appcompat·material 은 빼지 않는다 — 이 구성으로 기기 실측(깨끗한 AVD release)했다.
+    // (아래 STT 줄의 exclude 는 STT 경로에서만 빠지고, TTS 경로로 같은 모듈이 들어오므로 최종 APK 에는 남는다)
     "pleosImplementation"(libs.pleos.tts)
+    // F16 무전 '네/아니' 1순위 — 준비 중 SDK 라 선택적(CLAUDE.md 규칙 5): CaaS ≥ 4.1.29·STT_SERVICE 권한·초기화가 모두 될 때만 체인 앞에 붙는다.
+    // universal-access 0.6.0(UA)이 끌어오는 appcompat·material 은 뺀다(Compose 앱 — 쓰지 않는다). security-crypto-ktx 는 아래 configurations 에서 모두 뺀다.
+    "pleosImplementation"(libs.pleos.speechtotext) {
+        exclude(group = "androidx.appcompat")
+        exclude(group = "com.google.android.material")
+    }
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
@@ -176,11 +199,16 @@ dependencies {
     implementation(libs.netty.codec.http)   // T32 MQTT over WebSocket(wss) 전송 — HiveMQ POM 에서 optional
     implementation(libs.zxing.core)
 
+    // F16 무전 '네/아니' 오프라인 인식(두 flavor 공통). 모델(소형 한국어 82 MB zip / 풀면 253 MB)은 APK 에 넣지 않는다 —
+    // tools/demo 가 앱 files/vosk-ko-small 로 넣었을 때만 쓰고, 없으면 인식 체인이 다음 단계(카운트다운)로 간다(docs/05 § 무전)
+    implementation(libs.vosk.android)
+
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)   // F16 무전 업로드·다운로드 클라이언트(multipart) 단위 테스트
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

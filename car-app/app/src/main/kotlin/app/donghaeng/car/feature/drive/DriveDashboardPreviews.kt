@@ -26,6 +26,7 @@ import app.donghaeng.car.ui.theme.DongHaengTheme
  * `panel_worst` = 폭 최악 조합(긴 닉네임·저잔량 아이콘·"뒤 9.9 km"·"앞 990 m"·"뒤 120 km" + 긴 그룹 이름 "아빠 차와 같이 가기" → 그룹 이름만 말줄임).
  * `panel_longdest` = 아주 긴 목적지(기준 문구 상한 180 dp → 목적지 이름만 말줄임, " 도착" 남음) + 긴 그룹 이름.
  * `panel_danger` / `panel_danger_steady` = 급제동 소식 줄의 빨간 강조 + 깜빡임(음성 시작 전) / 강조 유지(음성 시작 뒤).
+ * `panel_recording|confirm|countdown|sending|sent|playing|notice|mic` = 무전 줄 상태(F16, [FloatingPanelSamples.of]).
  */
 @Composable
 fun DesignPreviewHost(variant: String) {
@@ -37,7 +38,8 @@ fun DesignPreviewHost(variant: String) {
             // 위험 이벤트 강조(docs/05 §5.2): 음성 시작 전 깜빡임 / 음성 시작 뒤 강조 유지
             "panel_danger" -> FloatingPanelSamples.base.copy(event = DriveDashboardSamples.eventDanger.copy(highlight = EventHighlight.BLINK))
             "panel_danger_steady" -> FloatingPanelSamples.base.copy(event = DriveDashboardSamples.eventDanger.copy(highlight = EventHighlight.STEADY))
-            else -> FloatingPanelSamples.base
+            // F16 무전 줄 상태(녹음·확인·카운트다운·보내는 중·보냄·재생·안내·마이크 권한)
+            else -> FloatingPanelSamples.of(variant.removePrefix("panel_"))
         }
         PanelPreviewHost(light = variant == "panel_light", ui = ui)
         return
@@ -112,6 +114,22 @@ private fun PreviewPttSent() = DesignPreviewHost("ptt_sent")
 @Preview(name = "무전 수신 재생", widthDp = 1700, heightDp = 1250, showBackground = true)
 @Composable
 private fun PreviewPttPlaying() = DesignPreviewHost("ptt_playing")
+
+@Preview(name = "플로팅 패널 무전 확인", widthDp = 1707, heightDp = 1210)
+@Composable
+private fun PreviewPanelPttConfirm() = PanelPreviewHost(light = false, ui = FloatingPanelSamples.of("confirm"))
+
+@Preview(name = "플로팅 패널 무전 카운트다운", widthDp = 1707, heightDp = 1210)
+@Composable
+private fun PreviewPanelPttCountdown() = PanelPreviewHost(light = false, ui = FloatingPanelSamples.of("countdown"))
+
+@Preview(name = "무전 안내(보내지 않음)", widthDp = 1700, heightDp = 1250, showBackground = true)
+@Composable
+private fun PreviewPttNotice() = DesignPreviewHost("ptt_notice")
+
+@Preview(name = "정차 + 마이크 권한 없음", widthDp = 1700, heightDp = 1250, showBackground = true)
+@Composable
+private fun PreviewPttMic() = DesignPreviewHost("ptt_mic")
 
 @Preview(name = "주간 모드", widthDp = 1700, heightDp = 1250, showBackground = true)
 @Composable

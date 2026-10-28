@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -261,5 +262,47 @@ class ChainedVoiceAdapterTest {
 
     private companion object {
         const val PLEOS_LABEL = "Pleos TextToSpeech ON_DEVICE"
+    }
+
+    // ---------------------------------------------------------------- F16 speakAndWait(병합 2026-10-28) — 경로와 무관하게 신호로 끝을 기다린다
+
+    @Test
+    fun `speakAndWait returns SPOKEN when the route reports Done for that sentence`() = runTest {
+        val c = chain(android, pleos)
+        android.ready(); pleos.ready(); runCurrent()
+        val r = async { c.speakAndWait("보낼까요?", Priority.NORMAL, 8_000) }
+        runCurrent()
+        val tag = android.spoken.single().third
+        assertTrue("전용 꼬리표 wait-N", tag!!.startsWith("wait-"))
+        android.out.emit(UtteranceSignal.Started(VoicePath.ANDROID_TTS, tag, testScheduler.currentTime, 300))
+        runCurrent()
+        assertFalse("시작만으로는 끝나지 않는다", r.isCompleted)
+        android.out.emit(UtteranceSignal.Done(VoicePath.ANDROID_TTS, "다른-문장", testScheduler.currentTime))
+        runCurrent()
+        assertFalse("다른 문장의 Done 은 무시", r.isCompleted)
+        android.out.emit(UtteranceSignal.Done(VoicePath.ANDROID_TTS, tag, testScheduler.currentTime))
+        runCurrent()
+        assertEquals(SpeakResult.SPOKEN, r.await())
+    }
+
+    @Test
+    fun `speakAndWait on display only is FALLBACK, a failure is FAILED and silence until the limit is TIMEOUT`() = runTest {
+        val c = chain(android, pleos)
+        android.unavailable("엔진 없음"); pleos.unavailable("CaaS 없음"); runCurrent()
+        assertEquals(SpeakResult.FALLBACK, c.speakAndWait("보낼까요?", Priority.NORMAL, 8_000))
+
+        // 실패·시간 초과는 Pleos 하나만 있는 체인으로 본다
+        pleos.ready(); runCurrent()
+        val c3 = chain(pleos)
+        val failed = async { c3.speakAndWait("문장", Priority.NORMAL, 8_000) }
+        runCurrent()
+        pleos.out.emit(UtteranceSignal.Failed(VoicePath.PLEOS_TTS, pleos.spoken.last().third, testScheduler.currentTime, "onError"))
+        runCurrent()
+        assertEquals(SpeakResult.FAILED, failed.await())
+
+        val timeout = async { c3.speakAndWait("문장", Priority.NORMAL, 6_000) }
+        runCurrent()
+        advanceTimeBy(6_001); runCurrent()
+        assertEquals(SpeakResult.TIMEOUT, timeout.await())
     }
 }

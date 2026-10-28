@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- F16 무전(녹음형 PTT) 화면 문구 — 플로팅 패널 [무전] 줄·정차 대시보드·설정(docs/05 § 무전). 음성 문구는 domain/ptt/PttModels.kt PttPrompts.
+     strings.xml 과 분리해 다른 브랜치와 충돌을 줄인다 -->
+<resources>
+    <!-- 상태 -->
+    <string name="ptt_say_short">네 / 아니라고 말하세요</string>
+    <string name="ptt_countdown_short">%1$d초 뒤 보낼게요</string>
+    <string name="ptt_cancel_hint">무전 버튼 = 취소</string>
+    <string name="ptt_press_to_cancel">누르면 취소</string>
+    <string name="ptt_sending">보내는 중…</string>
+    <string name="ptt_sent_plain">보냈어요</string>
+    <string name="ptt_playing_noname">무전 %1$s</string>
+    <string name="ptt_queued_more">+%1$d</string>
+
+    <!-- 3초 안내(PttNotice) -->
+    <string name="ptt_notice_too_short">너무 짧아요</string>
+    <string name="ptt_notice_cancelled">취소했어요</string>
+    <string name="ptt_notice_kept">보내지 않았어요</string>
+    <string name="ptt_notice_kept_hint">멈춘 뒤 목록에서 보낼 수 있어요</string>
+    <string name="ptt_notice_send_failed">보내지 못했어요</string>
+    <string name="ptt_notice_send_failed_hint">멈춘 뒤 목록에서 다시 보낼 수 있어요</string>
+    <string name="ptt_notice_record_failed">녹음하지 못했어요</string>
+    <string name="ptt_notice_mic">마이크 권한 필요</string>
+    <string name="ptt_notice_mic_hint">차를 세운 뒤 허용해 주세요</string>
+    <string name="ptt_notice_no_group">그룹이 없어요</string>
+
+    <!-- 마이크 권한 -->
+    <string name="ptt_mic_denied">마이크 권한 필요</string>
+    <string name="ptt_open_mic_permission">권한 열기</string>
+
+    <!-- 정차 대시보드 목록 -->
+    <string name="dash_delete_unsent">지우기</string>
+    <string name="dash_past_ptt">지난 무전</string>
+    <string name="dash_past_ptt_hint">눌러서 다시 듣기</string>
+
+    <!-- 설정 -->
+    <string name="settings_section_ptt">무전</string>
+    <string name="settings_ptt_handle_switch">핸들 버튼으로 무전</string>
+    <string name="settings_ptt_handle_hint">그룹 주행 중 핸들의 재생/정지(미디어) 버튼을 누르면 무전을 시작해요(순정 내비가 앞에 있어도). 음악 앱이 재생 중이면 그 앱에 버튼을 양보하고, 끄면 버튼은 원래 동작으로 돌아가요. 화면의 [무전] 버튼은 늘 쓸 수 있어요.</string>
+    <string name="settings_ptt_driving_locked">주행 중에는 바꿀 수 없어요</string>
+</resources>

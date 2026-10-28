@@ -29,6 +29,8 @@ import java.io.File
  *  ④ MediaRecorder(AAC 16 kHz 모노)로 녹음 파일이 만들어지는가(AVD hw.audioInput 설정에 따라)
  * 호출: adb shell am broadcast -n app.donghaeng.car/.debug.F16ProbeReceiver --es probe <media_on|media_off|tts|tts_engine|stt|rec> [--es engine <pkg>] [--ei sec 3]
  * 결과는 로그 'f16 probe: …' 한 줄씩(문장·좌표·닉네임 없음).
+ * 주의(2026-10-28 이후): 실제 무전 트리거(MediaSessionVoiceTrigger)가 그룹 주행 중 같은 방식의 세션을 쓴다 — media_on 은 그 세션과
+ * 미디어 버튼을 다투므로 그룹이 없을 때만 쓴다. 무전 확인은 DemoControlReceiver 의 ptt_* 액션(tools/demo/ptt.py)으로 한다.
  */
 class F16ProbeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {

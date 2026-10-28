@@ -26,16 +26,18 @@ import kotlinx.coroutines.flow.stateIn
 import javax.inject.Inject
 
 /**
- * 위치·알림 런타임 권한 요청 시점 (docs/05 §1.2): **활성 그룹이 있고 정차 상태일 때 1회**. 그 전에는 묻지 않는다.
- * 거부돼도 기능은 계속된다 — 위치 체인이 다음 순위(Fake)로 내려가고 속도는 위치 계산값을 쓴다.
+ * 위치·알림(+ F16 무전 마이크) 런타임 권한 요청 시점 (docs/05 §1.2): **활성 그룹이 있고 정차 상태일 때 1회**. 그 전에는 묻지 않는다.
+ * 거부돼도 기능은 계속된다 — 위치 체인이 다음 순위(Fake)로 내려가고 속도는 위치 계산값을 쓴다. 마이크가 거부되면 무전 보내기만 안 된다.
  */
 @HiltViewModel
 class LocationPermissionViewModel @Inject constructor(
     private val locationFeed: LocationFeed,
     private val vehicleSignals: VehicleSignals,
-    sessionManager: MqttSessionManager,
+    private val sessionManager: MqttSessionManager,
     drivingMonitor: DrivingStateMonitor,
     @ApplicationContext private val context: Context,
+    private val ptt: app.donghaeng.car.domain.ptt.PttController,
+    private val driveSession: app.donghaeng.car.service.DriveSessionController,
 ) : ViewModel() {
 
     @Volatile
@@ -54,6 +56,9 @@ class LocationPermissionViewModel @Inject constructor(
         DhLog.i("location permissions: ${result.entries.joinToString { "${it.key.substringAfterLast('.')}=${it.value}" }}")
         locationFeed.restart()
         vehicleSignals.restart()   // CAR_SPEED 승인 → Car API 속도 재구독
+        ptt.refreshPermissions()   // F16: RECORD_AUDIO 결과 → 무전 버튼 "마이크 권한 필요" 갱신
+        // 앱이 앞에 있는 지금 포그라운드 서비스 타입을 새 권한에 맞춘다(location·microphone — 내비가 앞일 때도 위치·무전 녹음이 되게)
+        driveSession.refreshType(sessionManager.session.value)
     }
 }
 

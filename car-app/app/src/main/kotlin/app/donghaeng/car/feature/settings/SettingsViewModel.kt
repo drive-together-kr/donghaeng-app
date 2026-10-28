@@ -43,6 +43,8 @@ data class SettingsUiState(
     val server: ServerAddresses = ServerConfig.BUILD_DEFAULTS,
     /** T32 숨은 메뉴로 방금 주소를 바꿨다(안내 문구). null = 없음 */
     val serverNotice: ServerNotice? = null,
+    /** F16 '핸들 버튼으로 무전'(기본 켬) — 정차 중에만 바꾼다 */
+    val pttHandleButton: Boolean = true,
 )
 
 /** T32 숨은 메뉴 저장 뒤 안내 */
@@ -54,13 +56,14 @@ enum class ServerNotice {
     MQTT_RECONNECTED,
 }
 
-private data class ToggleSide(val voice: Boolean, val autoFollow: Boolean, val latency: Boolean, val server: ServerAddresses)
+private data class ToggleSide(val voice: Boolean, val autoFollow: Boolean, val latency: Boolean, val server: ServerAddresses, val pttHandle: Boolean)
 
 private data class LocalFlags(val justDisconnected: Boolean = false, val serverNotice: ServerNotice? = null)
 
 /**
  * 설정 — 연결 해제(반복 시연용, 확인 창 뒤), 저장소 초기화(읽기 실패 시), 진단 화면 진입, 음성 안내 on/off(T27).
  * T32: 숨은 메뉴 '서버 주소'(제목 3초 안에 5번 탭, 주행 중 비활성) — [checkServerForm] → 확인 창 → [applyServer]/[resetServer].
+ * F16: '핸들 버튼으로 무전' 스위치([setPttHandleButton], 정차 중에만) — 끄면 핸들·미디어 키가 원래 동작(음악 재생/정지)으로 돌아간다.
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -72,6 +75,7 @@ class SettingsViewModel @Inject constructor(
     driving: DrivingStateMonitor,
     private val serverConfig: ServerConfig,
     private val serverSwitcher: ServerSwitcher,
+    private val pttSettings: app.donghaeng.car.domain.ptt.PttSettings,
 ) : ViewModel() {
 
     private val flags = MutableStateFlow(LocalFlags())
@@ -81,23 +85,32 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { tokenStore.load() }
     }
 
-    private val toggles = combine(voiceAnnouncer.state, routeSync.state, latency.state, serverConfig.current) { voice, rs, lat, server ->
-        ToggleSide(voice.enabled, rs.autoFollow, lat.overlayEnabled, server)
+    private val toggles = combine(voiceAnnouncer.state, routeSync.state, latency.state, serverConfig.current, pttSettings.handleButton) { voice, rs, lat, server, ptt ->
+        ToggleSide(voice.enabled, rs.autoFollow, lat.overlayEnabled, server, ptt)
     }
 
     val uiState: StateFlow<SettingsUiState> = combine(tokenStore.state, flags, toggles, driving.isDriving().onStart { emit(false) }, tokenStore.lastClear) { tokens, f, t, isDriving, lastClear ->
         drivingNow = isDriving
         SettingsUiState(
             tokens = tokens, justDisconnected = f.justDisconnected, voiceEnabled = t.voice, autoFollow = t.autoFollow, latencyOverlay = t.latency,
-            isDriving = isDriving, lastClear = lastClear, server = t.server, serverNotice = f.serverNotice,
+            isDriving = isDriving, lastClear = lastClear, server = t.server, serverNotice = f.serverNotice, pttHandleButton = t.pttHandle,
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState(tokens = tokenStore.state.value, lastClear = tokenStore.lastClear.value, server = serverConfig.current.value))
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState(tokens = tokenStore.state.value, lastClear = tokenStore.lastClear.value, server = serverConfig.current.value, pttHandleButton = pttSettings.handleButton.value))
 
     fun setVoiceEnabled(enabled: Boolean) = voiceAnnouncer.setEnabled(enabled)
 
     fun setAutoFollow(enabled: Boolean) = routeSync.setAutoFollow(enabled)
 
     fun setLatencyOverlay(enabled: Boolean) = latency.setOverlayEnabled(enabled)
+
+    /** F16 '핸들 버튼으로 무전' — 주행 중이면 무시(화면도 스위치를 막는다) */
+    fun setPttHandleButton(enabled: Boolean) {
+        if (drivingNow) {
+            DhLog.w("settings ptt handle button change ignored while driving")
+            return
+        }
+        pttSettings.setHandleButton(enabled)
+    }
 
     /** 확인 창에서 '연결 해제' — TokenStore 를 비운다 → 홈이 '연결 안 됨' 으로 돌아간다. 주행 중이면 무시 */
     fun disconnect() = clear(TokenClearReason.USER_SETTINGS_DISCONNECT)

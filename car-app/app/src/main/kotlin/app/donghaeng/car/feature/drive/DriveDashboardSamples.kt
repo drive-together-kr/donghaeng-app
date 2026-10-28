@@ -2,8 +2,10 @@ package app.donghaeng.car.feature.drive
 
 /**
  * 시안·프리뷰용 샘플 데이터 (실제 데이터 연결은 2단계). 닉네임·장소는 가상.
- * 변형 이름: drive_landscape, drive_portrait, parked, ptt_recording, ptt_confirm, ptt_sent, ptt_playing, drive_light,
- * panel_dark, panel_light, panel_full, panel_worst, panel_longdest(플로팅 패널 단독 — FloatingPanelSamples)
+ * 변형 이름: drive_landscape, drive_portrait, parked, ptt_recording, ptt_confirm, ptt_countdown, ptt_sending, ptt_sent, ptt_playing,
+ * ptt_notice, ptt_mic(정차 + 마이크 권한 없음), drive_light,
+ * panel_dark, panel_light, panel_full, panel_worst, panel_longdest, panel_recording, panel_confirm, panel_countdown, panel_sending, panel_sent,
+ * panel_playing, panel_notice, panel_mic(플로팅 패널 단독 — FloatingPanelSamples)
  */
 object DriveDashboardSamples {
     const val BLUE = 0xFF2E7DFFL
@@ -53,7 +55,15 @@ object DriveDashboardSamples {
         RecentEventUi("아빠 차에서 온 메시지. 휴게소 들렀다 가요", Tone.INFO, "26분 전"),
         RecentEventUi("앞쪽 아빠 차가 급제동했어요", Tone.DANGER, "31분 전"),
     )
-    val unsent = listOf("무전 0:07 · 13:02", "무전 0:04 · 12:48")
+    val unsent = listOf(
+        UnsentPttUi("u2", "무전 0:07 · 13:02", "대답 없음"),
+        UnsentPttUi("u1", "무전 0:04 · 12:48", "보내기 실패", failed = true),
+    )
+    val past = listOf(
+        PastPttUi("v3", "아빠 차 무전 0:05", BLUE, "1분 전"),
+        PastPttUi("v2", "삼촌 차 무전 0:11", PURPLE, "4분 전", statusText = "못 들음", tone = Tone.INFO),
+        PastPttUi("v1", "둘째 차 무전 0:03", GREEN, "9분 전", statusText = "끊김", tone = Tone.INFO),
+    )
 
     /** 가로 2창: 순정 내비가 옆에 보인다 → 휴식 추천 줄 */
     val driving = DriveDashboardUi(
@@ -75,6 +85,7 @@ object DriveDashboardSamples {
         presets = presets,
         recentEvents = recentEvents,
         unsentPtt = unsent,
+        pastPtt = past,
     )
 
     fun of(variant: String): DriveDashboardUi = when (variant) {
@@ -83,10 +94,18 @@ object DriveDashboardSamples {
         "drive_portrait" -> driving.copy(naviVisible = false)
         "ptt_recording" -> driving.copy(event = null, ptt = PttUi(PttPhase.RECORDING, seconds = 9, totalSeconds = 15, level = 0.7f))
         "ptt_confirm" -> driving.copy(event = null, ptt = PttUi(PttPhase.CONFIRMING, seconds = 4, totalSeconds = 5, listening = true))
+        "ptt_countdown" -> driving.copy(event = null, ptt = PttUi(PttPhase.CONFIRMING, seconds = 3, totalSeconds = 5, fallbackCountdown = true))
+        "ptt_sending" -> driving.copy(event = null, ptt = PttUi(PttPhase.SENT, sending = true))
         "ptt_sent" -> driving.copy(event = null, ptt = PttUi(PttPhase.SENT, sentTo = 3))
+        "ptt_notice" -> driving.copy(event = null, ptt = PttUi(notice = app.donghaeng.car.domain.ptt.PttNotice.KEPT_UNSENT))
+        "ptt_mic" -> parked.copy(ptt = PttUi(micDenied = true))
         "ptt_playing" -> driving.copy(event = eventDanger, ptt = PttUi(PttPhase.PLAYING, seconds = 7, fromName = "아빠 차", fromColorArgb = BLUE, durationText = "0:07"))
         else -> driving
     }
 
-    val variants = listOf("drive_landscape", "drive_portrait", "parked", "ptt_recording", "ptt_confirm", "ptt_sent", "ptt_playing", "drive_light", "panel_dark", "panel_light", "panel_full", "panel_worst", "panel_longdest")
+    val variants = listOf(
+        "drive_landscape", "drive_portrait", "parked", "ptt_recording", "ptt_confirm", "ptt_countdown", "ptt_sending", "ptt_sent", "ptt_playing", "ptt_notice", "ptt_mic",
+        "drive_light", "panel_dark", "panel_light", "panel_full", "panel_worst", "panel_longdest",
+        "panel_recording", "panel_confirm", "panel_countdown", "panel_sending", "panel_sent", "panel_playing", "panel_notice", "panel_mic",
+    )
 }
