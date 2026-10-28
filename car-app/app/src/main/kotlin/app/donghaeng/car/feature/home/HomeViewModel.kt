@@ -10,6 +10,7 @@ import app.donghaeng.car.core.common.TextMasking
 import app.donghaeng.car.core.common.TokenClearReason
 import app.donghaeng.car.core.common.TokenStore
 import app.donghaeng.car.core.common.TokenStoreState
+import app.donghaeng.car.core.network.MqttAddressDisplay
 import app.donghaeng.car.core.network.ServerAddresses
 import app.donghaeng.car.core.network.ServerConfig
 import app.donghaeng.car.core.network.mqtt.MqttGateway
@@ -68,9 +69,9 @@ data class HomeUiState(
     val versionName: String = BuildConfig.VERSION_NAME,
     /** T32 지금 서버 주소(숨은 메뉴 사용자 지정 ?: 빌드 기본값) */
     val publicBaseUrl: String = ServerConfig.BUILD_DEFAULT_BASE_URL,
-    val mqttPublicUri: String = ServerConfig.BUILD_DEFAULT_MQTT_URI,
     val baseUrlOverridden: Boolean = false,
-    val mqttUriOverridden: Boolean = false,
+    /** T32 실제 MQTT 주소(사용자 지정 ?: 페어링 응답 mqtt.uri)와 출처 */
+    val mqttAddress: MqttAddressDisplay = MqttAddressDisplay.UNPAIRED,
     val connection: VehicleConnection = VehicleConnection.CHECKING,
     /** 연결됨일 때 서버가 준 차량 별명(화면 표시용 — 로그에는 쓰지 않는다) */
     val nickname: String? = null,
@@ -124,12 +125,15 @@ class HomeViewModel @Inject constructor(
 
     val uiState: StateFlow<HomeUiState> = combine(sdkProbe.report, tokenStore.state, sessionStore.session, driving.isDriving().onStart { emit(false) }, healthAndServer) { lines, tokens, session, isDriving, hs ->
         val (h, server) = hs
-        build(lines, tokens, session).withServer(server).copy(isDriving = isDriving, banner = banner(tokens, h))
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), build(sdkProbe.report.value, tokenStore.state.value, sessionStore.session.value).withServer(serverConfig.current.value))
+        build(lines, tokens, session).withServer(server, tokens).copy(isDriving = isDriving, banner = banner(tokens, h))
+    }.stateIn(
+        viewModelScope, SharingStarted.WhileSubscribed(5_000),
+        build(sdkProbe.report.value, tokenStore.state.value, sessionStore.session.value).withServer(serverConfig.current.value, tokenStore.state.value),
+    )
 
-    private fun HomeUiState.withServer(server: ServerAddresses) = copy(
-        publicBaseUrl = server.publicBaseUrl, mqttPublicUri = server.mqttPublicUri,
-        baseUrlOverridden = server.baseUrlOverridden, mqttUriOverridden = server.mqttUriOverride != null,
+    private fun HomeUiState.withServer(server: ServerAddresses, tokens: TokenStoreState) = copy(
+        publicBaseUrl = server.publicBaseUrl, baseUrlOverridden = server.baseUrlOverridden,
+        mqttAddress = MqttAddressDisplay.of(server, (tokens as? TokenStoreState.Present)?.credentials?.mqttUri),
     )
 
     /** 저장소 오류 배너의 '다시 시도' */

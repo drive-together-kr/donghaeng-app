@@ -1,12 +1,14 @@
 package app.donghaeng.car.core.network
 
 import app.donghaeng.car.core.network.mqtt.MqttUriPolicy
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.net.URI
 
 /**
  * 숨은 메뉴 '서버 주소' 입력 검증 (T32). 화면은 [Error] 를 문구로 바꿔 보여 준다.
  *
- * - 서버 주소: `http(s)://host[:port]` 만(경로·쿼리 없음 — API 경로가 `/v1/…` 절대 경로라 경로 접두는 쓰이지 않는다). 끝 `/` 는 지운다.
+ * - 서버 주소: `http(s)://host[:port]` 만(경로·쿼리 없음 — API 경로가 `/v1/…` 절대 경로라 경로 접두는 쓰이지 않는다). 끝 `/` 와 기본 포트(http 80·https 443)는 지운다
+ *   — `https://h:443` 과 `https://h` 를 다른 서버로 보면 토큰이 쓸데없이 지워진다(T32 리뷰). 같은 서버인지는 [sameOrigin](scheme·host·port)으로 본다.
  *   평문 `http://` 는 이 빌드의 네트워크 보안 설정이 허용하는 호스트만([cleartextHosts], BuildConfig.DH_CLEARTEXT_HOSTS — `*` = 전부).
  * - MQTT 주소: 비우면 페어링 응답 `mqtt.uri` 를 쓴다. 넣으면 [MqttUriPolicy.resolve] 규칙(tcp/ssl/ws/wss, https 서버면 평문 금지)을 그대로 적용한다.
  */
@@ -44,7 +46,8 @@ object ServerAddressRules {
         if (uri.rawUserInfo != null) return Result.Invalid(Error.BASE_FORMAT)
         if (!uri.rawPath.isNullOrEmpty() || uri.rawQuery != null || uri.rawFragment != null) return Result.Invalid(Error.BASE_HAS_PATH)
         if (scheme == "http" && !cleartextAllowed(host, cleartextHosts)) return Result.Invalid(Error.BASE_CLEARTEXT_BLOCKED)
-        val port = if (uri.port > 0) ":${uri.port}" else ""
+        val defaultPort = if (scheme == "https") 443 else 80
+        val port = if (uri.port > 0 && uri.port != defaultPort) ":${uri.port}" else ""
         return Result.Ok("$scheme://${host.lowercase()}$port")
     }
 
@@ -83,10 +86,18 @@ object ServerAddressRules {
             return FormResult.Invalid((base as? Result.Invalid)?.error, (mqtt as? Result.Invalid)?.error)
         }
         val mqttValue = (mqtt as Result.Ok).value
-        val baseChanges = !baseValue.equals(current.publicBaseUrl, ignoreCase = true)
+        val baseChanges = !sameOrigin(baseValue.orEmpty(), current.publicBaseUrl)
         val mqttChanges = mqttValue != current.mqttUriOverride
         if (!baseChanges && !mqttChanges) return FormResult.Unchanged
         return FormResult.Ready(ServerOverrides(baseValue, mqttValue), baseChanges)
+    }
+
+    /** 같은 서버인가 — scheme·host·port(기본 포트 채움) 비교. OkHttp `HttpUrl` 로 못 읽으면 문자열 비교(대소문자·끝 `/` 무시) */
+    fun sameOrigin(a: String, b: String): Boolean {
+        val x = a.trim().toHttpUrlOrNull()
+        val y = b.trim().toHttpUrlOrNull()
+        if (x == null || y == null) return a.trim().trimEnd('/').equals(b.trim().trimEnd('/'), ignoreCase = true)
+        return x.scheme == y.scheme && x.host == y.host && x.port == y.port
     }
 
     fun cleartextAllowed(host: String, cleartextHosts: String): Boolean {

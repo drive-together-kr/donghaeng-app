@@ -13,6 +13,7 @@ import app.donghaeng.car.core.common.DrivingStatus
 import app.donghaeng.car.core.common.TextMasking
 import app.donghaeng.car.core.common.TokenStore
 import app.donghaeng.car.core.common.TokenStoreState
+import app.donghaeng.car.core.network.MqttAddressDisplay
 import app.donghaeng.car.core.network.ServerAddresses
 import app.donghaeng.car.core.network.ServerConfig
 import app.donghaeng.car.core.network.mqtt.MqttGateway
@@ -67,11 +68,13 @@ data class DiagnosticsUiState(
     val flavor: String = BuildConfig.FLAVOR,
     val adapter: String = BuildConfig.ADAPTER,
     val versionName: String = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
-    /** T32 지금 서버·브로커 주소(숨은 메뉴 사용자 지정 ?: 빌드 기본값) */
+    /** T32 지금 서버 주소(숨은 메뉴 사용자 지정 ?: 빌드 기본값) */
     val publicBaseUrl: String = ServerConfig.BUILD_DEFAULT_BASE_URL,
-    val mqttPublicUri: String = ServerConfig.BUILD_DEFAULT_MQTT_URI,
     val baseUrlOverridden: Boolean = false,
-    val mqttUriOverridden: Boolean = false,
+    /** T32 지금 자격 증명의 mqtt.uri(페어링 전 null) — [mqttAddress] 계산용 */
+    val pairedMqttUri: String? = null,
+    /** T32 실제 MQTT 주소(사용자 지정 ?: 페어링 응답 mqtt.uri)와 출처 */
+    val mqttAddress: MqttAddressDisplay = MqttAddressDisplay.UNPAIRED,
     val debug: Boolean = BuildConfig.DEBUG,
     val androidApi: Int = Build.VERSION.SDK_INT,
     val deviceModel: String = Build.MODEL ?: "?",
@@ -192,6 +195,7 @@ class DiagnosticsViewModel @Inject constructor(
             report = report,
             probe = probe,
             pairedVehicleIdMasked = (tokens as? TokenStoreState.Present)?.let { TextMasking.maskVehicleId(it.credentials.vehicleId) },
+            pairedMqttUri = (tokens as? TokenStoreState.Present)?.credentials?.mqttUri,
             mqtt = side.mqtt,
             groupSession = sess.session,
             lastCommand = sess.lastCommand,
@@ -213,11 +217,17 @@ class DiagnosticsViewModel @Inject constructor(
             clockSync = sess.clock,
         )
     }.combine(serverConfig.current) { ui, server -> ui.withServer(server) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DiagnosticsUiState(report = reporter.report.value, probe = sdkProbe.report.value).withServer(serverConfig.current.value))
+        .stateIn(
+            viewModelScope, SharingStarted.WhileSubscribed(5_000),
+            DiagnosticsUiState(
+                report = reporter.report.value, probe = sdkProbe.report.value,
+                pairedMqttUri = (tokenStore.state.value as? TokenStoreState.Present)?.credentials?.mqttUri,
+            ).withServer(serverConfig.current.value),
+        )
 
     private fun DiagnosticsUiState.withServer(server: ServerAddresses) = copy(
-        publicBaseUrl = server.publicBaseUrl, mqttPublicUri = server.mqttPublicUri,
-        baseUrlOverridden = server.baseUrlOverridden, mqttUriOverridden = server.mqttUriOverride != null,
+        publicBaseUrl = server.publicBaseUrl, baseUrlOverridden = server.baseUrlOverridden,
+        mqttAddress = MqttAddressDisplay.of(server, pairedMqttUri),
     )
 
     /** 내비 요청 → 결과는 [DiagnosticsUiState.naviActionResult] 와 내비 카드의 콜백 수로 확인한다 */

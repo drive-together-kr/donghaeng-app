@@ -68,7 +68,7 @@ class HomeBannerTest {
     @Test
     fun `브로커 주소 정책 거부도 30초 뒤 서버 연결 끊김 배너로 보인다 (T33 리뷰)`() = runTest {
         // 서버가 https 인데 평문 tcp:// 브로커 → MqttUriPolicy 가 거부(클라이언트를 만들지 않는다). T32 부터 ws:// 는 지원 스킴이라 https + tcp 로 바꿨다
-        val https = ServerConfig("https://1-2-3-4.sslip.io", "ssl://1-2-3-4.sslip.io:8883", InMemoryServerOverrideStorage())
+        val https = ServerConfig("https://1-2-3-4.sslip.io", InMemoryServerOverrideStorage())
         val gateway = HiveMqttGateway(https, InMemoryMqttTransportMemory())
         gateway.connect(creds.copy(mqttUri = "tcp://1-2-3-4.sslip.io:1883"))
         val first = gateway.status.value

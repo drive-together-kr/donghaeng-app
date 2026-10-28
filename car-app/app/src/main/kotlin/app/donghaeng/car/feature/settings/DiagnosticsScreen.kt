@@ -310,7 +310,7 @@ private fun BuildCard(state: DiagnosticsUiState) {
             LabelRow(stringResource(R.string.diag_label_adapter), state.adapter)
             LabelRow(stringResource(R.string.home_label_version), state.versionName)
             LabelRow(stringResource(R.string.home_label_base_url), if (state.baseUrlOverridden) stringResource(R.string.t32_address_override, state.publicBaseUrl) else state.publicBaseUrl)
-            LabelRow(stringResource(R.string.home_label_mqtt_uri), if (state.mqttUriOverridden) stringResource(R.string.t32_address_override, state.mqttPublicUri) else state.mqttPublicUri)
+            LabelRow(stringResource(R.string.home_label_mqtt_uri), app.donghaeng.car.feature.home.mqttAddressText(state.mqttAddress))
             LabelRow(stringResource(R.string.diag_label_debug), state.debug.toString())
             LabelRow(stringResource(R.string.diag_label_android), state.androidApi.toString())
             LabelRow(stringResource(R.string.diag_label_device), state.deviceModel)

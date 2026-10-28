@@ -29,7 +29,18 @@ val releaseMqttPublicUri: String = dhCloudHost?.let { "ssl://$it:8883" } ?: dhMq
 // 평문 http 정책: 기본 서버 주소가 http:// 면 평문 전부 허용(로컬 개발), https:// 면 에뮬레이터 호스트·localhost 만 허용(숨은 메뉴의 현장 로컬 서버 폴백, docs/10 R9).
 //   res/xml/network_security_config_{open,cloud}.xml 을 매니페스트 placeholder 로 고른다. HiveMQ(Netty) 에는 적용되지 않으므로 MQTT 평문은 MqttUriPolicy 가 막는다.
 //   cleartextLocalHosts 는 network_security_config_cloud.xml 의 domain 목록과 같아야 한다(숨은 메뉴의 주소 검증이 BuildConfig.DH_CLEARTEXT_HOSTS 로 읽는다).
+//   어긋나면 메뉴는 통과시키는데 OkHttp 가 'CLEARTEXT not permitted' 로 실패(또는 그 반대)하므로 구성 단계에서 비교해 빌드를 멈춘다(T32 리뷰).
 val cleartextLocalHosts = listOf("10.0.2.2", "localhost", "127.0.0.1")
+run {
+    val xml = file("src/main/res/xml/network_security_config_cloud.xml")
+    val body = xml.readText().replace(Regex("<!--.*?-->", RegexOption.DOT_MATCHES_ALL), "")
+    val domains = Regex("""<domain\b[^>]*>\s*([^<\s]+)\s*</domain>""").findAll(body).map { it.groupValues[1].lowercase() }.toList()
+    if (domains.sorted() != cleartextLocalHosts.sorted()) {
+        throw GradleException(
+            "cleartextLocalHosts $cleartextLocalHosts and ${xml.name} domains $domains differ - keep both lists the same (T32)",
+        )
+    }
+}
 fun cleartextHostsFor(baseUrl: String): String = if (baseUrl.startsWith("http://")) "*" else cleartextLocalHosts.joinToString(",")
 fun networkSecurityConfigFor(baseUrl: String): String =
     if (baseUrl.startsWith("http://")) "@xml/network_security_config_open" else "@xml/network_security_config_cloud"

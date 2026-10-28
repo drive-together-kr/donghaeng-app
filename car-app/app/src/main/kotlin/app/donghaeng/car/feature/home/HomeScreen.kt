@@ -33,6 +33,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.donghaeng.car.R
 import app.donghaeng.car.adapter.sdk.ProbeLine
 import app.donghaeng.car.core.common.TokenClearReason
+import app.donghaeng.car.core.network.MqttAddressDisplay
 import app.donghaeng.car.ui.components.formatShortTime
 import app.donghaeng.car.ui.theme.DongHaengTheme
 
@@ -265,9 +266,17 @@ private fun BuildInfoCard(state: HomeUiState) {
             InfoRow(stringResource(R.string.home_label_flavor), state.flavor)
             InfoRow(stringResource(R.string.home_label_version), state.versionName)
             InfoRow(stringResource(R.string.home_label_base_url), if (state.baseUrlOverridden) stringResource(R.string.t32_address_override, state.publicBaseUrl) else state.publicBaseUrl)
-            InfoRow(stringResource(R.string.home_label_mqtt_uri), if (state.mqttUriOverridden) stringResource(R.string.t32_address_override, state.mqttPublicUri) else state.mqttPublicUri)
+            InfoRow(stringResource(R.string.home_label_mqtt_uri), mqttAddressText(state.mqttAddress))
         }
     }
+}
+
+/** T32 리뷰: 'MQTT 주소' = 실제로 쓰는 주소와 출처(사용자 지정 / 서버가 준 주소 / 페어링 전) — 빌드 기본 MQTT 주소는 접속에 쓰이지 않아 보이지 않는다 */
+@Composable
+internal fun mqttAddressText(display: MqttAddressDisplay): String = when (display.source) {
+    MqttAddressDisplay.Source.OVERRIDE -> stringResource(R.string.t32_address_override, display.uri.orEmpty())
+    MqttAddressDisplay.Source.SERVER -> stringResource(R.string.t32_address_from_server, display.uri.orEmpty())
+    MqttAddressDisplay.Source.UNPAIRED -> stringResource(R.string.t32_mqtt_address_unpaired)
 }
 
 @Composable

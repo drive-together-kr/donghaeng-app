@@ -121,7 +121,8 @@ fun ServerAddressDialog(
                     style = MaterialTheme.typography.bodyLarge,
                 )
                 Text(
-                    stringResource(R.string.t32_server_build_defaults, ServerConfig.BUILD_DEFAULT_BASE_URL, ServerConfig.BUILD_DEFAULT_MQTT_URI),
+                    // MQTT 의 기본값은 빌드 값이 아니라 페어링 응답 mqtt.uri 다(BuildConfig MQTT 주소는 접속에 쓰이지 않는다, T32 리뷰)
+                    stringResource(R.string.t32_server_build_defaults, ServerConfig.BUILD_DEFAULT_BASE_URL, stringResource(R.string.t32_server_mqtt_from_server)),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

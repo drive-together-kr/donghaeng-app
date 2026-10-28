@@ -38,6 +38,8 @@
 
     <!-- 홈·진단 서버 주소 표시 -->
     <string name="t32_address_override">%1$s (사용자 지정)</string>
+    <string name="t32_address_from_server">%1$s (서버가 준 주소)</string>
+    <string name="t32_mqtt_address_unpaired">페어링하면 서버가 알려 줘요</string>
 
     <!-- 진단 MQTT 카드 -->
     <string name="t32_diag_mqtt_transport">전송</string>

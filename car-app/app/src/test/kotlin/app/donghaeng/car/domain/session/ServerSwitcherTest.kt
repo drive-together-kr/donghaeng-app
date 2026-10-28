@@ -11,6 +11,12 @@ import app.donghaeng.car.core.network.mqtt.InMemoryMqttGateway
 import app.donghaeng.car.core.network.mqtt.InMemoryMqttTransportMemory
 import app.donghaeng.car.core.network.mqtt.MqttTransport
 import app.donghaeng.car.domain.time.ClockSync
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -25,14 +31,30 @@ class ServerSwitcherTest {
         mqttUri = "tcp://10.0.2.2:1883", mqttClientId = "veh_ABCDEF12", mqttUsername = "veh_ABCDEF12",
     )
 
-    private class Fixture(initial: StoredCredentials?) {
-        val config = ServerConfig("http://10.0.2.2:8080", "tcp://10.0.2.2:1883", InMemoryServerOverrideStorage())
+    private class Fixture(initial: StoredCredentials?, dispatcher: CoroutineDispatcher = Dispatchers.IO) {
+        val config = ServerConfig("http://10.0.2.2:8080", InMemoryServerOverrideStorage())
         val tokens = InMemoryTokenStore(initial)
         val gateway = InMemoryMqttGateway()
         val memory = InMemoryMqttTransportMemory().apply { remember("10.0.2.2", MqttTransport.TCP) }
         var timeCalls = 0
         val clock = ClockSync(fetchServerTimeMs = { timeCalls++; 0L })
-        val switcher = ServerSwitcher(config, tokens, gateway, memory, clock)
+        val switcher = ServerSwitcher(config, tokens, gateway, memory, clock, dispatcher)
+    }
+
+    @Test
+    fun `switch runs in the app scope — finishes even when the caller (settings screen) is cancelled`() = runTest {
+        // 화면을 벗어나 ViewModel 이 정리돼도 주소만 바뀌고 토큰은 남는 반쯤 적용이 없어야 한다(T32 리뷰)
+        val f = Fixture(creds, StandardTestDispatcher(testScheduler))
+        f.tokens.load()
+        // 부른 쪽은 await 에서 멈춘 채 취소된다 — 교체 작업(switcher 범위)은 아직 시작 전
+        val caller = launch(start = CoroutineStart.UNDISPATCHED) { f.switcher.apply(ServerOverrides(publicBaseUrl = "https://1-2-3-4.sslip.io")) }
+        assertEquals("http://10.0.2.2:8080", f.config.publicBaseUrl)
+        caller.cancel()
+        advanceUntilIdle()
+        assertTrue(caller.isCancelled)
+        assertEquals("https://1-2-3-4.sslip.io", f.config.publicBaseUrl)
+        assertEquals(listOf(TokenClearReason.SERVER_CHANGED), f.tokens.clearReasons)
+        assertNull(f.memory.recall("10.0.2.2"))
     }
 
     @Test

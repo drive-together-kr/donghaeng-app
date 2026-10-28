@@ -33,7 +33,7 @@ object CoreModule {
     @Provides
     @Singleton
     fun provideServerConfig(@ApplicationContext context: Context): ServerConfig =
-        ServerConfig(ServerConfig.BUILD_DEFAULT_BASE_URL, ServerConfig.BUILD_DEFAULT_MQTT_URI, SharedPrefsServerOverrideStorage(context))
+        ServerConfig(ServerConfig.BUILD_DEFAULT_BASE_URL, SharedPrefsServerOverrideStorage(context))
 
     /** T32 마지막으로 붙은 MQTT 전송(tls/wss) 기억 — 다음 시작에 먼저 시도 */
     @Provides
