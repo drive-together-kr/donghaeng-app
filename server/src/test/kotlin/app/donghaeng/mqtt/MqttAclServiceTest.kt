@@ -14,9 +14,8 @@ class MqttAclServiceTest {
     private val membership = object : GroupMembershipApi {
         override fun activeGroupIdOf(vehicleId: String): String? = if (vehicleId == "veh_A") "grp_1" else null
 
-        // T24 에서 인터페이스에 추가된 명단 조회 — ACL 판정은 쓰지 않는다
+        // T24 에서 인터페이스에 추가된 명단 조회 — ACL 판단에는 쓰이지 않는다(테스트 컴파일 복구, T33)
         override fun rosterOf(groupId: String): GroupRoster? = null
-
         override fun activeRosters(): List<GroupRoster> = emptyList()
     }
     private val acl = MqttAclService(membership)

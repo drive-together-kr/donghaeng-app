@@ -13,6 +13,8 @@ import app.donghaeng.car.core.common.DrivingStatus
 import app.donghaeng.car.core.common.TextMasking
 import app.donghaeng.car.core.common.TokenStore
 import app.donghaeng.car.core.common.TokenStoreState
+import app.donghaeng.car.core.network.MqttAddressDisplay
+import app.donghaeng.car.core.network.ServerAddresses
 import app.donghaeng.car.core.network.ServerConfig
 import app.donghaeng.car.core.network.mqtt.MqttGateway
 import app.donghaeng.car.core.network.mqtt.MqttStatus
@@ -40,7 +42,14 @@ import app.donghaeng.car.domain.vehicle.VehicleSignals
 import app.donghaeng.car.domain.model.Place
 import app.donghaeng.car.domain.navi.NaviEventMonitor
 import app.donghaeng.car.domain.navi.NaviMonitorState
+import app.donghaeng.car.core.common.ClearRecord
+import app.donghaeng.car.domain.pairing.TokenRefreshState
+import app.donghaeng.car.domain.pairing.TokenRefresher
+import app.donghaeng.car.domain.session.GroupSessionStore
+import app.donghaeng.car.domain.session.StoreRetryState
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -59,8 +68,13 @@ data class DiagnosticsUiState(
     val flavor: String = BuildConfig.FLAVOR,
     val adapter: String = BuildConfig.ADAPTER,
     val versionName: String = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
-    val publicBaseUrl: String = ServerConfig.publicBaseUrl,
-    val mqttPublicUri: String = ServerConfig.mqttPublicUri,
+    /** T32 지금 서버 주소(숨은 메뉴 사용자 지정 ?: 빌드 기본값) */
+    val publicBaseUrl: String = ServerConfig.BUILD_DEFAULT_BASE_URL,
+    val baseUrlOverridden: Boolean = false,
+    /** T32 지금 자격 증명의 mqtt.uri(페어링 전 null) — [mqttAddress] 계산용 */
+    val pairedMqttUri: String? = null,
+    /** T32 실제 MQTT 주소(사용자 지정 ?: 페어링 응답 mqtt.uri)와 출처 */
+    val mqttAddress: MqttAddressDisplay = MqttAddressDisplay.UNPAIRED,
     val debug: Boolean = BuildConfig.DEBUG,
     val androidApi: Int = Build.VERSION.SDK_INT,
     val deviceModel: String = Build.MODEL ?: "?",
@@ -96,6 +110,18 @@ data class DiagnosticsUiState(
     /** T31 지연 측정·시계 동기화 */
     val latency: app.donghaeng.car.domain.latency.LatencyState = app.donghaeng.car.domain.latency.LatencyState(),
     val clockSync: app.donghaeng.car.domain.time.ClockSyncState = app.donghaeng.car.domain.time.ClockSyncState(),
+)
+
+/** T33 진단 — 토큰·저장소·갱신·삭제 기록·최근 로그(토큰 원문 없음) */
+data class T33DiagState(
+    val tokens: TokenStoreState = TokenStoreState.Loading,
+    val refresh: TokenRefreshState = TokenRefreshState(),
+    val lastTokenClear: ClearRecord? = null,
+    val lastSessionClear: ClearRecord? = null,
+    val storeRetry: StoreRetryState = StoreRetryState(),
+    /** DhLog 링 버퍼 마지막 30줄(이미 마스킹됨) */
+    val recentLogs: List<String> = emptyList(),
+    val nowMs: Long = 0L,
 )
 
 /** 진단 화면의 경로 동기화 확인용 동작(T28) */
@@ -135,6 +161,9 @@ class DiagnosticsViewModel @Inject constructor(
     drivingMonitor: DrivingStateMonitor,
     private val clockSync: app.donghaeng.car.domain.time.ClockSync,
     latency: app.donghaeng.car.domain.latency.LatencyMeter,
+    tokenRefresher: TokenRefresher,
+    sessionStore: GroupSessionStore,
+    serverConfig: ServerConfig,
 ) : ViewModel() {
 
     private val naviActionResult = MutableStateFlow<String?>(null)
@@ -143,11 +172,30 @@ class DiagnosticsViewModel @Inject constructor(
         viewModelScope.launch { tokenStore.load() }
     }
 
+    /** 최근 로그·만료까지 남은 시간을 2초마다 다시 읽는다 */
+    private val logTicker = flow {
+        while (true) {
+            emit(System.currentTimeMillis())
+            delay(2_000L)
+        }
+    }
+
+    /** T33 토큰·저장소·로그 카드 */
+    val t33State: StateFlow<T33DiagState> = combine(
+        combine(tokenStore.state, tokenRefresher.state, tokenStore.lastClear) { t, r, c -> Triple(t, r, c) },
+        sessionStore.lastClear,
+        sessionManager.storeRetry,
+        logTicker,
+    ) { head, sessionClear, retry, now ->
+        T33DiagState(head.first, head.second, head.third, sessionClear, retry, DhLog.recent(30), now)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), T33DiagState(tokens = tokenStore.state.value))
+
     val uiState: StateFlow<DiagnosticsUiState> = combine(reporter.report, sdkProbe.report, tokenStore.state, combine(combine(mqtt.status, naviMonitor.state, naviActionResult, voiceAnnouncer.state, voiceAdapter.status) { m, n, a, vo, tt -> SideState(m, n, a, LocationFeedState(), VehicleSignalState(), TelemetryState(), false, EventEngineState(), vo, tt) }, combine(locationFeed.state, vehicleSignals.state, telemetryCollector.state, driveSessionController.serviceRunning, eventEngine.state) { l, v, t, r, ev -> SideState(MqttStatus(), NaviMonitorState(), null, l, v, t, r, ev) }, routeSync.state, drivingMonitor.status, drivingMonitor.isDriving().onStart { emit(false) }) { head, side, rs, ds, isDriving -> side.copy(mqtt = head.mqtt, navi = head.navi, naviAction = head.naviAction, voice = head.voice, tts = head.tts, routeSync = rs, driving = ds, isDriving = isDriving) }, combine(sessionManager.session, sessionManager.lastCommand, sessionManager.groupState, sessionManager.groupStateAt, combine(latency.state, clockSync.state) { l, cs -> l to cs }) { s, c, g, t, lc -> SessionSide(s, c, g, t, lc.first, lc.second) }) { report, probe, tokens, side, sess ->
         DiagnosticsUiState(
             report = report,
             probe = probe,
             pairedVehicleIdMasked = (tokens as? TokenStoreState.Present)?.let { TextMasking.maskVehicleId(it.credentials.vehicleId) },
+            pairedMqttUri = (tokens as? TokenStoreState.Present)?.credentials?.mqttUri,
             mqtt = side.mqtt,
             groupSession = sess.session,
             lastCommand = sess.lastCommand,
@@ -168,7 +216,19 @@ class DiagnosticsViewModel @Inject constructor(
             latency = sess.latency,
             clockSync = sess.clock,
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DiagnosticsUiState(report = reporter.report.value, probe = sdkProbe.report.value))
+    }.combine(serverConfig.current) { ui, server -> ui.withServer(server) }
+        .stateIn(
+            viewModelScope, SharingStarted.WhileSubscribed(5_000),
+            DiagnosticsUiState(
+                report = reporter.report.value, probe = sdkProbe.report.value,
+                pairedMqttUri = (tokenStore.state.value as? TokenStoreState.Present)?.credentials?.mqttUri,
+            ).withServer(serverConfig.current.value),
+        )
+
+    private fun DiagnosticsUiState.withServer(server: ServerAddresses) = copy(
+        publicBaseUrl = server.publicBaseUrl, baseUrlOverridden = server.baseUrlOverridden,
+        mqttAddress = MqttAddressDisplay.of(server, pairedMqttUri),
+    )
 
     /** 내비 요청 → 결과는 [DiagnosticsUiState.naviActionResult] 와 내비 카드의 콜백 수로 확인한다 */
     fun onNaviAction(action: NaviDebugAction) {

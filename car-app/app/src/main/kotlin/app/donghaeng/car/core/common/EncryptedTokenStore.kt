@@ -17,39 +17,121 @@ import kotlinx.coroutines.withContext
  * 기기 저장소 구현 — `androidx.security:security-crypto:1.0.0` EncryptedSharedPreferences(값 AES256_GCM, 키 AES256_SIV),
  * 마스터 키는 Android Keystore 의 AES256_GCM(`MasterKeys.AES256_GCM_SPEC`). 파일명 `dh_tokens`.
  *
- * Keystore 가 깨진 기기(드물게 에뮬레이터 이미지 재생성 후)에서는 생성이 예외를 던진다 → 크래시 대신
- * **메모리 전용**으로 내려가고 경고 로그만 남긴다(다음 실행에서 다시 페어링하면 된다).
+ * T33 오류 처리 (docs/10 R13):
+ * - **생성·읽기 예외**(Keystore 손상, `SecurityException`("Could not decrypt value"), `GeneralSecurityException`, `IOException` 등)는
+ *   [TokenStoreState.Unavailable] 로 알린다 — 미페어링(Empty)과 구분해 그룹 세션을 지우지 않는다. 생성 실패를 프로세스 동안 고정하지 않고
+ *   다음 [load]/[save] 에서 다시 만든다(예전에는 첫 실패 뒤 메모리 전용으로 고정돼 저장이 조용히 사라졌다).
+ * - **쓰기 실패**는 이번 프로세스 동안만 메모리에 두고(Present 유지 — 지금 받은 토큰으로 계속 동작) E 로그와 진단 기록을 남긴다.
+ * - [clear] 는 사유·시각·마스킹 vehicleId 를 일반 SharedPreferences `dh_diag` 에 남긴다([DiagPrefs]). 암호화 파일을 고칠 수 없으면 파일째 지운다.
  */
 class EncryptedTokenStore(
     context: Context,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : TokenStore {
 
     private val appContext = context.applicationContext
+    private val diag = DiagPrefs(appContext)
     private val mutex = Mutex()
     private var prefs: SharedPreferences? = null
-    private var prefsResolved = false
+
+    /** 디스크 쓰기에 실패한 자격 증명 — 이번 프로세스 동안만 */
     private var memoryOnly: StoredCredentials? = null
     private var loaded = false
+    private var diagLoaded = false
 
     private val _state = MutableStateFlow<TokenStoreState>(TokenStoreState.Loading)
     override val state: StateFlow<TokenStoreState> = _state.asStateFlow()
 
+    private val _lastClear = MutableStateFlow<ClearRecord?>(null)
+    override val lastClear: StateFlow<ClearRecord?> = _lastClear.asStateFlow()
+
     override suspend fun load(): StoredCredentials? = mutex.withLock {
+        if (!diagLoaded) {
+            _lastClear.value = withContext(io) { diag.lastTokenClear() }
+            diagLoaded = true
+        }
         if (loaded) return currentUnlocked()
-        val creds = withContext(io) { readFromDisk() }
-        loaded = true
-        publish(creds)
-        creds
+        when (val read = withContext(io) { readFromDisk() }) {
+            is Read.Ok -> {
+                loaded = true
+                publish(read.credentials)
+                read.credentials
+            }
+            is Read.Failed -> {
+                // loaded 는 false 로 둔다 → 다음 load() 가 다시 읽는다
+                _state.value = TokenStoreState.Unavailable(read.reason)
+                withContext(io) { diag.recordStoreError(ClearRecord("read:${read.reason}", clock(), null)) }
+                DhLog.e("token store: unavailable reason=${read.reason} — 그룹 세션은 유지하고 다시 시도한다")
+                null
+            }
+        }
     }
 
     override suspend fun save(credentials: StoredCredentials) = mutex.withLock {
+        persistUnlocked(credentials)
+        loaded = true
+        publish(credentials)
+        DhLog.i("token store: saved vehicleId=${credentials.vehicleId} token=${TextMasking.maskToken(credentials.vehicleAccessToken)}")
+    }
+
+    override suspend fun updateTokens(expectedRefreshToken: String, accessToken: String, refreshToken: String): StoredCredentials? = mutex.withLock {
+        val current = currentUnlocked() ?: return null
+        if (current.refreshToken != expectedRefreshToken) return null
+        val updated = current.copy(vehicleAccessToken = accessToken, refreshToken = refreshToken)
+        persistUnlocked(updated)
+        publish(updated)
+        DhLog.i("token store: tokens rotated vehicleId=${updated.vehicleId} token=${TextMasking.maskToken(accessToken)}")
+        updated
+    }
+
+    override suspend fun clear(reason: TokenClearReason) = mutex.withLock { clearUnlocked(reason) }
+
+    override suspend fun clearIf(expectedRefreshToken: String, reason: TokenClearReason): Boolean = mutex.withLock {
+        val current = currentUnlocked() ?: return false
+        if (current.refreshToken != expectedRefreshToken) {
+            DhLog.i("token store: clear($reason) skipped — credentials changed meanwhile vehicleId=${TextMasking.maskVehicleId(current.vehicleId)}")
+            return false
+        }
+        clearUnlocked(reason)
+        true
+    }
+
+    private suspend fun clearUnlocked(reason: TokenClearReason) {
+        val vehicleId = currentUnlocked()?.vehicleId ?: memoryOnly?.vehicleId
+        val record = ClearRecord(reason.name, clock(), vehicleId?.let(TextMasking::maskVehicleId))
         withContext(io) {
-            val p = resolvePrefs()
-            if (p == null) {
-                memoryOnly = credentials
+            memoryOnly = null
+            val cleared = if (reason == TokenClearReason.STORE_RESET) {
+                false
             } else {
-                p.edit()
+                runCatching { resolvePrefs().edit().clear().commit() }.getOrDefault(false)
+            }
+            if (!cleared) {
+                // 저장소 초기화 또는 암호화 파일을 열 수 없음 → 파일째 지운다(키셋 포함, 다음 생성 때 새로 만든다)
+                prefs = null
+                val deleted = runCatching { appContext.deleteSharedPreferences(FILE_NAME) }.getOrDefault(false)
+                DhLog.w("token store: ${FILE_NAME} 파일 삭제 deleted=$deleted reason=$reason")
+            }
+            diag.recordTokenClear(record)
+        }
+        loaded = true
+        publish(null)
+        _lastClear.value = record
+        DhLog.i("token store: cleared reason=$reason vehicleId=${record.idMasked ?: "-"}")
+    }
+
+    private fun currentUnlocked(): StoredCredentials? = (_state.value as? TokenStoreState.Present)?.credentials
+
+    private fun publish(credentials: StoredCredentials?) {
+        _state.value = if (credentials == null) TokenStoreState.Empty else TokenStoreState.Present(credentials)
+    }
+
+    /** 한 번의 commit 으로 전부 쓴다(회전된 토큰 쌍이 반쯤 저장되는 일이 없게). 실패하면 메모리에만 둔다 */
+    private suspend fun persistUnlocked(credentials: StoredCredentials) {
+        val failure = withContext(io) {
+            try {
+                val ok = resolvePrefs().edit()
                     .putString(KEY_ACCESS, credentials.vehicleAccessToken)
                     .putString(KEY_REFRESH, credentials.refreshToken)
                     .putString(KEY_VEHICLE_ID, credentials.vehicleId)
@@ -59,64 +141,65 @@ class EncryptedTokenStore(
                     .putString(KEY_MQTT_CLIENT_ID, credentials.mqttClientId)
                     .putString(KEY_MQTT_USERNAME, credentials.mqttUsername)
                     .commit()
+                if (ok) null else "commit=false"
+            } catch (e: Exception) {
+                prefs = null
+                describe(e)
             }
         }
-        loaded = true
-        publish(credentials)
-        DhLog.i("token store: saved vehicleId=${credentials.vehicleId} token=${TextMasking.maskToken(credentials.vehicleAccessToken)}")
-    }
-
-    override suspend fun clear() = mutex.withLock {
-        withContext(io) {
+        if (failure == null) {
             memoryOnly = null
-            resolvePrefs()?.edit()?.clear()?.commit()
+        } else {
+            memoryOnly = credentials
+            withContext(io) { diag.recordStoreError(ClearRecord("write:$failure", clock(), TextMasking.maskVehicleId(credentials.vehicleId))) }
+            DhLog.e("token store: save failed reason=$failure — 이번 실행 동안만 메모리에 둔다(재시작하면 다시 연결해야 할 수 있다)")
         }
-        loaded = true
-        publish(null)
-        DhLog.i("token store: cleared")
     }
 
-    private fun currentUnlocked(): StoredCredentials? = (_state.value as? TokenStoreState.Present)?.credentials
-
-    private fun publish(credentials: StoredCredentials?) {
-        _state.value = if (credentials == null) TokenStoreState.Empty else TokenStoreState.Present(credentials)
+    private sealed interface Read {
+        data class Ok(val credentials: StoredCredentials?) : Read
+        data class Failed(val reason: String) : Read
     }
 
-    private fun readFromDisk(): StoredCredentials? {
-        val p = resolvePrefs() ?: return memoryOnly
-        val access = p.getString(KEY_ACCESS, null) ?: return null
-        val vehicleId = p.getString(KEY_VEHICLE_ID, null) ?: return null
-        return StoredCredentials(
-            vehicleAccessToken = access,
-            refreshToken = p.getString(KEY_REFRESH, "") ?: "",
-            vehicleId = vehicleId,
-            nickname = p.getString(KEY_NICKNAME, "") ?: "",
-            ownerId = p.getString(KEY_OWNER_ID, "") ?: "",
-            mqttUri = p.getString(KEY_MQTT_URI, "") ?: "",
-            mqttClientId = p.getString(KEY_MQTT_CLIENT_ID, "") ?: "",
-            mqttUsername = p.getString(KEY_MQTT_USERNAME, "") ?: "",
-        )
-    }
-
-    /** 첫 호출에서만 생성한다(MasterKey 생성은 수백 ms). 실패하면 null → 메모리 전용. */
-    private fun resolvePrefs(): SharedPreferences? {
-        if (prefsResolved) return prefs
-        prefsResolved = true
-        prefs = try {
-            // security-crypto 1.0.0: MasterKeys.getOrCreate(AES256_GCM_SPEC) → Keystore 별칭 문자열 (MasterKey.Builder 는 1.1.x)
-            val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
-            EncryptedSharedPreferences.create(
-                FILE_NAME,
-                masterKeyAlias,
-                appContext,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+    private fun readFromDisk(): Read {
+        memoryOnly?.let { return Read.Ok(it) }
+        return try {
+            val p = resolvePrefs()
+            val access = p.getString(KEY_ACCESS, null) ?: return Read.Ok(null)
+            val vehicleId = p.getString(KEY_VEHICLE_ID, null) ?: return Read.Ok(null)
+            Read.Ok(
+                StoredCredentials(
+                    vehicleAccessToken = access,
+                    refreshToken = p.getString(KEY_REFRESH, "") ?: "",
+                    vehicleId = vehicleId,
+                    nickname = p.getString(KEY_NICKNAME, "") ?: "",
+                    ownerId = p.getString(KEY_OWNER_ID, "") ?: "",
+                    mqttUri = p.getString(KEY_MQTT_URI, "") ?: "",
+                    mqttClientId = p.getString(KEY_MQTT_CLIENT_ID, "") ?: "",
+                    mqttUsername = p.getString(KEY_MQTT_USERNAME, "") ?: "",
+                ),
             )
         } catch (e: Exception) {
-            DhLog.e("EncryptedSharedPreferences 생성 실패 — 이번 실행은 토큰을 메모리에만 둔다", e)
-            null
+            // security-crypto 1.0.0: 값 복호화 실패는 SecurityException, 키셋·Keystore 문제는 GeneralSecurityException/IOException/ProviderException
+            prefs = null
+            Read.Failed(describe(e))
         }
-        return prefs
+    }
+
+    /** 만들어 둔 게 있으면 그대로, 없으면 새로 만든다(MasterKey 생성은 수백 ms). 실패하면 예외 — 다음 호출에서 다시 시도한다 */
+    private fun resolvePrefs(): SharedPreferences {
+        prefs?.let { return it }
+        // security-crypto 1.0.0: MasterKeys.getOrCreate(AES256_GCM_SPEC) → Keystore 별칭 문자열 (MasterKey.Builder 는 1.1.x)
+        val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
+        val created = EncryptedSharedPreferences.create(
+            FILE_NAME,
+            masterKeyAlias,
+            appContext,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+        )
+        prefs = created
+        return created
     }
 
     private companion object {
@@ -129,5 +212,9 @@ class EncryptedTokenStore(
         const val KEY_MQTT_URI = "mqtt_uri"
         const val KEY_MQTT_CLIENT_ID = "mqtt_client_id"
         const val KEY_MQTT_USERNAME = "mqtt_username"
+
+        /** 예외 사슬의 클래스 이름만(메시지에는 경로·키 별칭이 섞일 수 있다). 예: `SecurityException<AEADBadTagException` */
+        fun describe(e: Throwable): String =
+            generateSequence(e) { it.cause?.takeIf { c -> c !== it } }.take(3).joinToString("<") { it.javaClass.simpleName }
     }
 }

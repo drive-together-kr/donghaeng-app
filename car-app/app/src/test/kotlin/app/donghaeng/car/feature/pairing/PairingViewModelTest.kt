@@ -14,7 +14,15 @@ import app.donghaeng.protocol.rest.DeviceTokenRequest
 import app.donghaeng.protocol.rest.DeviceTokenResponse
 import app.donghaeng.protocol.rest.ErrorCodes
 import app.donghaeng.protocol.rest.MqttInfo
+import app.donghaeng.protocol.rest.RefreshRequest
+import app.donghaeng.protocol.rest.TokenResponse
 import app.donghaeng.protocol.rest.VehicleSummary
+import app.donghaeng.car.core.common.DrivingStateMonitor
+import app.donghaeng.car.core.common.DrivingStatus
+import app.donghaeng.car.core.common.TokenClearReason
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
@@ -74,6 +82,8 @@ class PairingViewModelTest {
             tokenCallTimes += dispatcher.scheduler.currentTime
             return (tokenResponses.removeFirstOrNull() ?: error("device/token 스크립트 소진 (call=${tokenCallTimes.size})"))()
         }
+
+        override suspend fun refresh(body: RefreshRequest): Response<TokenResponse> = error("페어링 화면은 refresh 를 부르지 않는다")
     }
 
     private fun envelope(code: String) = """{"error":{"code":"$code","message":"m","traceId":"t"}}""".toResponseBody(json)
@@ -271,5 +281,52 @@ class PairingViewModelTest {
         runCurrent()
         assertEquals(TokenStoreState.Empty, store.state.value)
         assertTrue("새 코드 발급 상태여야 한다: ${vm.state.value}", vm.state.value is PairingState.CodeIssued)
+        assertEquals("사유가 남는다(T33)", listOf(TokenClearReason.USER_REPAIR), store.clearReasons)
+    }
+
+    private class FixedDriving(driving: Boolean) : DrivingStateMonitor {
+        private val flow = MutableStateFlow(driving)
+        override fun isDriving(): Flow<Boolean> = flow
+        override val status: StateFlow<DrivingStatus> = MutableStateFlow(DrivingStatus(source = "test"))
+    }
+
+    @Test
+    fun `T33 주행 중에는 disconnectAndRepair 를 무시한다`() = runTest(dispatcher) {
+        val creds = StoredCredentials("tok", "ref", "veh_SAVED01", "저장차", "usr_1", "tcp://h:1883", "veh_SAVED01", "veh_SAVED01")
+        val store = InMemoryTokenStore(creds)
+        val api = ScriptedIdentityApi()
+        val vm = PairingViewModel(
+            repository = PairingRepository(api, store, FakeVehicleAdapter(), VehicleIdFallback { "DHAVD-TESTFALLBACK" }),
+            clock = { testScheduler.currentTime },
+            autoStart = true,
+            driving = FixedDriving(true),
+        )
+        val collector = launch { vm.isDriving.collect {} }
+        advanceUntilIdle()
+        assertTrue(vm.isDriving.value)
+        vm.disconnectAndRepair()
+        runCurrent()
+        assertTrue(store.state.value is TokenStoreState.Present)
+        assertTrue(store.clearReasons.isEmpty())
+        assertEquals(0, api.codeCalls)
+        collector.cancel()
+    }
+
+    @Test
+    fun `T33 저장소를 읽지 못하면 새 코드를 받지 않고 STORAGE_UNAVAILABLE, 다시 시도로 회복`() = runTest(dispatcher) {
+        val creds = StoredCredentials("tok", "ref", "veh_SAVED01", "저장차", "usr_1", "tcp://h:1883", "veh_SAVED01", "veh_SAVED01")
+        val store = InMemoryTokenStore(creds).apply { unavailableReason = "SecurityException" }
+        val api = ScriptedIdentityApi()
+        val vm = createViewModel(api, store)
+        advanceUntilIdle()
+        val error = vm.state.value as PairingState.Error
+        assertEquals(PairingErrorReason.STORAGE_UNAVAILABLE, error.reason)
+        assertEquals(0, api.codeCalls)
+
+        store.unavailableReason = null
+        vm.retry()
+        advanceUntilIdle()
+        assertTrue("저장소가 살아나면 저장된 연결로: ${vm.state.value}", vm.state.value is PairingState.Connected)
+        assertEquals(0, api.codeCalls)
     }
 }

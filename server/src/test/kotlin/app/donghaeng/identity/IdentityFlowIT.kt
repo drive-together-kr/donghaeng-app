@@ -218,15 +218,30 @@ class IdentityFlowIT {
         call(HttpMethod.POST, ApiPaths.AUTH_EXCHANGE, json.encodeToString(ExchangeRequest("bluelink", "oem-token"))).assertError(501, ErrorCodes.PROVIDER_NOT_SUPPORTED)
         call(HttpMethod.POST, ApiPaths.AUTH_EXCHANGE, json.encodeToString(ExchangeRequest("genesis_connected", "oem-token"))).assertError(501, ErrorCodes.PROVIDER_NOT_SUPPORTED)
 
-        // 9) refresh 회전: 새 쌍, 이전 refresh 재사용 401, 새 refresh 는 또 회전 가능
-        val rotatedRes = call(HttpMethod.POST, ApiPaths.AUTH_REFRESH, json.encodeToString(RefreshRequest(tokens.refreshToken)))
+        // 9) refresh 회전: 새 쌍, 새 refresh 는 또 회전 가능. 이전 refresh 재사용은 다음 토큰을 이미 썼으면 401
+        fun refresh(raw: String) = call(HttpMethod.POST, ApiPaths.AUTH_REFRESH, json.encodeToString(RefreshRequest(raw)))
+        val rotatedRes = refresh(tokens.refreshToken)
         assertEquals(200, rotatedRes.statusCode.value(), rotatedRes.body)
         val rotated: TokenResponse = rotatedRes.decode()
         assertEquals(tokens.user.userId, rotated.user.userId)
         assertNotEquals(tokens.refreshToken, rotated.refreshToken)
-        call(HttpMethod.POST, ApiPaths.AUTH_REFRESH, json.encodeToString(RefreshRequest(tokens.refreshToken))).assertError(401, ErrorCodes.INVALID_TOKEN)
-        val rotatedAgain = call(HttpMethod.POST, ApiPaths.AUTH_REFRESH, json.encodeToString(RefreshRequest(rotated.refreshToken)))
+        val rotatedAgain = refresh(rotated.refreshToken)
         assertEquals(200, rotatedAgain.statusCode.value(), rotatedAgain.body)
+        refresh(tokens.refreshToken).assertError(401, ErrorCodes.INVALID_TOKEN)
+        // 9-1) 재사용 유예(T33 리뷰, docs/03 §1.1): 회전 응답을 잃은 클라이언트가 60 s 안에 같은 refresh 를 다시 보내면 — 다음 토큰이 아직 안 쓰였으니 — 다시 회전,
+        //      잃어버린 응답의 토큰은 폐기된다(살아 있는 토큰은 하나)
+        val lost: TokenResponse = rotatedAgain.decode()
+        val retried = refresh(rotated.refreshToken)
+        assertEquals(200, retried.statusCode.value(), retried.body)
+        val recovered: TokenResponse = retried.decode()
+        assertNotEquals(lost.refreshToken, recovered.refreshToken)
+        refresh(lost.refreshToken).assertError(401, ErrorCodes.INVALID_TOKEN)
+        // 9-2) 유예가 지난 재사용은 401 — 회전 시각을 2분 전으로 돌려 확인. 다음 토큰은 그대로 쓸 수 있다
+        val next = refresh(recovered.refreshToken)
+        assertEquals(200, next.statusCode.value(), next.body)
+        jdbc.update("UPDATE refresh_token SET revoked_at = revoked_at - interval '2 minutes' WHERE token_hash = ?", RefreshTokenService.hash(recovered.refreshToken))
+        refresh(recovered.refreshToken).assertError(401, ErrorCodes.INVALID_TOKEN)
+        assertEquals(200, refresh(next.decode<TokenResponse>().refreshToken).statusCode.value())
         // 차량 refresh: accessToken 은 차량 토큰, user 는 소유자
         val vehicleRefreshRes = call(HttpMethod.POST, ApiPaths.AUTH_REFRESH, json.encodeToString(RefreshRequest(device.refreshToken)))
         assertEquals(200, vehicleRefreshRes.statusCode.value(), vehicleRefreshRes.body)
@@ -247,6 +262,8 @@ class IdentityFlowIT {
         assertEquals(204, deleted.statusCode.value(), deleted.body)
         assertEquals(emptyList<MyVehicleDto>(), call(HttpMethod.GET, ApiPaths.ME_VEHICLES, bearer = tokens.accessToken).decode<List<MyVehicleDto>>())
         call(HttpMethod.POST, ApiPaths.AUTH_REFRESH, json.encodeToString(RefreshRequest(vehicleRefresh.refreshToken))).assertError(401, ErrorCodes.INVALID_TOKEN)
+        // 해제로 폐기된 다음 토큰은 유예 대상이 아니다 — 방금 회전된 페어링 refresh 를 다시 보내도 401
+        call(HttpMethod.POST, ApiPaths.AUTH_REFRESH, json.encodeToString(RefreshRequest(device.refreshToken))).assertError(401, ErrorCodes.INVALID_TOKEN)
         call(HttpMethod.DELETE, ApiPaths.meVehicle(summary.vehicleId), bearer = tokens.accessToken).assertError(404, ErrorCodes.NOT_FOUND)
     }
 

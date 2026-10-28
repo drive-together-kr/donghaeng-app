@@ -13,24 +13,41 @@ enum class MqttState { DISCONNECTED, CONNECTING, CONNECTED, RECONNECTING }
 /**
  * 게이트웨이 상태 스냅샷. 토큰·좌표는 들어 있지 않다(그대로 화면·로그에 써도 된다).
  *
- * @param brokerUri    실제 접속 URI(서버가 준 `mqtt.uri`)
- * @param tls          ssl:// 로 접속 중인가
+ * @param brokerUri    실제 접속 대상(서버가 준 `mqtt.uri` 또는 숨은 메뉴 MQTT 주소를 해석한 것 — WSS 로 바꾸면 `wss://…/mqtt`)
+ * @param tls          TLS(ssl:// · wss://)로 접속 중인가
+ * @param transport    지금 전송(tcp/tls/ws/wss, T32)
+ * @param transportFallbacks 이번 접속에서 전송을 바꾼 횟수(ssl 8883 → wss 443 폴백, T32)
  * @param lastError    마지막 연결 실패·거부 사유(사람이 읽는 한 줄). 연결되면 null
  * @param connectedAtMs 마지막으로 CONNECTED 가 된 시각(epoch ms)
  * @param reconnects   끊겼다가 다시 붙은 횟수
  * @param subscribed   현재 구독 중인 토픽
+ * @param authFailures 브로커가 CONNACK 에서 인증을 거부한 횟수(NOT_AUTHORIZED / BAD_USER_NAME_OR_PASSWORD, T33)
+ * @param lastAuthFailureAtMs 마지막 인증 거부 시각
+ * @param notConnectedSinceMs 연결 시도를 시작했거나 끊긴 뒤(또는 [MqttUriPolicy] 가 접속을 거부한 뒤) 아직 못 붙은 시작 시각. 연결돼 있거나 앱이 끊었으면 null (홈 '서버 연결 끊김' 배너, T33)
  */
 data class MqttStatus(
     val state: MqttState = MqttState.DISCONNECTED,
     val brokerUri: String? = null,
     val tls: Boolean = false,
+    val transport: MqttTransport = MqttTransport.TCP,
+    val transportFallbacks: Int = 0,
     val lastError: String? = null,
     val connectedAtMs: Long? = null,
     val reconnects: Int = 0,
     val inboundCount: Long = 0,
     val outboundCount: Long = 0,
     val subscribed: Set<String> = emptySet(),
+    val authFailures: Int = 0,
+    val lastAuthFailureAtMs: Long? = null,
+    val notConnectedSinceMs: Long? = null,
 )
+
+/**
+ * 브로커의 인증 거부 한 건 (T33). [accessToken] 은 거부된 토큰 — `TokenRefresher` 의 single-flight 비교에만 쓰고 로그에는 마스킹해서만 남긴다.
+ */
+data class MqttAuthFailure(val reasonCode: String, val atMs: Long, val accessToken: String) {
+    override fun toString(): String = "MqttAuthFailure(reason=$reasonCode, atMs=$atMs, token=${app.donghaeng.car.core.common.TextMasking.maskToken(accessToken)})"
+}
 
 /** 수신 메시지 — 헤더만 해석된 봉투(`data` 는 원본 JSON). 종류별 본문은 `DhJson.decodeData` 로 마저 해석한다 */
 data class InboundMessage(
@@ -53,7 +70,15 @@ interface MqttGateway {
     /** 구독 중인 토픽으로 들어온 모든 메시지(봉투 해석 실패분은 버리고 로그만) */
     val inbound: SharedFlow<InboundMessage>
 
-    /** 자격 증명으로 (재)접속한다. 이미 같은 차량으로 접속 중이면 아무것도 하지 않는다. 토큰이 바뀌면 끊고 다시 붙는다 */
+    /**
+     * 브로커가 인증을 거부했다(T33). 게이트웨이는 다음 재연결을 잠시 미루고 기다린다 — 그 사이 새 토큰으로 [connect] 가 오면 그 토큰으로 바로 다시 붙는다.
+     */
+    val authFailures: SharedFlow<MqttAuthFailure>
+
+    /**
+     * 자격 증명으로 (재)접속한다. 이미 같은 차량으로 접속 중이면 아무것도 하지 않는다.
+     * 같은 차량에 토큰만 바뀌면(갱신) 연결은 유지하고 다음 재연결부터 새 토큰을 쓴다 — 인증 거부로 재연결을 기다리는 중이면 즉시 새 토큰으로 붙는다.
+     */
     suspend fun connect(credentials: StoredCredentials)
 
     suspend fun disconnect()

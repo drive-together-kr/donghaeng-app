@@ -45,7 +45,10 @@ class MyVehicleService(
         return vehicles.findById(vehicleId)!!.toMyVehicleDto()
     }
 
-    /** 페어링 해제: `revoked_at` 기록 + 차량 refresh 토큰 폐기. 이미 발급된 차량 access token 은 만료(24h)까지 유효하다. */
+    /**
+     * 페어링 해제: `revoked_at` 기록 + 차량 refresh 토큰 폐기. 이미 발급된 차량 access token 은 만료(24h)까지 서명상 유효하므로
+     * group 모듈이 [VehicleUnpaired] 를 받아 커밋 뒤 차량에 cmd `TOKEN_REVOKED` 를 보낸다(T33) — 차량 앱이 스스로 자격 증명을 지운다.
+     */
     @Transactional
     fun revoke(userId: String, vehicleId: String) {
         val updated = vehicles.revoke(vehicleId, userId, clock.instant())

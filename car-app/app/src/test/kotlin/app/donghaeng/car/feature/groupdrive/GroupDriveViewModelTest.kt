@@ -11,6 +11,7 @@ import app.donghaeng.car.domain.model.Fix
 import app.donghaeng.car.domain.session.GroupSession
 import app.donghaeng.car.domain.session.InMemoryGroupSessionStore
 import app.donghaeng.car.domain.session.MqttSessionManager
+import app.donghaeng.car.testing.testRefresher
 import app.donghaeng.protocol.Energy
 import app.donghaeng.protocol.Eta
 import app.donghaeng.protocol.GroupEvent
@@ -88,7 +89,7 @@ class GroupDriveViewModelTest {
         tokens = InMemoryTokenStore(creds)
         sessions = InMemoryGroupSessionStore(session)
         gateway = InMemoryMqttGateway()
-        manager = MqttSessionManager(tokens, gateway, sessions)
+        manager = MqttSessionManager(tokens, gateway, sessions, testRefresher(tokens))
         manager.start(dispatcher)
         fixes = FakeFixes()
     }

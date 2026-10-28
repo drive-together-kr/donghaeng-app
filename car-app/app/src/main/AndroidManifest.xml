@@ -51,12 +51,12 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.DongHaeng"
-        android:usesCleartextTraffic="${usesCleartext}"
+        android:networkSecurityConfig="${networkSecurityConfig}"
         tools:targetApi="35">
-        <!-- usesCleartextTraffic: app/build.gradle.kts 의 placeholder — dhPublicBaseUrl 이 http:// 일 때(로컬 개발, 10.0.2.2 / LAN PC)만
-             평문 허용; 클라우드(https) 빌드에서는 false 로 들어가 잘못된 http 주소(오타 -P 값, 서버가 준 verifyUri/invite.url, 리다이렉트)가
-             평문으로 나가지 않게 막는다. 이 속성은 APK 전체에 적용되며 HiveMQ(tcp://) 소켓에는 적용되지 않으므로
-             MqttGateway(T16)는 DH_PUBLIC_BASE_URL 이 https 일 때 ssl:// 만 허용한다.
+        <!-- networkSecurityConfig: app/build.gradle.kts 의 placeholder (T32) — 빌드 기본 서버 주소가 http:// 면(로컬 개발, 10.0.2.2 / LAN PC)
+             network_security_config_open(평문 전부 허용), https:// 면(클라우드) network_security_config_cloud(평문은 10.0.2.2·localhost·127.0.0.1 만 —
+             숨은 메뉴로 현장 로컬 서버에 붙는 폴백, docs/10 R9). 잘못된 http 주소(오타, 서버가 준 verifyUri/invite.url, 리다이렉트)가
+             평문으로 나가지 않게 막는다. 이 설정은 HiveMQ(Netty) 소켓에는 적용되지 않으므로 MqttGateway 는 서버 주소가 https 면 ssl:// · wss:// 만 허용한다.
              T29: MainActivity 에 distractionOptimized=true 를 선언한다 — 없으면 AAOS 가 속도 > 0 에서 앱 화면을 "주행 중에는 사용할 수 없습니다" 로 가린다
              (Pleos AVD 실측, docs/10 R11). 대신 앱이 스스로 CarUxRestrictionsManager(isRequiresDistractionOptimization) 를 보고 입력을 막는다(docs/05 §4). -->
 

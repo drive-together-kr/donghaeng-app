@@ -115,7 +115,7 @@ QR 은 서버가 `{DH_PUBLIC_BASE_URL}` + 경로로 만든다. 모듈은 **호�
 - 서버 주소는 `BuildConfig.DH_PUBLIC_BASE_URL` — Gradle 속성 `dhPublicBaseUrl`(기본 `http://10.0.2.2:8080`). 클라우드: `-PdhPublicBaseUrl=https://<VM-IP>.sslip.io`
 - dev 로그인 접속 키는 `BuildConfig.DH_DEV_LOGIN_KEY` — Gradle 속성 `dhDevLoginKey`(기본 빈 값 = 헤더 안 보냄, 로컬 서버). 클라우드 서버는 필수: `-PdhDevLoginKey=<VM .env 의 DH_DEV_LOGIN_KEY>`
   (또는 `~/.gradle/gradle.properties`). 저장소의 `gradle.properties` 에 적지 않는다. 키 없이 클라우드에 로그인하면 403 과 함께 다시 빌드하라는 안내가 뜬다(`infra/cloud/README.md` §3)
-- 평문 HTTP: `android:usesCleartextTraffic="${usesCleartext}"` — `dhPublicBaseUrl` 이 `http://` 일 때만 true (car-app 과 같은 규칙)
+- 평문 HTTP: `android:usesCleartextTraffic="${usesCleartext}"` — `dhPublicBaseUrl` 이 `http://` 일 때만 true (car-app 은 T32 부터 같은 취지를 network_security_config 로 — https 기본 빌드에서도 10.0.2.2·localhost 평문만 허용, docs/05 §7)
 - 초대 미리보기: QR 의 URL(`{base}/j/{token}`) 자체를 `Accept: application/json` 으로 읽는다(인증 없음, docs/03 §2.2). 모듈 공개 API 는 그대로 6개
 - 권한: `CAMERA`(스캔 진입 시), `POST_NOTIFICATIONS`(API 33+, 알림 화면 진입 시). 에뮬레이터: `adb shell pm grant app.donghaeng.companion.demo android.permission.CAMERA`
 - 카메라 없는 에뮬레이터: 스캔 화면 톱니(디버그) → "QR 문자열 붙여넣기" 에 차 화면 QR 문자열(초대 `url` / `verifyUri`)을 그대로. 시연 모드에서는 "그룹 QR 예시" 버튼으로 가짜 그룹에 합류한다

@@ -65,15 +65,28 @@ class DongHaengApp : Application() {
     @Inject
     lateinit var latencyMeter: app.donghaeng.car.domain.latency.LatencyMeter
     @Inject lateinit var driveSurfaceController: app.donghaeng.car.surface.DriveSurfaceController
+    @Inject
+    lateinit var tokenRefresher: app.donghaeng.car.domain.pairing.TokenRefresher
+    @Inject
+    lateinit var healthLogger: app.donghaeng.car.domain.health.HealthLogger
+    @Inject
+    lateinit var serverConfig: app.donghaeng.car.core.network.ServerConfig
 
     override fun onCreate() {
+        // T33: I/W/E 로그를 files/dh_log.txt 에도 남긴다(logcat 회전과 무관하게 사후 추적) — Hilt 주입(super.onCreate) 전에 붙여 시작 로그부터 담는다
+        DhLog.attach(filesDir)
         super.onCreate()
         // android.util.Log 는 DhLog 에서만 직접 호출한다(규칙 8 마스킹 단일 창구)
         DhLog.i("car app started flavor=${BuildConfig.FLAVOR} base=${BuildConfig.DH_PUBLIC_BASE_URL} mqtt=${BuildConfig.DH_MQTT_PUBLIC_URI}")
+        // T32: 숨은 메뉴로 바꾼 주소가 있으면 실제로 쓰는 값을 함께 남긴다
+        serverConfig.current.value.takeIf { it.anyOverride }?.let { s ->
+            DhLog.i("server override active base=${s.publicBaseUrl} mqtt=${s.mqttUriOverride ?: "server-provided"}")
+        }
         DhLog.i("version=${BuildConfig.VERSION_NAME}(${BuildConfig.VERSION_CODE}) adapter=${BuildConfig.ADAPTER} debug=${BuildConfig.DEBUG}")
         sdkProbe.runOnce()
         capabilityReporter.runOnce()
         mqttSessionManager.start()
+        tokenRefresher.start()            // T33: 차량 토큰 선제 갱신(만료 2시간 전, 30분 점검)
         naviEventMonitor.start()
         locationFeed.start()
         vehicleSignals.start()
@@ -85,5 +98,6 @@ class DongHaengApp : Application() {
         clockSync.start()                 // T31: 서버 시각 동기화(5분)
         latencyMeter.start()              // T31: 그룹 EVENT/STATE 지연 측정
         driveSurfaceController.start()    // 주행 중 표면: 플로팅 패널·알림 카드(docs/05 §5.2)
+        healthLogger.start()              // T33: 30초마다 `health …` 한 줄(soak.py 가 읽는다)
     }
 }

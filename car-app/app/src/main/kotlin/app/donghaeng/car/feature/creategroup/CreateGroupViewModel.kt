@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.donghaeng.car.adapter.navi.NaviAdapter
 import app.donghaeng.car.core.common.DhLog
+import app.donghaeng.car.core.common.TokenClearReason
 import app.donghaeng.car.core.common.TokenStore
 import app.donghaeng.car.core.common.TokenStoreState
 import app.donghaeng.car.core.network.ApiResult
@@ -239,10 +240,18 @@ class CreateGroupViewModel @Inject constructor(
     }
 
     private fun failureText(failure: ApiResult.Failure): String = when (failure) {
+        // T33: Authenticator 가 갱신·재시도까지 했는데 401. 갱신이 거부돼 자격 증명이 지워졌을 때만 재페어링 안내 —
+        // 갱신이 네트워크·5xx 로 실패했거나 백오프(Throttled) 중이면 자격 증명은 남아 있으니 잠시 뒤 다시 시도하면 된다
+        is ApiResult.HttpFailure.Unauthorized ->
+            if (credentialsRevoked()) "차량 연결이 만료됐어요. 폰에서 다시 연결해 주세요" else "연결을 확인하고 잠시 후 다시 시도해 주세요"
         is ApiResult.HttpFailure -> failure.error?.message ?: "요청에 실패했어요 (HTTP ${failure.status})"
         is ApiResult.NetworkFailure -> "서버에 연결할 수 없어요"
         is ApiResult.UnexpectedFailure -> "예상치 못한 오류가 났어요 (${failure.cause.javaClass.simpleName})"
     }
+
+    /** 서버가 끊어 자격 증명이 지워졌다(refresh 거부·TOKEN_REVOKED) */
+    private fun credentialsRevoked(): Boolean =
+        tokenStore.state.value == TokenStoreState.Empty && TokenClearReason.fromName(tokenStore.lastClear.value?.reason)?.needsRepairFromPhone == true
 
     override fun onCleared() {
         pollJob?.cancel()

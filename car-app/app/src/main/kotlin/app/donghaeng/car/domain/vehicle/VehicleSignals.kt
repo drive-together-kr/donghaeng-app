@@ -96,7 +96,8 @@ class VehicleSignals(
                 flow.collect { value ->
                     if (value != last) {
                         last = value
-                        DhLog.i("vehicle signal $name=$value")
+                        // 속도처럼 초당 여러 번 바뀌는 값 — logcat 에만(T33 링 버퍼·파일을 밀어내지 않게)
+                        DhLog.i("vehicle signal $name=$value", keep = false)
                     }
                     _state.update { s ->
                         apply(s, value).copy(

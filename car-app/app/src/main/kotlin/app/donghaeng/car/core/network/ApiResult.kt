@@ -12,6 +12,8 @@ import java.io.IOException
  *
  * 페어링(§1.2)에서 의미가 있는 HTTP 상태는 전용 타입으로 구분한다:
  * 428 [HttpFailure.Pending] / 429 [HttpFailure.SlowDown] / 410 [HttpFailure.Expired] / 404 [HttpFailure.NotFound].
+ * 401 은 [HttpFailure.Unauthorized] (T33) — 차량 토큰 만료·무효. 인증 경로의 REST 는 OkHttp Authenticator 가 한 번 갱신한 뒤 재시도하므로
+ * 이 값이 ViewModel 까지 왔다면 갱신도 실패한 것이다(→ '폰에서 다시 연결').
  */
 sealed interface ApiResult<out T> {
 
@@ -42,6 +44,9 @@ sealed interface ApiResult<out T> {
         /** 404 CODE_NOT_FOUND(또는 엔드포인트 없음) */
         data class NotFound(override val status: Int, override val error: ErrorBody?) : HttpFailure()
 
+        /** 401 UNAUTHORIZED / INVALID_TOKEN — 토큰 없음·만료·무효(refresh 거부 포함) */
+        data class Unauthorized(override val status: Int, override val error: ErrorBody?) : HttpFailure()
+
         /** 그 밖의 4xx/5xx */
         data class Other(override val status: Int, override val error: ErrorBody?) : HttpFailure()
 
@@ -51,6 +56,7 @@ sealed interface ApiResult<out T> {
                 429 -> SlowDown(status, error)
                 410 -> Expired(status, error)
                 404 -> NotFound(status, error)
+                401 -> Unauthorized(status, error)
                 else -> Other(status, error)
             }
         }
