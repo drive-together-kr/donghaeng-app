@@ -36,6 +36,8 @@ interface DemoPttDeps {
     fun voiceRecorder(): VoiceRecorder
     fun pttSettings(): PttSettings
     fun micPermission(): MicPermission
+    fun driveSession(): app.donghaeng.car.service.DriveSessionController
+    fun sessionManager(): app.donghaeng.car.domain.session.MqttSessionManager
 }
 
 /**
@@ -98,7 +100,13 @@ object DemoPttActions {
             }
             "ptt_status" -> {
                 val c = d.pttController()
-                d.micPermission().refresh()
+                // 마이크 권한을 다시 읽어 무전 줄("마이크 권한 필요")에 반영 — adb pm grant 뒤라면 포그라운드 서비스에 microphone 타입도 붙인다
+                val micBefore = d.micPermission().granted.value
+                c.refreshPermissions()
+                if (!micBefore && d.micPermission().granted.value) {
+                    d.driveSession().refreshType(d.sessionManager().session.value)
+                    DhLog.i("demo: ptt_status mic 권한이 새로 생겼다 → FGS 타입 갱신(microphone)")
+                }
                 DhLog.i(
                     "demo: ptt_status ${c.describe()} | trigger ${d.voiceTrigger().status.value} | playback ${playbackLine(d.voicePlayback().state.value)} | " +
                         "handleButton=${d.pttSettings().handleButton.value} mic=${d.micPermission().granted.value} vosk=${voskState(context)}",
