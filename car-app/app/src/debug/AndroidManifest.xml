@@ -8,6 +8,7 @@
 
     <application>
         <service android:name=".debug.OverlayProbeService" android:exported="false" />
+        <service android:name=".debug.FloatingPanelProbeService" android:exported="false" />
         <receiver
             android:name=".debug.ProbeWidgetProvider"
             android:exported="true"

@@ -144,6 +144,24 @@ class DemoControlReceiver : BroadcastReceiver() {
                 DhLog.i("demo: overlay on=$on canDraw=${android.provider.Settings.canDrawOverlays(context)}")
             }
             "notify" -> ProbeNotifications.post(context, intent.getStringExtra("kind") ?: "status")
+            "panel" -> {
+                val svc = Intent(context, FloatingPanelProbeService::class.java)
+                    .putExtra("on", intent.getBooleanExtra("on", true))
+                    .putExtra("variant", intent.getStringExtra("variant") ?: "base")
+                context.startService(svc)
+                DhLog.i("demo: panel variant=${intent.getStringExtra("variant") ?: "base"} on=${intent.getBooleanExtra("on", true)}")
+            }
+            "navi_screen" -> {
+                // 지도 렌더링 확인용: 순정 내비의 경로 옵션 화면(전체 경로가 보이게 축소) 요청
+                navi.showNavigation()
+                DhLog.i("demo: navi_screen requested")
+            }
+            "navi_waypoint" -> {
+                // 시안(a'): 그룹 휴게소를 순정 내비 경유지로 넣어 내비가 스스로 핀·경로를 그리게 한다
+                val dest = sessionStore.session.value?.destination
+                if (dest == null) DhLog.w("demo: navi_waypoint 그룹 없음")
+                else { navi.requestRouteWithWaypoints(dest, listOf(RouteSyncEngine.DEMO_WAYPOINT)); DhLog.i("demo: navi_waypoint → ${dest.toLogString()} + ${RouteSyncEngine.DEMO_WAYPOINT.name}") }
+            }
             "fgs_text" -> {
                 // 상단 상시 카드(포그라운드 서비스 알림)가 내용 갱신을 반영하는지 — 같은 채널·ID 로 다시 올린다
                 val text = intent.getStringExtra("text") ?: "아빠 앞 1.2 km · 삼촌 뒤 2.1 km · 둘째 뒤 5.7 km"
