@@ -210,6 +210,8 @@ refresh 토큰은 불투명 문자열(랜덤 32바이트 Base62, 30일, 서버�
 | `dh/v1/group/{gid}/event` | 서버 → 그룹 | 1 | 그룹 이벤트 |
 | `dh/v1/vehicle/{vid}/presence` | 브로커 LWT | 1 | 비정상 종료 시 `{"online":false}` |
 
+- presence 진단(계약 변경 없음, docs/05 §3.4): debug 빌드의 `net_mqtt_rtt` 는 접속 중인 차가 **자기 presence 에 지금과 같은 `{"online":true}` 를 QoS 1·retain 없이** 보내 PUBACK 까지의 브로커 왕복을 잰다. 서버(`PresenceIngestor`)는 같은 online 값을 다시 적을 뿐이고 retained 값·다른 차·그룹에는 변화가 없다. 같은 값만 보내므로 이 토픽의 뜻은 그대로다.
+
 ACL: 차량 `{vid}`는 자신의 `telemetry/event/ack/presence`에만 publish, 자신의 `cmd`와 소속 그룹의 `state/event`만 subscribe. 서버 클라이언트만 `cmd`·`group/*` publish. 서버는 `$share/server/dh/v1/vehicle/+/#` 공유 구독.
 
 **구현(T15):**

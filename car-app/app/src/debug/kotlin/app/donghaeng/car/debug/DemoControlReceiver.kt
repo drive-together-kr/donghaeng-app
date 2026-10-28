@@ -309,6 +309,8 @@ class DemoControlReceiver : BroadcastReceiver() {
             }
             // F16 무전 디버그(ptt_press·ptt_inject_record·ptt_answer·ptt_status·ptt_unsent·ptt_handle·ptt_countdown·vosk_install) — DemoPttActions.kt
             in DemoPttActions.ACTIONS -> DemoPttActions.handle(context, action, intent)
+            // 네트워크·지연 진단(net_rtt·net_mqtt_rtt·latency_dump·latency_reset, docs/09 §4.2) — DemoNetActions.kt
+            in DemoNetActions.ACTIONS -> DemoNetActions.handle(context, action, intent)
             else -> DhLog.w("demo: 모르는 action=$action")
         }
     }

@@ -18,6 +18,8 @@ import com.hivemq.client.mqtt.mqtt5.Mqtt5AsyncClient
 import com.hivemq.client.mqtt.mqtt5.exceptions.Mqtt5ConnAckException
 import com.hivemq.client.mqtt.mqtt5.lifecycle.Mqtt5ClientReconnector
 import com.hivemq.client.mqtt.mqtt5.message.connect.connack.Mqtt5ConnAckReasonCode
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,6 +30,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.KSerializer
 import java.net.NoRouteToHostException
 import java.net.SocketException
@@ -466,6 +469,30 @@ class HiveMqttGateway @Inject constructor(
                 else _status.update { it.copy(outboundCount = it.outboundCount + 1) }
             }
         return true
+    }
+
+    /** 진단 브로커 왕복([MqttGateway.probeAckNanos]) — presence `{"online":true}` QoS 1·retain 없음 → PUBACK. 시간은 보내기 직전 ~ 완료 콜백(네티 스레드) */
+    override suspend fun probeAckNanos(timeoutMs: Long): Result<Long> {
+        val c = client
+        val vid = credentials?.vehicleId
+        if (c == null || vid == null || !c.state.isConnected) return Result.failure(IllegalStateException("not-connected"))
+        val payload = DhJson.json.encodeToString(Presence.serializer(), Presence(online = true)).toByteArray()
+        val done = CompletableDeferred<Long>()
+        val t0 = System.nanoTime()
+        c.publishWith().topic(Topics.vehiclePresence(vid)).qos(MqttQos.AT_LEAST_ONCE).retain(false).payload(payload).send()
+            .whenComplete { result, error ->
+                val elapsed = System.nanoTime() - t0
+                // QoS 1 오류 PUBACK(거부 등)은 예외 또는 result.error 로 온다 — 둘 다 실패로
+                val failure = error ?: result?.error?.orElse(null)
+                if (failure != null) done.completeExceptionally(failure) else done.complete(elapsed)
+            }
+        return try {
+            withTimeoutOrNull(timeoutMs) { Result.success(done.await()) } ?: Result.failure(IllegalStateException("timeout ${timeoutMs}ms"))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 
     // ---------------------------------------------------------------- internals

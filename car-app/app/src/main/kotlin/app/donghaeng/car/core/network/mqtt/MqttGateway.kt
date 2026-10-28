@@ -90,4 +90,16 @@ interface MqttGateway {
 
     /** 봉투(`vid` = 내 vehicleId, `seq` = 토픽별 단조 증가)에 싸서 발행. 연결이 없으면 false(버린다 — 재전송은 호출 쪽 정책) */
     fun <T> publish(topic: String, type: String, data: T, serializer: KSerializer<T>, qos: Int = 1, retain: Boolean = false): Boolean
+
+    /**
+     * 진단 전용(debug `net_mqtt_rtt`, docs/09 §4.2): **브로커 왕복** 한 번 — 내 presence 토픽에 지금 상태와 같은 값 `{"online":true}` 를
+     * QoS 1·retain 없이 보내고 PUBACK 이 올 때까지의 시간(ns, `System.nanoTime`)을 돌려준다.
+     *
+     * - PUBACK 은 브로커(EMQX)가 준다 — **서버 앱은 거치지 않는다**(서버는 공유 구독으로 같은 메시지를 따로 받아 online 값을 같은 값으로 다시 적을 뿐).
+     *   EMQX 인가 캐시(10 s)가 비어 있으면 그 표본에 브로커 → 서버 ACL 훅(HTTP) 한 번이 더해진다.
+     * - 새 토픽·스키마를 만들지 않는다(docs/03 §4 presence, 차량 ACL 이 허용하는 자기 토픽). retained 값은 건드리지 않는다.
+     * - 연결돼 있지 않으면(재연결 중 포함) 보내지 않고 실패. PUBACK 오류 코드(거부 등)·[timeoutMs] 초과도 실패.
+     * 기본 구현 = 지원 안 함(메모리 게이트웨이).
+     */
+    suspend fun probeAckNanos(timeoutMs: Long = 5_000): Result<Long> = Result.failure(UnsupportedOperationException("ack probe unsupported"))
 }
