@@ -36,7 +36,7 @@ class F16ProbeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val app = context.applicationContext
         when (val p = intent.getStringExtra("probe")) {
-            "media_on" -> F16Probes.mediaOn(app)
+            "media_on" -> F16Probes.mediaOn(app, intent.getStringExtra("state") ?: "playing", intent.getBooleanExtra("silence", true))
             "media_off" -> F16Probes.mediaOff()
             "tts" -> F16Probes.tts(app, null)
             "tts_engine" -> F16Probes.tts(app, intent.getStringExtra("engine") ?: "ai.pleos.playground.caas")
@@ -53,7 +53,11 @@ object F16Probes {
     private var tts: TextToSpeech? = null
 
     /** ① 활성 MediaSession + 짧은 무음 재생(미디어 버튼 라우팅은 '최근 재생한 세션'을 고른다) */
-    fun mediaOn(context: Context) = main.post {
+    /** [state] = playing|paused|stopped|none — 미디어 위젯·Pleos 미디어 프레임워크에 '재생 중'으로 잡히지 않으면서 키를 받는지 실측(2026-10-28) */
+    fun mediaOn(context: Context, state: String = "playing", silence: Boolean = true) = main.post {
+        session?.run { isActive = false; release() }
+        session = null
+        val st = when (state) { "paused" -> PlaybackState.STATE_PAUSED; "stopped" -> PlaybackState.STATE_STOPPED; "none" -> PlaybackState.STATE_NONE; else -> PlaybackState.STATE_PLAYING }
         if (session == null) {
             session = MediaSession(context, "dh-ptt-probe").apply {
                 setCallback(object : MediaSession.Callback() {
@@ -69,13 +73,13 @@ object F16Probes {
                 setPlaybackState(
                     PlaybackState.Builder()
                         .setActions(PlaybackState.ACTION_PLAY_PAUSE or PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE)
-                        .setState(PlaybackState.STATE_PLAYING, 0, 1f).build(),
+                        .setState(st, 0, if (st == PlaybackState.STATE_PLAYING) 1f else 0f).build(),
                 )
                 isActive = true
             }
         }
-        playSilence(400)
-        DhLog.i("f16 probe: media session active=${session?.isActive}")
+        if (silence) playSilence(400)
+        DhLog.i("f16 probe: media session active=${session?.isActive} state=$state silence=$silence")
     }
 
     fun mediaOff() = main.post {
