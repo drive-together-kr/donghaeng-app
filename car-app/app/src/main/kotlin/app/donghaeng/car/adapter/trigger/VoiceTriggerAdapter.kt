@@ -77,7 +77,8 @@ interface VoiceTriggerAdapter {
 
     /**
      * ③ `MainActivity.dispatchKeyEvent` 에서 — 무전 키로 썼으면(누름이든 반복·up 소비든) true 를 돌려주고 액티비티는 이벤트를 소비한다.
-     * 그룹이 없거나 '핸들 버튼으로 무전'이 꺼져 있으면 false(평소처럼 흘려보낸다).
+     * 그룹이 없거나 '핸들 버튼으로 무전'이 꺼져 있으면 false(평소처럼 흘려보낸다). 다른 앱이 미디어를 재생 중(또는 멈춘 뒤 되찾기 대기)이면
+     * 재생/정지 키(HEADSETHOOK·MEDIA_PLAY_PAUSE·MEDIA_PLAY)도 false — 음악 앱 몫([TriggerPolicy.interceptActivityKey]). SEARCH 는 미디어 키가 아니라 그대로 무전.
      */
     fun onActivityKey(keyCode: Int, action: Int, repeatCount: Int, eventTimeMs: Long): Boolean
 
@@ -132,6 +133,18 @@ object TriggerPolicy {
     fun keysEnabled(groupActive: Boolean, handleButton: Boolean): Boolean = groupActive && handleButton
 
     /**
+     * 동행 화면이 앞일 때 키를 가로챌까(사용자 지시 2026-10-28 — 그룹 주행 중 + 설정 켬일 때만, 음악과 충돌 금지):
+     * 그룹·설정 중 하나라도 아니면 통과(super 로 — 원래 동작), SEARCH 는 가로챔, 재생/정지 키는 다른 앱 미디어에 양보 중이면 통과.
+     * @param yieldingMedia 다른 앱이 미디어를 재생 중이거나 멈춘 지 [RECLAIM_DELAY_MS] 가 안 됐다(MediaSession 을 내려 둔 것과 같은 판단)
+     */
+    fun interceptActivityKey(keyCode: Int, groupActive: Boolean, handleButton: Boolean, yieldingMedia: Boolean): Boolean = when {
+        !keysEnabled(groupActive, handleButton) -> false
+        keyCode == KeyEvent.KEYCODE_SEARCH -> true
+        keyCode in PttKeys.BACKGROUND -> !yieldingMedia
+        else -> false
+    }
+
+    /**
      * MediaSession 을 켜 둘까 — 키가 켜져 있고, 다른 앱 미디어가 재생 중이 아니고, 멈춘 지 [reclaimDelayMs] 가 지났을 때.
      * @param otherMediaStoppedAgoMs 다른 앱 미디어가 멈춘 지 얼마나 됐나(멈춘 적이 없으면 null)
      */
@@ -169,8 +182,13 @@ abstract class BaseVoiceTrigger(
 
     override fun press(source: PttTriggerSource) = emit(source, null)
 
-    override fun onActivityKey(keyCode: Int, action: Int, repeatCount: Int, eventTimeMs: Long): Boolean =
-        onKey(PttTriggerSource.ACTIVITY_KEY, keyCode, action, repeatCount, eventTimeMs, PttKeys.FOREGROUND)
+    override fun onActivityKey(keyCode: Int, action: Int, repeatCount: Int, eventTimeMs: Long): Boolean {
+        if (!TriggerPolicy.interceptActivityKey(keyCode, groupActive.value, settings.handleButton.value, yieldingMediaKeys())) return false
+        return onKey(PttTriggerSource.ACTIVITY_KEY, keyCode, action, repeatCount, eventTimeMs, PttKeys.FOREGROUND)
+    }
+
+    /** 다른 앱 미디어에 재생/정지 키를 양보 중인가(재생 중 또는 멈춘 뒤 되찾기 대기) — 기본은 재생 중 여부만 */
+    protected open fun yieldingMediaKeys(): Boolean = _status.value.otherMediaActive
 
     /** MediaSession 미디어 버튼 — 무전 키로 썼으면 true */
     protected fun onSessionKey(keyCode: Int, action: Int, repeatCount: Int, eventTimeMs: Long): Boolean =

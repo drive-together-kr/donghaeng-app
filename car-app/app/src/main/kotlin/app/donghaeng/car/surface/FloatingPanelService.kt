@@ -16,7 +16,6 @@ import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -31,7 +30,8 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
-import app.donghaeng.car.R
+import app.donghaeng.car.adapter.trigger.PttTriggerSource
+import app.donghaeng.car.adapter.trigger.VoiceTriggerAdapter
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.feature.drive.FloatingPanel
 import app.donghaeng.car.ui.theme.DongHaengTheme
@@ -55,6 +55,7 @@ import kotlin.math.hypot
  *
  * - 데이터: [SurfaceState.panelUi](Hilt EntryPoint). 크기: [PanelLayout.geometry](폭 ≤ 내비 22%, 높이 ≤ 30%).
  * - 위치: 저장된 모서리(기본 오른쪽 위). **정차 중에만** 드래그 → 놓으면 가장 가까운 모서리로 스냅·저장. 주행 중에는 드래그를 무시하고 [무전] 탭만 받는다.
+ * - [무전] 줄 탭 = `VoiceTriggerAdapter.press(PANEL)`(F16). 무전 확인("보낼까요?" + 5초 원형 카운트다운)도 이 줄 안에서 보인다.
  *   드래그 도중 주행으로 바뀌면 그 드래그를 취소한다(원래 모서리로 돌아가고 저장하지 않음).
  * - 창이 실제로 붙어 있는지는 [shownState] 로 내보낸다 — [DriveSurfaceController] 가 보고 붙지 않았으면 다시 시작한다.
  * - 주간/야간: Configuration.uiMode 야간이면 짙은 패널, 아니면 밝은 패널.
@@ -65,6 +66,7 @@ class FloatingPanelService : Service(), LifecycleOwner, SavedStateRegistryOwner 
     @InstallIn(SingletonComponent::class)
     interface Deps {
         fun surfaceState(): SurfaceState
+        fun voiceTrigger(): VoiceTriggerAdapter
     }
 
     private val lifecycleRegistry = LifecycleRegistry(this)
@@ -73,6 +75,7 @@ class FloatingPanelService : Service(), LifecycleOwner, SavedStateRegistryOwner 
     override val savedStateRegistry: SavedStateRegistry get() = savedStateController.savedStateRegistry
 
     private lateinit var state: SurfaceState
+    private lateinit var trigger: VoiceTriggerAdapter
     private lateinit var wm: WindowManager
     private var frame: PanelDragFrame? = null
     private var params: WindowManager.LayoutParams? = null
@@ -87,7 +90,9 @@ class FloatingPanelService : Service(), LifecycleOwner, SavedStateRegistryOwner 
         super.onCreate()
         savedStateController.performRestore(null)
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
-        state = EntryPointAccessors.fromApplication(applicationContext, Deps::class.java).surfaceState()
+        val deps = EntryPointAccessors.fromApplication(applicationContext, Deps::class.java)
+        state = deps.surfaceState()
+        trigger = deps.voiceTrigger()
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
         night.value = isNight(resources.configuration)
         geometry.value = computeGeometry()
@@ -181,9 +186,10 @@ class FloatingPanelService : Service(), LifecycleOwner, SavedStateRegistryOwner 
         }
     }
 
+    /** [무전] 줄 탭(F16) — 트리거 PANEL. 녹음 중이면 끝내기, 확인 중이면 취소, 그 밖이면 새 녹음(판단은 PttController) */
     private fun onPtt() {
-        DhLog.i("surface: ptt tapped (F16 미구현)")
-        Toast.makeText(this, R.string.surface_ptt_soon, Toast.LENGTH_SHORT).show()
+        DhLog.i("surface: ptt tapped")
+        trigger.press(PttTriggerSource.PANEL)
     }
 
     private val dragListener = object : PanelDragFrame.Listener {

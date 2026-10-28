@@ -90,4 +90,39 @@ class VoiceTriggerTest {
         assertEquals(3, presses.size)
         job.cancel()
     }
+
+    @Test
+    fun `화면 키 가로채기 정책 — 그룹·설정 둘 다일 때만, SEARCH 는 늘, 재생·정지 키는 음악에 양보`() {
+        val hook = KeyEvent.KEYCODE_HEADSETHOOK
+        val search = KeyEvent.KEYCODE_SEARCH
+        assertFalse("그룹 없음 → 원래 동작", TriggerPolicy.interceptActivityKey(hook, groupActive = false, handleButton = true, yieldingMedia = false))
+        assertFalse("설정 끔 → 원래 동작", TriggerPolicy.interceptActivityKey(search, groupActive = true, handleButton = false, yieldingMedia = false))
+        assertTrue(TriggerPolicy.interceptActivityKey(hook, groupActive = true, handleButton = true, yieldingMedia = false))
+        assertTrue(TriggerPolicy.interceptActivityKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, groupActive = true, handleButton = true, yieldingMedia = false))
+        assertFalse("음악 재생 중 → 재생/정지 키는 음악 앱 몫", TriggerPolicy.interceptActivityKey(hook, groupActive = true, handleButton = true, yieldingMedia = true))
+        assertFalse(TriggerPolicy.interceptActivityKey(KeyEvent.KEYCODE_MEDIA_PLAY, groupActive = true, handleButton = true, yieldingMedia = true))
+        assertTrue("SEARCH 는 미디어 키가 아니다", TriggerPolicy.interceptActivityKey(search, groupActive = true, handleButton = true, yieldingMedia = true))
+        assertFalse("무전 키가 아니면 통과", TriggerPolicy.interceptActivityKey(KeyEvent.KEYCODE_VOLUME_UP, groupActive = true, handleButton = true, yieldingMedia = false))
+    }
+
+    @Test
+    fun `Fake 트리거 — 음악 재생 중·멈춘 직후 15초는 화면 재생 키도 흘려보내고 SEARCH 는 무전`() = runTest {
+        var now = 50_000L
+        val t = FakeVoiceTrigger(PttSettings(InMemoryPttSettingsStore(true)), clock = { now })
+        val presses = mutableListOf<PttPress>()
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) { t.presses.toList(presses) }
+        t.start()
+        t.setGroupActive(true)
+        t.setOtherMediaActive(true)
+        assertFalse(t.onActivityKey(KeyEvent.KEYCODE_HEADSETHOOK, down, 0, now))
+        assertFalse("up 도 흘려보낸다(음악 앱이 down/up 짝을 받게)", t.onActivityKey(KeyEvent.KEYCODE_HEADSETHOOK, up, 0, now + 50))
+        assertTrue(t.onActivityKey(KeyEvent.KEYCODE_SEARCH, down, 0, now + 100))
+        t.setOtherMediaActive(false)
+        now += 5_000
+        assertFalse("멈춘 직후(되찾기 대기)", t.onActivityKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, down, 0, now))
+        now += 10_000
+        assertTrue(t.onActivityKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, down, 0, now))
+        assertEquals(listOf("SEARCH", "MEDIA_PLAY_PAUSE"), presses.map { it.key })
+        job.cancel()
+    }
 }

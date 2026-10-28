@@ -51,7 +51,18 @@ class RecognizerChain(
 
     val hasPendingInjection: Boolean get() = injectedAnswer.value != null || injectedWav != null
 
-    override fun hasCandidate(): Boolean = hasPendingInjection || stages.any { usable(it) }
+    /**
+     * 디버그·시연 `ptt_countdown --ez on true` — 실제 인식기를 모두 건너뛰어 **카운트다운 모드**("5초 뒤 보낼게요")를 보인다.
+     * 주입한 답·WAV 는 그대로 받는다. 기기에 Vosk 모델이 있어도 카운트다운 장면을 찍을 수 있게(기본 false).
+     */
+    @Volatile
+    var forceCountdown: Boolean = false
+        set(value) {
+            field = value
+            DhLog.i("ptt: recognizers forced off=$value (카운트다운 모드)")
+        }
+
+    override fun hasCandidate(): Boolean = hasPendingInjection || (!forceCountdown && stages.any { usable(it) })
 
     private fun usable(s: YesNoRecognizer): Boolean = !sticky.containsKey(s.kind) && safeReason(s) == null
 
@@ -123,6 +134,10 @@ class RecognizerChain(
                 }
             }
         }
+        if (forceCountdown) {
+            trail += "forced-countdown"
+            return ChainOutcome(null, trail = trail)
+        }
         for (s in stages) {
             val failed = sticky[s.kind]
             if (failed != null) {
@@ -175,7 +190,7 @@ class RecognizerChain(
     override fun describe(): String = stages.joinToString(" ") { s ->
         val state = sticky[s.kind]?.let { "failed($it)" } ?: safeReason(s)?.let { "unavailable($it)" } ?: "ready"
         "${s.kind}=$state"
-    } + (if (hasPendingInjection) " injected=pending" else "")
+    } + (if (hasPendingInjection) " injected=pending" else "") + (if (forceCountdown) " forcedCountdown" else "")
 
     companion object {
         /** 남은 시간이 이보다 짧으면 다음 단계를 시작하지 않는다 */

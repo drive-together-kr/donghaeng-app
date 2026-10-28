@@ -55,7 +55,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import android.widget.Toast
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.ui.platform.LocalContext
 import app.donghaeng.car.BuildConfig
 import app.donghaeng.car.R
@@ -79,7 +83,8 @@ import kotlin.math.roundToInt
  *
  * 그룹이 있으면 [DriveDashboardScreen](실데이터 = [DriveDashboardMapper]) 위에 선두 경로 제안 카드(T28)를 띄운다. 그룹이 없으면 기존 화면의 "끝났어요" 패널.
  * 초대 QR·나가기/종료(확인 다이얼로그)는 정차 블록 '그룹 관리'(그룹 생성 화면 Active)에 있다. [내비 보기] = 순정 내비를 앞으로([NaviLauncher]: 순정 내비 패키지 → 순정 내비로 풀리는 지도 selector → pleos 는 NaviHelper 화면 요청).
- * [무전](F16)은 다음 작업 — 지금은 안내 토스트만.
+ * [무전](F16) = [PttDashboardViewModel.press](트리거 DASHBOARD) — 녹음·확인·보냄·재생 상태와 보내지 않은 무전·지난 무전도 그 ViewModel 이 준다.
+ * 마이크 권한이 없으면 정차 중에만 [권한 열기] — 다이얼로그(다시 묻지 않음이면 앱 정보 화면)를 띄우고, 화면에 돌아올 때마다 권한을 다시 읽는다.
  */
 @Composable
 fun GroupDriveRoute(
@@ -89,28 +94,44 @@ fun GroupDriveRoute(
     onManageGroup: () -> Unit = onOpenInvite,
     onOpenSettings: () -> Unit = {},
     viewModel: GroupDriveViewModel = hiltViewModel(),
+    pttViewModel: PttDashboardViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val dashboard = remember(state) { DriveDashboardMapper.map(state) }
+    val ptt by pttViewModel.input.collectAsStateWithLifecycle()
+    val dashboard = remember(state, ptt) { DriveDashboardMapper.map(state, ptt = ptt) }
     if (dashboard == null) {
         GroupDriveScreen(state = state, onBack = onBack, onOpenInvite = onOpenInvite, onEndOrLeave = { viewModel.endOrLeave() }, onClearError = viewModel::clearError, onOpenEvents = onOpenEvents, onAcceptProposal = viewModel::acceptProposal, onDeclineProposal = viewModel::declineProposal)
         return
     }
     val context = LocalContext.current
     val overlaySettings = remember(dashboard.overlayNotice) { if (dashboard.overlayNotice) OverlayPermissionMonitor.settingsIntent(context) else null }
+    val micLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        pttViewModel.onMicResult(granted)
+        // 다시 묻지 않음(이미 두 번 거부) — 다이얼로그 없이 바로 거부가 온다 → 앱 정보 화면(있을 때만)
+        val activity = context as? android.app.Activity
+        if (!granted && activity != null && !ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.RECORD_AUDIO)) {
+            MicPermissionScreen.openAppSettings(context)
+        }
+    }
+    // 설정 화면에서 돌아오면 권한을 다시 읽는다
+    LifecycleResumeEffect(Unit) {
+        pttViewModel.refreshMic()
+        onPauseOrDispose { }
+    }
     Box(Modifier.fillMaxSize()) {
         DriveDashboardScreen(
             ui = dashboard,
-            onPtt = {
-                DhLog.i("group drive: ptt tapped (F16 미구현)")
-                Toast.makeText(context, R.string.surface_ptt_soon, Toast.LENGTH_SHORT).show()
-            },
+            onPtt = pttViewModel::press,
             onOpenNavi = { if (!NaviLauncher.bringToFront(context, pleosBuild = BuildConfig.ADAPTER == "pleos")) viewModel.showNavigationFallback() },
             onManageGroup = onManageGroup,
             onSettings = onOpenSettings,
             onOpenEvents = onOpenEvents,
             onHome = onBack,
             onOpenOverlaySettings = overlaySettings?.let { intent -> { runCatching { context.startActivity(intent) }.onFailure { DhLog.w("group drive: 오버레이 설정 열기 실패 ${it.javaClass.simpleName}") } } },
+            onResendUnsent = pttViewModel::resend,
+            onDeleteUnsent = pttViewModel::deleteUnsent,
+            onReplayPast = pttViewModel::replay,
+            onOpenMicPermission = { micLauncher.launch(Manifest.permission.RECORD_AUDIO) },
         )
         state.proposal?.let { p ->
             ProposalCard(state, p, viewModel::acceptProposal, viewModel::declineProposal, Modifier.align(Alignment.TopCenter).padding(top = 24.dp, start = 24.dp, end = 24.dp).widthIn(max = 960.dp))
@@ -536,5 +557,15 @@ private fun GroupDrivePreview() {
                 events = listOf(EventUi("e1", "LOW_ENERGY", Severity.WARN, "엄마 차 연료가 12% 남았어요.", 0L))),
             onBack = {}, onOpenInvite = {}, onEndOrLeave = {}, onClearError = {},
         )
+    }
+}
+
+/** 마이크 권한을 다시 묻지 않는 상태일 때 앱 정보 화면(권한 → 마이크) — 기기에 그 화면이 없으면 로그만 */
+internal object MicPermissionScreen {
+    fun openAppSettings(context: android.content.Context) {
+        val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", context.packageName, null))
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        // resolveActivity 는 패키지 가시성(<queries>) 때문에 null 일 수 있어 바로 열고 실패를 받는다(ActivityNotFoundException — Pleos 에 화면이 없을 수 있다)
+        runCatching { context.startActivity(intent) }.onFailure { DhLog.w("ptt: 앱 정보 화면 열기 실패 ${it.javaClass.simpleName} — 마이크 권한은 adb pm grant 로(docs/09 무전)") }
     }
 }

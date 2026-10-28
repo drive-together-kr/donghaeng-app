@@ -57,6 +57,7 @@ fun SettingsRoute(
         state = state, onBack = onBack, onDisconnect = viewModel::disconnect, onOpenDiagnostics = onOpenDiagnostics, onVoiceEnabled = viewModel::setVoiceEnabled,
         onAutoFollow = viewModel::setAutoFollow, onLatencyOverlay = viewModel::setLatencyOverlay, onResetStore = viewModel::resetStore,
         onCheckServer = viewModel::checkServerForm, onApplyServer = viewModel::applyServer, onResetServer = viewModel::resetServer,
+        onPttHandleButton = viewModel::setPttHandleButton,
     )
 }
 
@@ -64,6 +65,7 @@ fun SettingsRoute(
  * 설정 화면 — 연결 상태·연결 해제(T12), 진단 진입(T11). 닉네임은 폰 쪽(`PATCH /me/vehicles`)에서 바꾼다.
  * T33: '연결 해제'·'저장소 초기화' 는 확인 창 뒤로, 주행 중 비활성. 마지막 해제 사유·시각을 보여 준다(docs/10 R13).
  * T32: 제목을 3초 안에 5번 탭하면 숨은 메뉴 '서버 주소'([ServerAddressDialog]) — 주행 중에는 탭을 무시한다.
+ * F16: '무전' 카드 — '핸들 버튼으로 무전'(기본 켬, 정차 중에만 바꾼다).
  */
 @Composable
 fun SettingsScreen(
@@ -78,6 +80,7 @@ fun SettingsScreen(
     onCheckServer: (String, String) -> ServerAddressRules.FormResult = { _, _ -> ServerAddressRules.FormResult.Unchanged },
     onApplyServer: (ServerOverrides) -> Unit = {},
     onResetServer: () -> Unit = {},
+    onPttHandleButton: (Boolean) -> Unit = {},
 ) {
     var confirm by rememberSaveable { mutableStateOf<String?>(null) }
     var serverDialog by rememberSaveable { mutableStateOf(false) }
@@ -225,6 +228,23 @@ fun SettingsScreen(
                             Text(stringResource(R.string.settings_latency_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         androidx.compose.material3.Switch(checked = state.latencyOverlay, onCheckedChange = onLatencyOverlay)
+                    }
+                }
+            }
+
+            // F16 무전 — 핸들 버튼(통화·재생/정지) 매핑. 정차 중에만 바꾼다(주행 중 입력 UI 비활성, CLAUDE.md 규칙 6)
+            Card(modifier = Modifier.widthIn(max = 720.dp).fillMaxWidth()) {
+                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.settings_section_ptt), style = MaterialTheme.typography.titleMedium)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(stringResource(R.string.settings_ptt_handle_switch), style = MaterialTheme.typography.titleMedium)
+                            Text(stringResource(R.string.settings_ptt_handle_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (state.isDriving) {
+                                Text(stringResource(R.string.settings_ptt_driving_locked), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.tertiary)
+                            }
+                        }
+                        androidx.compose.material3.Switch(checked = state.pttHandleButton, onCheckedChange = onPttHandleButton, enabled = !state.isDriving)
                     }
                 }
             }

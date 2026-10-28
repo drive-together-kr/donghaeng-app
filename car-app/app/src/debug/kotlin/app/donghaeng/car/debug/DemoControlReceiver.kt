@@ -60,6 +60,14 @@ import java.util.Base64
  * | `surface_pos` | `corner` = top_end/top_start/bottom_end/bottom_start | 패널 모서리 강제 지정(저장됨) |
  * | `event` | `type`(기본 LOW_ENERGY), `speech`, `source`(`ahead`/`behind` = 스냅샷에서 내 바로 앞/뒤 멤버, 또는 vehicleId. 기본: **급제동이고 `audience` 도 안 주면 `ahead`** — 앞 차가 없으면(내가 선두·위치 모름) 경고만 남기고 주입하지 않는다; 그 밖은 `veh_DEMO` = 명단 밖이라 앞뒤를 몰라 '대상'), `audience`(`veh_1,veh_2` · `me` = 내 차 · `none` = 빈 목록; 없으면 audience 없음 → 급제동은 스냅샷 앞뒤 폴백), `age_s`(봉투 나이 — 61 이상이면 소식 줄·띠·카드에서 빠진다), `voice`(`--ez`, 기본 true) | 그룹 이벤트 한 건을 로컬로 흘려 패널 이벤트 줄·알림 카드·음성을 확인. 수신 대상 판정(`EventAudience`)을 실제 수신과 똑같이 거치고 `forMe=true/false basis=…` 를 남긴다(급제동: 뒤차에서 기본 주입 → forMe=true basis=SNAPSHOT, 선두에서는 `앞 차 없음 → 주입 안 함`, `--es source behind` → 앞차인 나는 forMe=false; 선두에 카드를 억지로 띄워 자리만 볼 때는 `--es audience me`). 카드는 같은 종류·출처 30초에 한 장·8초에 2장까지(`source` 를 바꿔 반복) |
  * | `tbt` | `m`(`--ei`, 다음 회전까지 m, -1 = 해제), `for_s`(`--ei`, 기본 30) | 카드 TBT 게이트가 읽는 다음 회전 거리를 `for_s` 초 동안 덮어쓴다(AVD 순정 내비는 위치가 고정돼 TBT 가 늘 같다). 예(CARDS_ONLY): `--es action tbt --ei m 120 --ei for_s 60` → `--es action event --es type HARD_BRAKE` → `surface: card deferred type=HARD_BRAKE tbt=120m` → `--es action tbt --ei m 800` → 1초 안에 `surface: card released … reason=far` |
+ * | `ptt_press` | | F16 무전 버튼 한 번 — 핸들 키·패널 탭과 같은 경로(트리거 DEBUG → 재생 중이면 끊고 → PttController). 녹음 중이면 끝내기, 확인 중이면 취소 |
+ * | `ptt_inject_record` | `file`(앱 files 기준 상대 경로 또는 절대 경로, `.wav`·`.m4a`·`.aac`) | 다음 녹음 한 번을 이 파일로 대신(마이크를 열지 않음, 길이 = 파일 길이). `demo: ptt_inject_record armed …` |
+ * | `ptt_answer` | `answer` = `yes`/`no`/`none` 또는 `file`(16 kHz 모노 16 bit WAV) | '보낼까요?' 답 주입 — 듣는 중이면 바로 끝내고 카운트다운 중에도 받는다(네 = 보냄, 아니 = 취소, none = 보내지 않은 무전). `file` 은 마이크 대신 그 WAV 를 인식기(Vosk 모델이 있어야)에 흘린다 → `ptt: recognizer=VOSK answer=…` |
+ * | `ptt_status` | | 무전 한 줄 — 단계·남은 초·인식기 상태(`recognizers=[PLEOS_STT=… ANDROID_STT=… VOSK=…]`)·누적 수 + 트리거(그룹·설정·다른 앱 미디어·세션·누름 수) + 재생(재생 중·대기·지난 무전 상태별 수) + 설정·마이크·Vosk 모델 |
+ * | `ptt_unsent` | `op` = `resend`/`delete`(선택), `id`(기본 `first`) | '보내지 않은 무전' 목록 한 줄, 선택하면 다시 보내기·지우기(정차 중에만 — 주행 중이면 false) |
+ * | `ptt_handle` | `on`(ez) | 설정 '핸들 버튼으로 무전' — 끄면 MediaSession 을 내리고 화면 키도 흘려보낸다 |
+ * | `ptt_countdown` | `on`(ez, 기본 true) | 인식기를 모두 건너뛰어 카운트다운 모드("5초 뒤 보낼게요")를 강제(Vosk 모델이 있어도 장면을 찍게). 주입 답은 그대로 받는다 |
+ * | `vosk_install` | `dir`(모델 폴더, 기본 = 앱 외부 files `vosk-ko-small`), `remove`(ez) | Vosk 모델을 앱 `files/vosk-ko-small` 로 복사(따로 돌고 끝나면 `demo: vosk_install done files=… bytes=…`) / 지우기. `ptt.py` 는 보통 `run-as` 로 바로 넣는다 |
  *
  * 결과는 `logcat -s DongHaeng` 의 `demo:` 줄로 확인한다. 좌표·ID 는 마스킹 규칙(CLAUDE.md 8)을 따른다.
  * 의존성은 Hilt `@EntryPoint` 로 꺼낸다(BroadcastReceiver 의 `onReceive` 가 추상이라 `@AndroidEntryPoint` 의 super 호출을 쓸 수 없다).
@@ -287,6 +295,8 @@ class DemoControlReceiver : BroadcastReceiver() {
                     }
                 }
             }
+            // F16 무전 디버그(ptt_press·ptt_inject_record·ptt_answer·ptt_status·ptt_unsent·ptt_handle·ptt_countdown·vosk_install) — DemoPttActions.kt
+            in DemoPttActions.ACTIONS -> DemoPttActions.handle(context, action, intent)
             else -> DhLog.w("demo: 모르는 action=$action")
         }
     }

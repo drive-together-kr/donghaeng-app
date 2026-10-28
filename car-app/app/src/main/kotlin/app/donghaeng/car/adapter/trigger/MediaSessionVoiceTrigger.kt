@@ -114,6 +114,9 @@ class MediaSessionVoiceTrigger(
         main.post { if (want) activate() else deactivate(reason()) }
     }
 
+    /** 화면이 앞일 때 재생/정지 키도 세션과 같은 기준으로 양보한다(재생 중 + 멈춘 뒤 [reclaimDelayMs]) */
+    override fun yieldingMediaKeys(): Boolean = otherMediaActive || otherMediaStoppedAt?.let { clock() - it < reclaimDelayMs } == true
+
     private fun reason(): String = when {
         !groupActive.value -> "no-group"
         !settings.handleButton.value -> "setting-off"

@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalTextStyle
@@ -30,7 +31,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
@@ -44,6 +48,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.donghaeng.car.R
+import app.donghaeng.car.domain.ptt.PttNotice
 
 /*
  * 주행 중 순정 내비 위에 얹히는 플로팅 패널 (docs/05 §5.2, 사용자 확정 2026-10-28).
@@ -57,6 +62,7 @@ import app.donghaeng.car.R
  *       그룹 이름이 남는 폭을 다 쓴다. 넘치면 **그룹 이름만** 말줄임("아빠 차와 같이…"), 상한을 넘는 아주 긴 목적지만 목적지 이름을 말줄임(" 도착"은 남김).
  * 위치: 오른쪽 위 고정(내비 TBT 왼쪽 위·하단 버튼을 피한다), 정차 중에만 드래그로 4모서리 중 선택(FloatingPanelService).
  * 주간/야간: 시스템 야간이면 짙은 반투명 바탕 + 흰 글씨, 주간이면 밝은 반투명 바탕 + 짙은 글씨. [무전] 라임 버튼은 둘 다 유지.
+ * 무전(F16): 맨 아래 줄이 [무전] 버튼이자 무전 진행 상태(녹음·"보낼까요?" 확인·보냄·받은 무전 재생·안내) — `SurfaceState.ptt` 를 그대로 그린다.
  */
 
 data class FloatingCar(
@@ -302,45 +308,130 @@ private fun FitGap(c: FloatingCar, numberColor: Color, unitColor: Color, s: Scal
     }
 }
 
-/** [무전] 버튼 또는 무전 진행 상태 한 줄(녹음·확인 대기·전송·수신 재생) */
+/**
+ * [무전] 버튼 또는 무전 진행 상태 한 줄(F16 — 사용자 지시 "무전 확인은 패널 안에서"). 줄 전체가 탭 영역이고 탭 = 무전 누름
+ * (녹음 중 = 끝내기, 확인 중 = 취소, 그 밖 = 새 녹음). 무엇을 그릴지는 [PttDisplay.kind].
+ * - 녹음: 빨강 + 파형 + "N초 남음" / 확인: 파랑 + "보낼까요?" + "네 / 아니라고 말하세요" + 5초 원형 카운트다운
+ * - 카운트다운 모드(인식기 없음): "N초 뒤 보낼게요" + "무전 버튼 = 취소" / 전송: "보내는 중…" → "N대에 보냈어요"
+ * - 재생: 보낸 차 색 + "아빠 차 무전 0:07"(끝나면 체크, 3초 뒤 사라짐) / 안내 3초: 너무 짧아요·취소했어요·보내지 않았어요… / 마이크 권한 없음
+ */
 @Composable
 private fun PanelPttRow(ptt: PttUi, s: Scaler, onPtt: () -> Unit) {
-    val (bg, fg) = when (ptt.phase) {
-        PttPhase.IDLE -> DriveTone.ptt to DriveTone.onPtt
-        PttPhase.RECORDING -> DriveTone.danger to Color.White
-        PttPhase.CONFIRMING -> Color(0xFF2F6BFF) to Color.White
-        PttPhase.SENT -> DriveTone.info to Color.Black
-        PttPhase.PLAYING -> Color(ptt.fromColorArgb ?: DriveDashboardSamples.BLUE) to Color.White
+    val kind = PttDisplay.kind(ptt)
+    val (bg, fg) = when (kind) {
+        PttDisplayKind.IDLE -> DriveTone.ptt to DriveTone.onPtt
+        PttDisplayKind.MIC_DENIED -> DriveTone.caution to Color.Black
+        PttDisplayKind.NOTICE -> if (PttDisplay.noticeTone(ptt.notice!!) == Tone.CAUTION) DriveTone.caution to Color.Black else PttColors.neutral to Color.White
+        PttDisplayKind.RECORDING -> DriveTone.danger to Color.White
+        PttDisplayKind.CONFIRM_VOICE, PttDisplayKind.CONFIRM_COUNTDOWN -> PttColors.confirm to Color.White
+        PttDisplayKind.SENDING, PttDisplayKind.SENT -> DriveTone.info to Color.Black
+        PttDisplayKind.PLAYING, PttDisplayKind.PLAYED -> Color(ptt.fromColorArgb ?: DriveDashboardSamples.BLUE) to Color.White
     }
     val big = s.sp(FloatingPanelSpec.PTT_SP)
     Surface(onClick = onPtt, shape = RoundedCornerShape(s.dp(16f)), color = bg, modifier = Modifier.fillMaxWidth().height(s.dp(60f))) {
         Row(Modifier.padding(horizontal = s.dp(16f)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-            when (ptt.phase) {
-                PttPhase.IDLE -> {
+            when (kind) {
+                PttDisplayKind.IDLE -> {
                     Canvas(Modifier.size(s.dp(30f))) { drawMic(size, fg) }
                     Spacer(Modifier.width(s.dp(12f)))
                     Text(stringResource(R.string.dash_ptt), color = fg, fontSize = big, fontWeight = FontWeight.Bold)
                 }
-                PttPhase.RECORDING -> {
+                PttDisplayKind.MIC_DENIED -> {
+                    Canvas(Modifier.size(s.dp(26f))) { drawMic(size, fg) }
+                    Spacer(Modifier.width(s.dp(10f)))
+                    Text(stringResource(R.string.ptt_mic_denied), color = fg, fontSize = s.sp(24f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                PttDisplayKind.NOTICE -> {
+                    val (title, hint) = noticeTexts(ptt.notice!!)
+                    TwoLine(stringResource(title), hint?.let { stringResource(it) }, fg, s, Modifier.weight(1f))
+                }
+                PttDisplayKind.RECORDING -> {
                     Box(Modifier.size(s.dp(14f)).clip(CircleShape).background(fg))
                     Spacer(Modifier.width(s.dp(10f)))
                     Waveform(ptt.level, fg, Modifier.width(s.dp(110f)).height(s.dp(30f)))
                     Spacer(Modifier.width(s.dp(12f)))
                     Text(stringResource(R.string.dash_ptt_seconds_left, ptt.seconds), color = fg, fontSize = s.sp(26f), fontWeight = FontWeight.Bold)
                 }
-                PttPhase.CONFIRMING -> {
-                    Text(stringResource(R.string.dash_ptt_confirm_big), color = fg, fontSize = s.sp(28f), fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.weight(1f))
-                    Text("${ptt.seconds}", color = fg, fontSize = big, fontWeight = FontWeight.Bold)
+                PttDisplayKind.CONFIRM_VOICE -> {
+                    TwoLine(stringResource(R.string.dash_ptt_confirm_big), stringResource(R.string.ptt_say_short), fg, s, Modifier.weight(1f), titleSp = 26f)
+                    MiniCountdownRing(ptt.seconds, ptt.totalSeconds, fg, s)
                 }
-                PttPhase.SENT -> Text(stringResource(R.string.dash_ptt_sent, ptt.sentTo), color = fg, fontSize = s.sp(26f), fontWeight = FontWeight.Bold)
-                PttPhase.PLAYING -> {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = fg, modifier = Modifier.size(s.dp(30f)))
+                PttDisplayKind.CONFIRM_COUNTDOWN -> {
+                    TwoLine(stringResource(R.string.ptt_countdown_short, ptt.seconds), stringResource(R.string.ptt_cancel_hint), fg, s, Modifier.weight(1f), titleSp = 24f)
+                    MiniCountdownRing(ptt.seconds, ptt.totalSeconds, fg, s)
+                }
+                PttDisplayKind.SENDING -> Text(stringResource(R.string.ptt_sending), color = fg, fontSize = s.sp(26f), fontWeight = FontWeight.Bold)
+                PttDisplayKind.SENT -> {
+                    Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = fg, modifier = Modifier.size(s.dp(28f)))
                     Spacer(Modifier.width(s.dp(8f)))
-                    Text(stringResource(R.string.dash_ptt_playing_big, ptt.fromName ?: "", ptt.durationText ?: ""), color = fg, fontSize = s.sp(26f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(sentText(ptt), color = fg, fontSize = s.sp(26f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                PttDisplayKind.PLAYING, PttDisplayKind.PLAYED -> {
+                    Icon(if (kind == PttDisplayKind.PLAYED) Icons.Filled.CheckCircle else Icons.Filled.PlayArrow, contentDescription = null, tint = fg, modifier = Modifier.size(s.dp(30f)))
+                    Spacer(Modifier.width(s.dp(8f)))
+                    Text(playingText(ptt), color = fg, fontSize = s.sp(26f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    if (ptt.queuedIncoming > 0) {
+                        Spacer(Modifier.width(s.dp(8f)))
+                        Text(stringResource(R.string.ptt_queued_more, ptt.queuedIncoming), color = fg, fontSize = s.sp(22f), fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
         }
+    }
+}
+
+/** 무전 줄 색(패널·대시보드 공용) — 확인 = 파랑, 버린 안내 = 짙은 회색 */
+object PttColors {
+    val confirm = Color(0xFF2F6BFF)
+    val neutral = Color(0xFF3A414D)
+}
+
+/** 받은 무전 줄 — "아빠 차 무전 0:07"(이름을 모르면 "무전 0:07") */
+@Composable
+fun playingText(ptt: PttUi): String {
+    val name = ptt.fromName?.trim().orEmpty()
+    val dur = ptt.durationText ?: ""
+    return if (name.isEmpty()) stringResource(R.string.ptt_playing_noname, dur) else stringResource(R.string.dash_ptt_playing_big, name, dur)
+}
+
+/** 보냄 줄 — "3대에 보냈어요"(받는 차 수를 모르면 "보냈어요") */
+@Composable
+fun sentText(ptt: PttUi): String =
+    if (ptt.sentTo > 0) stringResource(R.string.dash_ptt_sent, ptt.sentTo) else stringResource(R.string.ptt_sent_plain)
+
+/** 안내 문구(제목, 보조) — 패널 줄·대시보드 띠 공용 */
+fun noticeTexts(n: PttNotice): Pair<Int, Int?> = when (n) {
+    PttNotice.TOO_SHORT -> R.string.ptt_notice_too_short to null
+    PttNotice.CANCELLED -> R.string.ptt_notice_cancelled to null
+    PttNotice.KEPT_UNSENT -> R.string.ptt_notice_kept to R.string.ptt_notice_kept_hint
+    PttNotice.SEND_FAILED -> R.string.ptt_notice_send_failed to R.string.ptt_notice_send_failed_hint
+    PttNotice.RECORD_FAILED -> R.string.ptt_notice_record_failed to null
+    PttNotice.MIC_PERMISSION -> R.string.ptt_notice_mic to R.string.ptt_notice_mic_hint
+    PttNotice.NO_GROUP -> R.string.ptt_notice_no_group to null
+}
+
+/** 제목(굵게) + 보조 한 줄(작게) — 60 dp 줄 안에 두 줄 */
+@Composable
+private fun TwoLine(title: String, hint: String?, color: Color, s: Scaler, modifier: Modifier, titleSp: Float = 24f) {
+    Column(modifier, verticalArrangement = Arrangement.Center) {
+        Text(title, color = color, fontSize = s.sp(titleSp), lineHeight = s.sp(titleSp + 4f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        hint?.let { Text(it, color = color.copy(alpha = 0.9f), fontSize = s.sp(16f), lineHeight = s.sp(19f), maxLines = 1, overflow = TextOverflow.Ellipsis) }
+    }
+}
+
+/** 패널용 작은 원형 카운트다운(확인 5초) — 남은 몫만큼 호 + 가운데 숫자 */
+@Composable
+private fun MiniCountdownRing(seconds: Int, total: Int, color: Color, s: Scaler) {
+    Box(Modifier.size(s.dp(46f)), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.size(s.dp(46f))) {
+            val sw = s.dp(5f).toPx()
+            val inset = sw / 2
+            val arcSize = Size(size.width - sw, size.height - sw)
+            drawArc(color.copy(alpha = 0.3f), 0f, 360f, false, Offset(inset, inset), arcSize, style = Stroke(sw))
+            val sweep = 360f * (seconds.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f)
+            drawArc(color, -90f, sweep, false, Offset(inset, inset), arcSize, style = Stroke(sw, cap = StrokeCap.Round))
+        }
+        Text("$seconds", color = color, fontSize = s.sp(24f), fontWeight = FontWeight.Bold)
     }
 }
 
@@ -391,7 +482,12 @@ object FloatingPanelSamples {
     fun of(variant: String): FloatingPanelUi = when (variant) {
         "recording" -> base.copy(event = null, ptt = PttUi(PttPhase.RECORDING, seconds = 9, totalSeconds = 15, level = 0.7f))
         "confirm" -> base.copy(event = null, ptt = PttUi(PttPhase.CONFIRMING, seconds = 4, listening = true))
+        "countdown" -> base.copy(event = null, ptt = PttUi(PttPhase.CONFIRMING, seconds = 3, fallbackCountdown = true))
+        "sending" -> base.copy(event = null, ptt = PttUi(PttPhase.SENT, sending = true))
+        "sent" -> base.copy(event = null, ptt = PttUi(PttPhase.SENT, sentTo = 3))
         "playing" -> base.copy(event = DriveDashboardSamples.eventDanger, ptt = PttUi(PttPhase.PLAYING, seconds = 3, fromName = "아빠 차", fromColorArgb = DriveDashboardSamples.BLUE, durationText = "0:07"))
+        "notice" -> base.copy(event = null, ptt = PttUi(notice = PttNotice.KEPT_UNSENT))
+        "mic" -> base.copy(event = null, ptt = PttUi(micDenied = true))
         "noevent" -> base.copy(event = null)
         "full" -> full
         "worst" -> worst

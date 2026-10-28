@@ -121,6 +121,32 @@ data class PttUi(
 
 data class RecentEventUi(val text: String, val tone: Tone, val whenText: String)
 
+/** '보내지 않은 무전' 한 줄(정차 대시보드, F16) — [다시 보내기]·[지우기]는 정차 중에만 */
+data class UnsentPttUi(
+    /** PttController 의 항목 id("u3") — 다시 보내기·지우기 대상 */
+    val id: String,
+    /** "무전 0:07 · 14:03" */
+    val text: String,
+    /** "대답 없음" / "보내기 실패" */
+    val reasonText: String,
+    /** 전송 실패로 남은 것(주황) — 대답 없음은 회색 */
+    val failed: Boolean = false,
+)
+
+/** '지난 무전' 한 줄(정차 대시보드, F16) — 탭하면 다시 듣기(정차 중에만) */
+data class PastPttUi(
+    val voiceId: String,
+    /** "아빠 차 무전 0:07" */
+    val text: String,
+    /** 보낸 차 색(모르면 null) */
+    val colorArgb: Long?,
+    /** "3분 전"(서버 시계 기준) */
+    val whenText: String,
+    /** 상태 꼬리표 — "못 들음"(60초 넘어 자동 재생 안 함)·"끊김"·"받기 실패"·"재생 실패". 다 들은 것은 null */
+    val statusText: String? = null,
+    val tone: Tone = Tone.NEUTRAL,
+)
+
 data class DriveDashboardUi(
     val groupName: String,
     val formation: FormationBarUi,
@@ -139,7 +165,12 @@ data class DriveDashboardUi(
     val parked: Boolean = false,
     val presets: List<String> = emptyList(),
     val recentEvents: List<RecentEventUi> = emptyList(),
-    val unsentPtt: List<String> = emptyList(),
+    /** 보내지 않은 무전(F16, 최신 먼저) — 정차 블록, 없으면 숨김 */
+    val unsentPtt: List<UnsentPttUi> = emptyList(),
+    /** 지난 무전(F16, 최신 먼저, 최대 5) — 정차 블록, 없으면 숨김 */
+    val pastPtt: List<PastPttUi> = emptyList(),
+    /** 설정 '핸들 버튼으로 무전'이 켜져 있으면 [무전] 아래 "핸들 버튼으로도 가능" */
+    val pttKeyHint: Boolean = true,
     /** 플로팅 창 권한이 없어 '알림 카드 + 음성' 모드 — 상단 안내 1줄(docs/05 §5.2) */
     val overlayNotice: Boolean = false,
 )

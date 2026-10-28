@@ -199,4 +199,25 @@ class DriveDashboardMapperTest {
         assertEquals(12, ui.latencyMs)
         assertNull(DriveDashboardMapper.map(state(), zone)!!.latencyText)
     }
+
+    @Test
+    fun `무전 — 패널과 같은 상태, 보내지 않은 무전·지난 무전 줄, 핸들 버튼 안내`() {
+        val none = DriveDashboardMapper.map(state(), zone)!!
+        assertEquals(PttUi(), none.ptt)
+        assertTrue(none.unsentPtt.isEmpty() && none.pastPtt.isEmpty())
+        assertTrue("기본 = 핸들 버튼 켬", none.pttKeyHint)
+
+        val ptt = PttUi(PttPhase.CONFIRMING, seconds = 4, listening = true, unsentCount = 1)
+        val unsent = listOf(app.donghaeng.car.domain.ptt.UnsentVoice("u1", "grp_1", java.io.File("u1.m4a"), "audio/mp4", 4_200, at(12, 48), app.donghaeng.car.domain.ptt.UnsentReason.NO_ANSWER))
+        val past = listOf(
+            app.donghaeng.car.domain.ptt.ReceivedVoice("e1", "v1", "grp_1", "veh_A", "아빠 차", "#2E7DFF", 5_000, "audio/mp4", now - 120_000, null, app.donghaeng.car.domain.ptt.PastStatus.STALE),
+        )
+        val ui = DriveDashboardMapper.map(state(), zone, PttDashboardInput(ptt, unsent, past, handleButton = false))!!
+        assertEquals(ptt, ui.ptt)
+        assertEquals(listOf(UnsentPttUi("u1", "무전 0:04 · 12:48", "대답 없음")), ui.unsentPtt)
+        assertEquals("아빠 차 무전 0:05", ui.pastPtt.single().text)
+        assertEquals("2분 전", ui.pastPtt.single().whenText)
+        assertEquals("못 들음", ui.pastPtt.single().statusText)
+        assertFalse(ui.pttKeyHint)
+    }
 }

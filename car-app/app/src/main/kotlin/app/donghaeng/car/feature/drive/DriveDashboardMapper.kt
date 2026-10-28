@@ -21,7 +21,9 @@ import kotlin.math.roundToInt
  * - 내 주행 줄: 제한속도 = 내비, 연속 주행 = [ContinuousDriveTimer](주행 구간 합, 15분 이상 쉬면 0, 2시간 이상 경고), 휴식 추천 = 경유지.
  * - 그룹 도착의 마지막 차가 나면 "마지막: 내 차".
  * - 이벤트 띠·지난 소식은 플로팅 패널과 같은 규칙([SurfaceEvents]): 내 차 출처 제외, 띠 = 받은 지 10초 안 + 서버 시계로 60초 안에 생긴 가장 최근 이벤트(없으면 숨김 —
- *   재접속 때 브로커가 다시 보낸 옛 이벤트는 빠진다), 지난 소식 = 발생 시각(봉투 ts) 최신 5개, "N초 전" = 서버 시계 − 봉투 ts. 프리셋(F8)·보내지 않은 무전(F16)은 아직 없어 비운다.
+ *   재접속 때 브로커가 다시 보낸 옛 이벤트는 빠진다), 지난 소식 = 발생 시각(봉투 ts) 최신 5개, "N초 전" = 서버 시계 − 봉투 ts. 프리셋(F8)은 아직 없어 비운다.
+ * - 무전(F16, [ptt]): 상태 = `SurfaceState.ptt`(패널과 같은 값) 그대로, 보내지 않은 무전·지난 무전 = [PttDisplay.unsentRows]·[PttDisplay.pastRows]
+ *   ("N분 전" 도 서버 시계), "핸들 버튼으로도 가능" = 설정 '핸들 버튼으로 무전'.
  * - 하단 지연 = T31 문구 그대로("이벤트 N ms · 상태 N ms", 표시 꺼짐이면 없음).
  */
 object DriveDashboardMapper {
@@ -30,7 +32,7 @@ object DriveDashboardMapper {
     const val LONG_DRIVE_S = 2 * 3_600L
     const val WARN_GAP_M = 3_000
 
-    fun map(s: GroupDriveUiState, zone: ZoneId = ZoneId.systemDefault()): DriveDashboardUi? {
+    fun map(s: GroupDriveUiState, zone: ZoneId = ZoneId.systemDefault(), ptt: PttDashboardInput = PttDashboardInput()): DriveDashboardUi? {
         val session = s.session ?: return null
         val now = s.nowMs
         val me = s.me
@@ -109,7 +111,7 @@ object DriveDashboardMapper {
             nextStop = nextStop,
             myDrive = myDrive,
             event = event,
-            ptt = PttUi(),
+            ptt = ptt.ptt,
             connected = s.connection == ConnState.CONNECTED,
             latencyMs = s.latencyMs,
             latencyText = s.latencyText,
@@ -118,7 +120,9 @@ object DriveDashboardMapper {
             parked = !s.isDriving,
             presets = emptyList(),
             recentEvents = recent,
-            unsentPtt = emptyList(),
+            unsentPtt = PttDisplay.unsentRows(ptt.unsent, zone),
+            pastPtt = PttDisplay.pastRows(ptt.past, serverNow),
+            pttKeyHint = ptt.handleButton,
             overlayNotice = s.surfaceMode == SurfaceMode.CARDS_ONLY,
         )
     }

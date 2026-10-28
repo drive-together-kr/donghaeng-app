@@ -262,14 +262,14 @@
     <string name="dash_ptt_seconds_left">%1$d초 남음</string>
     <string name="dash_ptt_confirm_q">동행하는 차에게 보낼까요?</string>
     <string name="dash_ptt_confirm_hint">"네" 또는 "아니"라고 말하세요</string>
-    <string name="dash_ptt_confirm_fallback">%1$d초 뒤 전송합니다. 취소하려면 버튼을 누르세요</string>
+    <string name="dash_ptt_confirm_fallback">%1$d초 뒤 보낼게요 — 취소하려면 무전 버튼</string>
     <string name="dash_ptt_listening">듣는 중</string>
-    <string name="dash_ptt_sent">전송됨 · %1$d대</string>
+    <string name="dash_ptt_sent">%1$d대에 보냈어요</string>
     <string name="dash_ptt_playing">%1$s 무전 재생 중</string>
     <string name="dash_presets">빠른 메시지</string>
     <string name="dash_recent_events">지난 소식</string>
     <string name="dash_unsent_ptt">보내지 않은 무전 %1$d개</string>
-    <string name="dash_resend">재전송</string>
+    <string name="dash_resend">다시 보내기</string>
     <string name="dash_manage_group">그룹 관리</string>
     <string name="dash_settings">설정</string>
     <string name="dash_ptt_hint">핸들 버튼으로도 가능</string>

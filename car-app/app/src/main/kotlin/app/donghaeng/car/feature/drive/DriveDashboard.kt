@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -63,6 +65,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.donghaeng.car.R
+import app.donghaeng.car.domain.ptt.PttFormat
 
 /*
  * 주행 대시보드 (재설계안 2차 — docs/05 §5.1, 사용자 지침 2026-10-28)
@@ -73,7 +76,9 @@ import app.donghaeng.car.R
  * 가로: 대열 막대(내용 맞춤 높이) → [그룹 도착 | 다음 정차](남는 높이 전부, 숫자 84sp) → 휴식 추천 줄(순정 내비가 보일 때) 또는 제한속도·회전 줄
  *       → 이벤트 띠(이벤트 있을 때만) → 하단 [무전](라임)·[내비 보기]
  * 세로(1창): 같은 블록을 위에서 아래로, 대열은 수직 사다리(글자 크기 가로와 동일).
- * 무전: 녹음·확인은 대열 막대 아래를 덮는 중앙 오버레이(정차 시), 수신 재생·전송됨은 상단 띠.
+ * 무전(F16 — 실제 상태 = SurfaceState.ptt, 패널과 같은 값): 녹음·확인은 대열 막대 아래를 덮는 중앙 오버레이, 수신 재생·보내는 중·보냄·3초 안내는 상단 띠,
+ *   하단 [무전]은 녹음 중 빨강(누르면 끝)·확인 중 파랑 "누르면 취소"·마이크 권한 없으면 아래 줄 "마이크 권한 필요"(+정차 중 [권한 열기]).
+ *   정차 블록: 보내지 않은 무전([다시 보내기]·[지우기])·지난 무전(탭 = 다시 듣기).
  */
 
 // ---------------------------------------------------------------- 톤 색
@@ -116,7 +121,14 @@ fun DriveDashboardScreen(
     onPreset: (String) -> Unit = {},
     onManageGroup: () -> Unit = {},
     onSettings: () -> Unit = {},
-    onResendUnsent: () -> Unit = {},
+    /** '보내지 않은 무전' [다시 보내기](항목 id) — 정차 블록에만 보인다 */
+    onResendUnsent: (String) -> Unit = {},
+    /** '보내지 않은 무전' [지우기](항목 id) */
+    onDeleteUnsent: (String) -> Unit = {},
+    /** '지난 무전' 탭 = 다시 듣기(voiceId) */
+    onReplayPast: (String) -> Unit = {},
+    /** 마이크 권한 다시 묻기 — null 이면 [권한 열기] 없음(정차 중에만 보인다) */
+    onOpenMicPermission: (() -> Unit)? = null,
     /** 정차 블록 '지난 소식' 의 [더 보기](이벤트 피드). null 이면 버튼 없음 */
     onOpenEvents: (() -> Unit)? = null,
     /** 정차 블록 [홈]. null 이면 버튼 없음 */
@@ -140,7 +152,7 @@ fun DriveDashboardScreen(
                             ui.nextStop?.let { NextStopCard(it, Modifier.fillMaxWidth(), compact = true) }
                             if (ui.naviVisible) RestRow(ui.myDrive, Modifier.fillMaxWidth()) else MyDriveLine(ui.myDrive, Modifier.fillMaxWidth(), compact = true)
                             ui.event?.let { EventBanner(it, Modifier.fillMaxWidth()) }
-                            if (ui.parked) ParkedExtras(ui, false, Modifier.weight(1f), onPreset, onManageGroup, onSettings, onResendUnsent, onOpenEvents, onHome) else Spacer(Modifier.weight(1f))
+                            if (ui.parked) ParkedExtras(ui, false, Modifier.weight(1f), onPreset, onManageGroup, onSettings, onResendUnsent, onDeleteUnsent, onReplayPast, onOpenEvents, onHome) else Spacer(Modifier.weight(1f))
                         } else {
                             FormationBar(ui.formation, ui.groupName, Modifier.fillMaxWidth().height(FORMATION_HEIGHT))
                             // 카드가 남는 높이를 전부 가진다(이벤트 띠가 없으면 그만큼 더 커진다)
@@ -150,14 +162,14 @@ fun DriveDashboardScreen(
                             }
                             if (ui.naviVisible) RestRow(ui.myDrive, Modifier.fillMaxWidth(), big = true) else MyDriveLine(ui.myDrive, Modifier.fillMaxWidth(), big = true)
                             ui.event?.let { EventBanner(it, Modifier.fillMaxWidth(), big = true) }
-                            if (ui.parked) ParkedExtras(ui, landscape, Modifier.weight(1.4f), onPreset, onManageGroup, onSettings, onResendUnsent, onOpenEvents, onHome)
+                            if (ui.parked) ParkedExtras(ui, landscape, Modifier.weight(1.4f), onPreset, onManageGroup, onSettings, onResendUnsent, onDeleteUnsent, onReplayPast, onOpenEvents, onHome)
                         }
                     }
                     if (ui.ptt.phase == PttPhase.RECORDING || ui.ptt.phase == PttPhase.CONFIRMING) {
                         PttCenterOverlay(ui.ptt, topInset = (if (narrow) LADDER_HEIGHT else FORMATION_HEIGHT) + 20.dp)
                     }
                 }
-                BottomBar(ui, onPtt, onOpenNavi, compact = narrow)
+                BottomBar(ui, onPtt, onOpenNavi, compact = narrow, onOpenMicPermission = onOpenMicPermission)
             }
         }
     }
@@ -557,8 +569,17 @@ fun EventBanner(ui: EventBannerUi, modifier: Modifier = Modifier, big: Boolean =
 // ---------------------------------------------------------------- 6. 하단 고정
 
 @Composable
-fun BottomBar(ui: DriveDashboardUi, onPtt: () -> Unit, onOpenNavi: () -> Unit, compact: Boolean = false) {
-    val recording = ui.ptt.phase == PttPhase.RECORDING
+fun BottomBar(ui: DriveDashboardUi, onPtt: () -> Unit, onOpenNavi: () -> Unit, compact: Boolean = false, onOpenMicPermission: (() -> Unit)? = null) {
+    val kind = PttDisplay.kind(ui.ptt)
+    val recording = kind == PttDisplayKind.RECORDING
+    // 확인 중 누르면 = 취소(F16) — 버튼이 그 뜻을 말한다
+    val confirming = kind == PttDisplayKind.CONFIRM_VOICE || kind == PttDisplayKind.CONFIRM_COUNTDOWN
+    val container = when {
+        recording -> DriveTone.danger
+        confirming -> PttColors.confirm
+        else -> DriveTone.ptt
+    }
+    val content = if (recording || confirming) Color.White else DriveTone.onPtt
     Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             Column(Modifier.weight(1.3f), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -566,19 +587,33 @@ fun BottomBar(ui: DriveDashboardUi, onPtt: () -> Unit, onOpenNavi: () -> Unit, c
                     onClick = onPtt,
                     modifier = Modifier.fillMaxWidth().height(84.dp),
                     shape = RoundedCornerShape(22.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = if (recording) DriveTone.danger else DriveTone.ptt, contentColor = if (recording) Color.White else DriveTone.onPtt),
+                    colors = ButtonDefaults.buttonColors(containerColor = container, contentColor = content),
                 ) {
-                    Canvas(Modifier.size(34.dp)) { drawMic(size, if (recording) Color.White else DriveTone.onPtt) }
+                    Canvas(Modifier.size(34.dp)) { drawMic(size, content) }
                     Spacer(Modifier.width(14.dp))
-                    if (recording) {
-                        Waveform(ui.ptt.level, Color.White, Modifier.width(90.dp).height(34.dp))
-                        Spacer(Modifier.width(14.dp))
-                        Text(stringResource(R.string.dash_ptt_seconds, ui.ptt.seconds), fontSize = 28.sp, fontWeight = FontWeight.Bold)
-                    } else {
-                        Text(stringResource(R.string.dash_ptt), fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                    when {
+                        recording -> {
+                            Waveform(ui.ptt.level, Color.White, Modifier.width(90.dp).height(34.dp))
+                            Spacer(Modifier.width(14.dp))
+                            Text(stringResource(R.string.dash_ptt_seconds, ui.ptt.seconds), fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                        }
+                        confirming -> Text(stringResource(R.string.ptt_press_to_cancel), fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                        else -> Text(stringResource(R.string.dash_ptt), fontSize = 28.sp, fontWeight = FontWeight.Bold)
                     }
                 }
-                Text(stringResource(R.string.dash_ptt_hint), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+                when {
+                    // 마이크 권한 없음 — 안내는 늘, [권한 열기]는 정차 중에만(주행 중 입력 UI 비활성, CLAUDE.md 규칙 6)
+                    ui.ptt.micDenied -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                        Icon(Icons.Filled.Warning, contentDescription = null, tint = DriveTone.caution, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(stringResource(R.string.ptt_mic_denied), fontSize = 16.sp, color = DriveTone.caution, fontWeight = FontWeight.SemiBold)
+                        if (ui.parked && onOpenMicPermission != null) {
+                            Spacer(Modifier.width(6.dp))
+                            TextButton(onClick = onOpenMicPermission, modifier = Modifier.height(36.dp)) { Text(stringResource(R.string.ptt_open_mic_permission), fontSize = 16.sp) }
+                        }
+                    }
+                    ui.pttKeyHint -> Text(stringResource(R.string.dash_ptt_hint), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+                }
             }
             OutlinedButton(onClick = onOpenNavi, modifier = Modifier.weight(1f).height(84.dp), shape = RoundedCornerShape(22.dp)) {
                 Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(30.dp))
@@ -621,26 +656,41 @@ fun Waveform(level: Float, color: Color, modifier: Modifier = Modifier, bars: In
 
 // ---------------------------------------------------------------- 7. 무전 오버레이
 
-/** 수신 재생(보낸 차 색 띠, 재생 끝 3초 뒤 사라짐)·전송됨은 상단 띠 */
+/** 수신 재생(보낸 차 색 띠, 재생 끝 3초 뒤 사라짐)·보내는 중·보냄·3초 안내는 상단 띠 — 무엇을 그릴지는 [PttDisplay.kind] */
 @Composable
 fun PttTopBand(ptt: PttUi, modifier: Modifier = Modifier) {
-    when (ptt.phase) {
-        PttPhase.PLAYING -> {
+    when (val kind = PttDisplay.kind(ptt)) {
+        PttDisplayKind.PLAYING, PttDisplayKind.PLAYED -> {
             val bg = Color(ptt.fromColorArgb ?: DriveDashboardSamples.BLUE)
             Surface(modifier.fillMaxWidth(), color = bg) {
                 Row(Modifier.padding(horizontal = 24.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(40.dp))
-                    Text(stringResource(R.string.dash_ptt_playing_big, ptt.fromName ?: "", ptt.durationText ?: ""), color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Bold)
-                    Waveform(0.6f, Color.White, Modifier.width(160.dp).height(34.dp))
+                    Icon(if (kind == PttDisplayKind.PLAYED) Icons.Filled.CheckCircle else Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(40.dp))
+                    Text(playingText(ptt), color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (kind == PttDisplayKind.PLAYING) Waveform(0.6f, Color.White, Modifier.width(160.dp).height(34.dp))
                     Spacer(Modifier.weight(1f))
-                    Text("0:%02d".format(ptt.seconds), color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
+                    if (ptt.queuedIncoming > 0) Text(stringResource(R.string.ptt_queued_more, ptt.queuedIncoming), color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
+                    Text(PttFormat.clock(ptt.seconds * 1_000L), color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
-        PttPhase.SENT -> Surface(modifier.fillMaxWidth(), color = DriveTone.info) {
+        PttDisplayKind.SENDING, PttDisplayKind.SENT -> Surface(modifier.fillMaxWidth(), color = DriveTone.info) {
             Row(Modifier.padding(horizontal = 24.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                Icon(Icons.Filled.Send, contentDescription = null, tint = Color.Black, modifier = Modifier.size(30.dp))
-                Text(stringResource(R.string.dash_ptt_sent, ptt.sentTo), color = Color.Black, fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
+                Icon(if (kind == PttDisplayKind.SENT) Icons.Filled.CheckCircle else Icons.Filled.Send, contentDescription = null, tint = Color.Black, modifier = Modifier.size(30.dp))
+                Text(if (kind == PttDisplayKind.SENT) sentText(ptt) else stringResource(R.string.ptt_sending), color = Color.Black, fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+        PttDisplayKind.NOTICE -> {
+            val notice = ptt.notice!!
+            val caution = PttDisplay.noticeTone(notice) == Tone.CAUTION
+            val bg = if (caution) DriveTone.caution else PttColors.neutral
+            val fg = if (caution) Color.Black else Color.White
+            val (title, hint) = noticeTexts(notice)
+            Surface(modifier.fillMaxWidth(), color = bg) {
+                Row(Modifier.padding(horizontal = 24.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Icon(if (caution) Icons.Filled.Warning else Icons.Filled.Info, contentDescription = null, tint = fg, modifier = Modifier.size(30.dp))
+                    Text(stringResource(title), color = fg, fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
+                    hint?.let { Text(stringResource(it), color = fg, fontSize = 22.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                }
             }
         }
         else -> Unit
@@ -680,6 +730,11 @@ fun PttCenterOverlay(ptt: PttUi, topInset: Dp, modifier: Modifier = Modifier) {
                         CountdownRing(ptt.seconds, ptt.totalSeconds, 168.dp)
                         Spacer(Modifier.height(16.dp))
                         if (ptt.listening) ListeningDots(MaterialTheme.colorScheme.primary)
+                        // 확인 중 누르면 = 취소(카운트다운 모드는 위 문구가 이미 말한다)
+                        if (!ptt.fallbackCountdown) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(stringResource(R.string.ptt_cancel_hint), fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                     else -> Unit
                 }
@@ -726,7 +781,9 @@ fun ParkedExtras(
     onPreset: (String) -> Unit,
     onManageGroup: () -> Unit,
     onSettings: () -> Unit,
-    onResendUnsent: () -> Unit,
+    onResendUnsent: (String) -> Unit,
+    onDeleteUnsent: (String) -> Unit = {},
+    onReplayPast: (String) -> Unit = {},
     onOpenEvents: (() -> Unit)? = null,
     onHome: (() -> Unit)? = null,
 ) {
@@ -758,18 +815,12 @@ fun ParkedExtras(
             }
         }
         val side: @Composable (Modifier) -> Unit = { m ->
-            Column(m, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                // 보내지 않은 무전(F16) — 없으면 숨긴다
-                if (ui.unsentPtt.isNotEmpty()) Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
-                    Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(stringResource(R.string.dash_unsent_ptt, ui.unsentPtt.size), fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Spacer(Modifier.weight(1f))
-                            OutlinedButton(onClick = onResendUnsent, modifier = Modifier.height(52.dp)) { Text(stringResource(R.string.dash_resend), fontSize = 18.sp) }
-                        }
-                        ui.unsentPtt.forEach { u -> Row(verticalAlignment = Alignment.CenterVertically) { Canvas(Modifier.size(20.dp)) { drawMic(size, DriveTone.caution) }; Spacer(Modifier.width(10.dp)); Text(u, fontSize = 20.sp) } }
-                    }
-                }
+            // 정차 중이라 스크롤 허용(보내지 않은 무전 최대 5 + 지난 무전 최대 5)
+            Column(m.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                // 보내지 않은 무전(F16) — 없으면 숨긴다. 줄마다 [다시 보내기]·[지우기](정차 중에만 — 이 블록 자체가 정차 중에만 보인다)
+                if (ui.unsentPtt.isNotEmpty()) UnsentPttBlock(ui.unsentPtt, onResendUnsent, onDeleteUnsent)
+                // 지난 무전(F16) — 탭하면 다시 듣기. 없으면 숨긴다
+                if (ui.pastPtt.isNotEmpty()) PastPttBlock(ui.pastPtt, onReplayPast)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = onManageGroup, modifier = Modifier.weight(1f).height(64.dp), shape = RoundedCornerShape(16.dp)) { Text(stringResource(R.string.dash_manage_group), fontSize = 20.sp) }
                     OutlinedButton(onClick = onSettings, modifier = Modifier.weight(1f).height(64.dp), shape = RoundedCornerShape(16.dp)) { Text(stringResource(R.string.dash_settings), fontSize = 20.sp) }
@@ -779,5 +830,63 @@ fun ParkedExtras(
         }
         if (landscape) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) { lists(Modifier.weight(1.4f).fillMaxHeight()); side(Modifier.weight(1f)) }
         else { lists(Modifier.fillMaxWidth()); side(Modifier.fillMaxWidth()) }
+    }
+}
+
+/** '보내지 않은 무전 N개' — 줄마다 길이·시각·사유 + [다시 보내기]·[지우기] */
+@Composable
+private fun UnsentPttBlock(rows: List<UnsentPttUi>, onResend: (String) -> Unit, onDelete: (String) -> Unit) {
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(stringResource(R.string.dash_unsent_ptt, rows.size), fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            rows.forEach { u ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val tint = if (u.failed) DriveTone.caution else MaterialTheme.colorScheme.onSurfaceVariant
+                    Canvas(Modifier.size(22.dp)) { drawMic(size, tint) }
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(u.text, fontSize = 20.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(u.reasonText, fontSize = 16.sp, color = tint, maxLines = 1)
+                    }
+                    OutlinedButton(onClick = { onResend(u.id) }, modifier = Modifier.height(52.dp), shape = RoundedCornerShape(14.dp)) {
+                        Icon(Icons.Filled.Send, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(stringResource(R.string.dash_resend), fontSize = 18.sp)
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    TextButton(onClick = { onDelete(u.id) }, modifier = Modifier.height(52.dp)) { Text(stringResource(R.string.dash_delete_unsent), fontSize = 18.sp) }
+                }
+            }
+        }
+    }
+}
+
+/** '지난 무전' — 줄 전체가 탭 영역(다시 듣기). 보낸 차 색 점 + "아빠 차 무전 0:07" + 상태 꼬리표 + "3분 전" */
+@Composable
+private fun PastPttBlock(rows: List<PastPttUi>, onReplay: (String) -> Unit) {
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.dash_past_ptt), fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(12.dp))
+                Text(stringResource(R.string.dash_past_ptt_hint), fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            rows.forEach { v ->
+                Surface(onClick = { onReplay(v.voiceId) }, shape = RoundedCornerShape(14.dp), color = Color.Transparent, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
+                    Row(Modifier.padding(horizontal = 4.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(14.dp).clip(CircleShape).background(v.colorArgb?.let { Color(it) } ?: MaterialTheme.colorScheme.onSurfaceVariant))
+                        Spacer(Modifier.width(10.dp))
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(26.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(v.text, fontSize = 20.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        v.statusText?.let { st ->
+                            Text(st, fontSize = 16.sp, color = DriveTone.color(v.tone), fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.width(10.dp))
+                        }
+                        Text(v.whenText, fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
     }
 }

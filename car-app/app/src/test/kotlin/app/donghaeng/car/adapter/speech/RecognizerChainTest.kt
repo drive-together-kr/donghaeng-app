@@ -163,4 +163,24 @@ class RecognizerChainTest {
         assertEquals(1, android.prepares)
         assertEquals(1, vosk.prepares)
     }
+
+    @Test
+    fun `카운트다운 강제(디버그) — 인식기가 있어도 후보 없음, 듣지 않고 null, 주입 답은 받는다`() = runTest {
+        android.then(100, ListenResult.Heard(YesNo.YES))
+        val c = chain()
+        c.forceCountdown = true
+        assertFalse(c.hasCandidate())
+        val o = c.listen(5_000)
+        assertNull(o.answer)
+        assertTrue(o.trail.contains("forced-countdown"))
+        assertEquals(0, android.listens)
+        assertTrue(c.describe().endsWith("forcedCountdown"))
+
+        c.injectAnswer(YesNo.NO)
+        assertTrue("주입 답이 있으면 후보가 있다", c.hasCandidate())
+        assertEquals(YesNo.NO, c.listen(5_000).answer)
+
+        c.forceCountdown = false
+        assertTrue(c.hasCandidate())
+    }
 }

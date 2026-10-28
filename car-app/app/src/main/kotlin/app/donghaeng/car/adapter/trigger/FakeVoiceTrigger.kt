@@ -19,6 +19,8 @@ class FakeVoiceTrigger(
     val sessionActive: Boolean
         get() = TriggerPolicy.sessionActive(groupActive.value, settings.handleButton.value, otherMedia, otherStoppedAt?.let { clock() - it }, reclaimDelayMs)
 
+    override fun yieldingMediaKeys(): Boolean = otherMedia || otherStoppedAt?.let { clock() - it < reclaimDelayMs } == true
+
     fun setOtherMediaActive(active: Boolean) {
         if (otherMedia && !active) otherStoppedAt = clock()
         otherMedia = active
