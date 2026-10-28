@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- T32 클라우드: 숨은 메뉴 '서버 주소'(설정 제목 3초 안에 5번 탭)·MQTT 전송 표시. strings.xml 병합 충돌을 피하려고 따로 둔다. -->
+<resources>
+    <!-- 숨은 메뉴 '서버 주소' 다이얼로그 -->
+    <string name="t32_server_dialog_title">서버 주소</string>
+    <string name="t32_server_current_base">지금 서버: %1$s (%2$s)</string>
+    <string name="t32_server_current_mqtt">지금 MQTT: %1$s</string>
+    <string name="t32_server_source_build">빌드 기본값</string>
+    <string name="t32_server_source_override">사용자 지정</string>
+    <string name="t32_server_mqtt_from_server">페어링 때 서버가 준 주소</string>
+    <string name="t32_server_build_defaults">빌드 기본값: %1$s · %2$s</string>
+    <string name="t32_server_label_base">서버 주소 (http(s)://호스트[:포트])</string>
+    <string name="t32_server_label_mqtt">MQTT 주소 (비우면 서버가 준 주소)</string>
+    <string name="t32_server_wss_hint">https 서버면 ssl 8883 이 막힐 때 wss://호스트/mqtt (443) 로 자동 전환합니다.</string>
+    <string name="t32_server_btn_save">저장</string>
+    <string name="t32_server_btn_reset">기본값 복원</string>
+    <string name="t32_server_unchanged">바뀐 것이 없어요.</string>
+    <string name="t32_server_driving_disabled">주행 중에는 서버 주소를 바꿀 수 없어요. 정차한 뒤 다시 시도하세요.</string>
+
+    <!-- 입력 오류 -->
+    <string name="t32_server_err_base_format">http:// 또는 https:// 로 시작하는 주소를 넣어 주세요.</string>
+    <string name="t32_server_err_base_path">경로 없이 호스트[:포트]까지만 넣어 주세요.</string>
+    <string name="t32_server_err_base_cleartext">이 빌드는 평문 http 를 %1$s 에만 허용해요. https 주소를 넣어 주세요.</string>
+    <string name="t32_server_err_mqtt_format">tcp:// ssl:// ws:// wss:// 중 하나로 시작하는 주소를 넣어 주세요.</string>
+    <string name="t32_server_err_mqtt_plaintext">서버가 https 라서 MQTT 도 ssl:// 또는 wss:// 여야 해요.</string>
+
+    <!-- 확인 창 -->
+    <string name="t32_server_confirm_base_title">서버를 바꿀까요?</string>
+    <string name="t32_server_confirm_base_message">%1$s 로 바꿉니다. 다른 서버의 연결 정보는 쓸 수 없어서 이 차량의 연결과 현재 그룹이 지워지고, 폰에서 다시 연결해야 해요.</string>
+    <string name="t32_server_confirm_mqtt_title">MQTT 주소를 바꿀까요?</string>
+    <string name="t32_server_confirm_mqtt_message">%1$s 로 MQTT 를 다시 연결해요. 차량 연결은 그대로예요.</string>
+    <string name="t32_server_confirm_reset_title">기본값으로 되돌릴까요?</string>
+    <string name="t32_server_confirm_ok">바꾸기</string>
+
+    <!-- 저장 뒤 안내 (설정 연결 카드) -->
+    <string name="t32_server_notice_base_changed">서버 주소를 바꿨어요. 폰에서 다시 연결해 주세요.</string>
+    <string name="t32_server_notice_mqtt_reconnected">MQTT 를 새 주소로 다시 연결했어요.</string>
+
+    <!-- 홈·진단 서버 주소 표시 -->
+    <string name="t32_address_override">%1$s (사용자 지정)</string>
+
+    <!-- 진단 MQTT 카드 -->
+    <string name="t32_diag_mqtt_transport">전송</string>
+    <string name="t32_diag_mqtt_transport_value">%1$s · 전환 %2$d회</string>
+</resources>

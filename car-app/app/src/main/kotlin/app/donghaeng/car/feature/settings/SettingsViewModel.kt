@@ -2,13 +2,19 @@ package app.donghaeng.car.feature.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.donghaeng.car.BuildConfig
 import app.donghaeng.car.core.common.ClearRecord
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.core.common.DrivingStateMonitor
 import app.donghaeng.car.core.common.TokenClearReason
 import app.donghaeng.car.core.common.TokenStore
 import app.donghaeng.car.core.common.TokenStoreState
+import app.donghaeng.car.core.network.ServerAddressRules
+import app.donghaeng.car.core.network.ServerAddresses
+import app.donghaeng.car.core.network.ServerConfig
+import app.donghaeng.car.core.network.ServerOverrides
 import app.donghaeng.car.domain.pairing.PairingRepository
+import app.donghaeng.car.domain.session.ServerSwitcher
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -33,11 +39,29 @@ data class SettingsUiState(
     val isDriving: Boolean = false,
     /** T33 마지막 토큰 삭제 기록 */
     val lastClear: ClearRecord? = null,
+    /** T32 지금 서버·브로커 주소(사용자 지정 ?: 빌드 기본값) — 숨은 메뉴 '서버 주소' 다이얼로그 */
+    val server: ServerAddresses = ServerConfig.BUILD_DEFAULTS,
+    /** T32 숨은 메뉴로 방금 주소를 바꿨다(안내 문구). null = 없음 */
+    val serverNotice: ServerNotice? = null,
 )
 
-private data class ToggleSide(val voice: Boolean, val autoFollow: Boolean, val latency: Boolean)
+/** T32 숨은 메뉴 저장 뒤 안내 */
+enum class ServerNotice {
+    /** 서버 주소가 바뀌어 연결 정보를 지웠다 — 폰에서 다시 연결 */
+    BASE_CHANGED,
 
-/** 설정 — 연결 해제(반복 시연용, 확인 창 뒤), 저장소 초기화(읽기 실패 시), 진단 화면 진입, 음성 안내 on/off(T27). */
+    /** MQTT 주소만 바뀌어 다시 연결했다 */
+    MQTT_RECONNECTED,
+}
+
+private data class ToggleSide(val voice: Boolean, val autoFollow: Boolean, val latency: Boolean, val server: ServerAddresses)
+
+private data class LocalFlags(val justDisconnected: Boolean = false, val serverNotice: ServerNotice? = null)
+
+/**
+ * 설정 — 연결 해제(반복 시연용, 확인 창 뒤), 저장소 초기화(읽기 실패 시), 진단 화면 진입, 음성 안내 on/off(T27).
+ * T32: 숨은 메뉴 '서버 주소'(제목 3초 안에 5번 탭, 주행 중 비활성) — [checkServerForm] → 확인 창 → [applyServer]/[resetServer].
+ */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val repository: PairingRepository,
@@ -46,21 +70,28 @@ class SettingsViewModel @Inject constructor(
     private val routeSync: app.donghaeng.car.domain.routesync.RouteSyncEngine,
     private val latency: app.donghaeng.car.domain.latency.LatencyMeter,
     driving: DrivingStateMonitor,
+    private val serverConfig: ServerConfig,
+    private val serverSwitcher: ServerSwitcher,
 ) : ViewModel() {
 
-    private val justDisconnected = MutableStateFlow(false)
+    private val flags = MutableStateFlow(LocalFlags())
     private var drivingNow = false
 
     init {
         viewModelScope.launch { tokenStore.load() }
     }
 
-    private val toggles = combine(voiceAnnouncer.state, routeSync.state, latency.state) { voice, rs, lat -> ToggleSide(voice.enabled, rs.autoFollow, lat.overlayEnabled) }
+    private val toggles = combine(voiceAnnouncer.state, routeSync.state, latency.state, serverConfig.current) { voice, rs, lat, server ->
+        ToggleSide(voice.enabled, rs.autoFollow, lat.overlayEnabled, server)
+    }
 
-    val uiState: StateFlow<SettingsUiState> = combine(tokenStore.state, justDisconnected, toggles, driving.isDriving().onStart { emit(false) }, tokenStore.lastClear) { tokens, disconnected, t, isDriving, lastClear ->
+    val uiState: StateFlow<SettingsUiState> = combine(tokenStore.state, flags, toggles, driving.isDriving().onStart { emit(false) }, tokenStore.lastClear) { tokens, f, t, isDriving, lastClear ->
         drivingNow = isDriving
-        SettingsUiState(tokens = tokens, justDisconnected = disconnected, voiceEnabled = t.voice, autoFollow = t.autoFollow, latencyOverlay = t.latency, isDriving = isDriving, lastClear = lastClear)
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState(tokens = tokenStore.state.value, lastClear = tokenStore.lastClear.value))
+        SettingsUiState(
+            tokens = tokens, justDisconnected = f.justDisconnected, voiceEnabled = t.voice, autoFollow = t.autoFollow, latencyOverlay = t.latency,
+            isDriving = isDriving, lastClear = lastClear, server = t.server, serverNotice = f.serverNotice,
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState(tokens = tokenStore.state.value, lastClear = tokenStore.lastClear.value, server = serverConfig.current.value))
 
     fun setVoiceEnabled(enabled: Boolean) = voiceAnnouncer.setEnabled(enabled)
 
@@ -81,7 +112,33 @@ class SettingsViewModel @Inject constructor(
         }
         viewModelScope.launch {
             repository.disconnect(reason)
-            justDisconnected.value = true
+            flags.value = flags.value.copy(justDisconnected = true)
+        }
+    }
+
+    /** T32 숨은 메뉴 [저장] 전 검증 — 화면이 결과로 오류 표시 또는 확인 창을 띄운다 */
+    fun checkServerForm(baseUrl: String, mqttUri: String): ServerAddressRules.FormResult =
+        ServerAddressRules.checkForm(baseUrl, mqttUri, BuildConfig.DH_CLEARTEXT_HOSTS, serverConfig.current.value)
+
+    /** T32 확인 창에서 '바꾸기'. 주행 중이면 무시 */
+    fun applyServer(overrides: ServerOverrides) = switchServer { serverSwitcher.apply(overrides) }
+
+    /** T32 '기본값 복원'(확인 창 뒤). 주행 중이면 무시 */
+    fun resetServer() = switchServer { serverSwitcher.reset() }
+
+    private fun switchServer(block: suspend () -> app.donghaeng.car.core.network.ServerChange) {
+        if (drivingNow) {
+            DhLog.w("settings server change ignored while driving")
+            return
+        }
+        viewModelScope.launch {
+            val change = block()
+            val notice = when {
+                change.baseUrlChanged -> ServerNotice.BASE_CHANGED
+                change.mqttUriChanged -> ServerNotice.MQTT_RECONNECTED
+                else -> null
+            }
+            flags.value = flags.value.copy(serverNotice = notice, justDisconnected = false)
         }
     }
 }

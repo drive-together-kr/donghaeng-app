@@ -35,9 +35,10 @@ annotation class RefreshClient
 /**
  * Retrofit 2.11 + OkHttp 4.12 + kotlinx-serialization 컨버터([DhJson.json] — ignoreUnknownKeys, explicitNulls=false).
  *
- * - base URL = [ServerConfig.publicBaseUrl] + "/" (BuildConfig ← Gradle 속성, CLAUDE.md 규칙 12)
+ * - Retrofit base URL = 빌드 기본값 [ServerConfig.BUILD_DEFAULT_BASE_URL] + "/" (BuildConfig ← Gradle 속성, CLAUDE.md 규칙 12).
+ *   T32: 숨은 메뉴로 바꾼 서버 주소는 [ServerHostInterceptor] 가 요청마다 scheme·host·port 만 바꿔 보낸다(Retrofit 재생성 없음). 로그는 바뀐 주소로 찍힌다.
  * - 로깅은 **디버그 빌드에서만** BASIC(메서드·URL·상태·크기, 본문·헤더 없음) + `Authorization` 헤더 가림. 출력은 [DhLog] 를 거친다.
- * - 평문 http 는 매니페스트 usesCleartextTraffic placeholder 가 base URL 스킴에 따라 허용/차단한다.
+ * - 평문 http 는 매니페스트 networkSecurityConfig placeholder(빌드 기본 주소 스킴: http → 전부 허용, https → 10.0.2.2·localhost 만)가 허용/차단한다.
  * - T33: 인증 경로 401 → [VehicleTokenAuthenticator] 가 [TokenRefresher] 로 한 번 갱신하고 재시도한다.
  */
 @Module
@@ -46,10 +47,12 @@ object NetworkModule {
 
     private val JSON_MEDIA_TYPE = "application/json".toMediaType()
 
-    private fun baseBuilder(): OkHttpClient.Builder = OkHttpClient.Builder()
+    private fun baseBuilder(serverConfig: ServerConfig): OkHttpClient.Builder = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
+        // T32: 맨 앞 — 뒤의 로깅·인증 인터셉터가 바뀐 주소를 본다
+        .addInterceptor(ServerHostInterceptor(serverConfig, ServerConfig.BUILD_DEFAULT_BASE_URL))
         .apply {
             if (BuildConfig.DEBUG) {
                 val logging = HttpLoggingInterceptor { message -> DhLog.d("http $message") }
@@ -60,14 +63,14 @@ object NetworkModule {
         }
 
     private fun retrofit(client: OkHttpClient): Retrofit = Retrofit.Builder()
-        .baseUrl(ServerConfig.publicBaseUrl + "/")
+        .baseUrl(ServerConfig.BUILD_DEFAULT_BASE_URL + "/")
         .client(client)
         .addConverterFactory(DhJson.json.asConverterFactory(JSON_MEDIA_TYPE))
         .build()
 
     @Provides
     @Singleton
-    fun provideOkHttpClient(tokenStore: TokenStore, refresher: Lazy<TokenRefresher>): OkHttpClient = baseBuilder()
+    fun provideOkHttpClient(tokenStore: TokenStore, refresher: Lazy<TokenRefresher>, serverConfig: ServerConfig): OkHttpClient = baseBuilder(serverConfig)
         // 차량 JWT (T17 그룹 API) — 인증 경로에만 붙는다. 로깅 인터셉터보다 앞(addInterceptor 순서)일 필요는 없다: 헤더는 로그에서 가린다
         .addInterceptor(VehicleAuthInterceptor(tokenStore))
         .authenticator(
@@ -89,7 +92,7 @@ object NetworkModule {
     @Provides
     @Singleton
     @RefreshClient
-    fun provideRefreshIdentityApi(): IdentityApi = retrofit(baseBuilder().build()).create()
+    fun provideRefreshIdentityApi(serverConfig: ServerConfig): IdentityApi = retrofit(baseBuilder(serverConfig).build()).create()
 
     @Provides
     @Singleton

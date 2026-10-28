@@ -13,8 +13,10 @@ enum class MqttState { DISCONNECTED, CONNECTING, CONNECTED, RECONNECTING }
 /**
  * 게이트웨이 상태 스냅샷. 토큰·좌표는 들어 있지 않다(그대로 화면·로그에 써도 된다).
  *
- * @param brokerUri    실제 접속 URI(서버가 준 `mqtt.uri`)
- * @param tls          ssl:// 로 접속 중인가
+ * @param brokerUri    실제 접속 대상(서버가 준 `mqtt.uri` 또는 숨은 메뉴 MQTT 주소를 해석한 것 — WSS 로 바꾸면 `wss://…/mqtt`)
+ * @param tls          TLS(ssl:// · wss://)로 접속 중인가
+ * @param transport    지금 전송(tcp/tls/ws/wss, T32)
+ * @param transportFallbacks 이번 접속에서 전송을 바꾼 횟수(ssl 8883 → wss 443 폴백, T32)
  * @param lastError    마지막 연결 실패·거부 사유(사람이 읽는 한 줄). 연결되면 null
  * @param connectedAtMs 마지막으로 CONNECTED 가 된 시각(epoch ms)
  * @param reconnects   끊겼다가 다시 붙은 횟수
@@ -27,6 +29,8 @@ data class MqttStatus(
     val state: MqttState = MqttState.DISCONNECTED,
     val brokerUri: String? = null,
     val tls: Boolean = false,
+    val transport: MqttTransport = MqttTransport.TCP,
+    val transportFallbacks: Int = 0,
     val lastError: String? = null,
     val connectedAtMs: Long? = null,
     val reconnects: Int = 0,

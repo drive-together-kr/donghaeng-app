@@ -264,8 +264,8 @@ private fun BuildInfoCard(state: HomeUiState) {
         Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             InfoRow(stringResource(R.string.home_label_flavor), state.flavor)
             InfoRow(stringResource(R.string.home_label_version), state.versionName)
-            InfoRow(stringResource(R.string.home_label_base_url), state.publicBaseUrl)
-            InfoRow(stringResource(R.string.home_label_mqtt_uri), state.mqttPublicUri)
+            InfoRow(stringResource(R.string.home_label_base_url), if (state.baseUrlOverridden) stringResource(R.string.t32_address_override, state.publicBaseUrl) else state.publicBaseUrl)
+            InfoRow(stringResource(R.string.home_label_mqtt_uri), if (state.mqttUriOverridden) stringResource(R.string.t32_address_override, state.mqttPublicUri) else state.mqttPublicUri)
         }
     }
 }

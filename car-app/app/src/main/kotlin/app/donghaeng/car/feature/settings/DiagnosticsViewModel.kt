@@ -13,6 +13,7 @@ import app.donghaeng.car.core.common.DrivingStatus
 import app.donghaeng.car.core.common.TextMasking
 import app.donghaeng.car.core.common.TokenStore
 import app.donghaeng.car.core.common.TokenStoreState
+import app.donghaeng.car.core.network.ServerAddresses
 import app.donghaeng.car.core.network.ServerConfig
 import app.donghaeng.car.core.network.mqtt.MqttGateway
 import app.donghaeng.car.core.network.mqtt.MqttStatus
@@ -66,8 +67,11 @@ data class DiagnosticsUiState(
     val flavor: String = BuildConfig.FLAVOR,
     val adapter: String = BuildConfig.ADAPTER,
     val versionName: String = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
-    val publicBaseUrl: String = ServerConfig.publicBaseUrl,
-    val mqttPublicUri: String = ServerConfig.mqttPublicUri,
+    /** T32 지금 서버·브로커 주소(숨은 메뉴 사용자 지정 ?: 빌드 기본값) */
+    val publicBaseUrl: String = ServerConfig.BUILD_DEFAULT_BASE_URL,
+    val mqttPublicUri: String = ServerConfig.BUILD_DEFAULT_MQTT_URI,
+    val baseUrlOverridden: Boolean = false,
+    val mqttUriOverridden: Boolean = false,
     val debug: Boolean = BuildConfig.DEBUG,
     val androidApi: Int = Build.VERSION.SDK_INT,
     val deviceModel: String = Build.MODEL ?: "?",
@@ -156,6 +160,7 @@ class DiagnosticsViewModel @Inject constructor(
     latency: app.donghaeng.car.domain.latency.LatencyMeter,
     tokenRefresher: TokenRefresher,
     sessionStore: GroupSessionStore,
+    serverConfig: ServerConfig,
 ) : ViewModel() {
 
     private val naviActionResult = MutableStateFlow<String?>(null)
@@ -207,7 +212,13 @@ class DiagnosticsViewModel @Inject constructor(
             latency = sess.latency,
             clockSync = sess.clock,
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DiagnosticsUiState(report = reporter.report.value, probe = sdkProbe.report.value))
+    }.combine(serverConfig.current) { ui, server -> ui.withServer(server) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DiagnosticsUiState(report = reporter.report.value, probe = sdkProbe.report.value).withServer(serverConfig.current.value))
+
+    private fun DiagnosticsUiState.withServer(server: ServerAddresses) = copy(
+        publicBaseUrl = server.publicBaseUrl, mqttPublicUri = server.mqttPublicUri,
+        baseUrlOverridden = server.baseUrlOverridden, mqttUriOverridden = server.mqttUriOverride != null,
+    )
 
     /** 내비 요청 → 결과는 [DiagnosticsUiState.naviActionResult] 와 내비 카드의 콜백 수로 확인한다 */
     fun onNaviAction(action: NaviDebugAction) {

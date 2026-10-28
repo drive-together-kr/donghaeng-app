@@ -4,7 +4,10 @@ import app.donghaeng.car.core.common.ClearRecord
 import app.donghaeng.car.core.common.StoredCredentials
 import app.donghaeng.car.core.common.TokenClearReason
 import app.donghaeng.car.core.common.TokenStoreState
+import app.donghaeng.car.core.network.InMemoryServerOverrideStorage
+import app.donghaeng.car.core.network.ServerConfig
 import app.donghaeng.car.core.network.mqtt.HiveMqttGateway
+import app.donghaeng.car.core.network.mqtt.InMemoryMqttTransportMemory
 import app.donghaeng.car.core.network.mqtt.MqttState
 import app.donghaeng.car.core.network.mqtt.MqttStatus
 import app.donghaeng.car.domain.pairing.TokenRefreshState
@@ -64,15 +67,16 @@ class HomeBannerTest {
 
     @Test
     fun `브로커 주소 정책 거부도 30초 뒤 서버 연결 끊김 배너로 보인다 (T33 리뷰)`() = runTest {
-        val gateway = HiveMqttGateway()
-        // ws:// 는 지원하지 않는 스킴 → MqttUriPolicy 가 거부(클라이언트를 만들지 않는다)
-        gateway.connect(creds.copy(mqttUri = "ws://10.0.2.2:8083"))
+        // 서버가 https 인데 평문 tcp:// 브로커 → MqttUriPolicy 가 거부(클라이언트를 만들지 않는다). T32 부터 ws:// 는 지원 스킴이라 https + tcp 로 바꿨다
+        val https = ServerConfig("https://1-2-3-4.sslip.io", "ssl://1-2-3-4.sslip.io:8883", InMemoryServerOverrideStorage())
+        val gateway = HiveMqttGateway(https, InMemoryMqttTransportMemory())
+        gateway.connect(creds.copy(mqttUri = "tcp://1-2-3-4.sslip.io:1883"))
         val first = gateway.status.value
         assertEquals(MqttState.DISCONNECTED, first.state)
         assertTrue("refused 사유: ${first.lastError}", first.lastError?.startsWith("refused:") == true)
         val since = assertNotNullValue(first.notConnectedSinceMs)
         // 토큰 갱신마다 connect 가 다시 와도 처음 시각을 유지한다
-        gateway.connect(creds.copy(mqttUri = "ws://10.0.2.2:8083", vehicleAccessToken = "jwt-2"))
+        gateway.connect(creds.copy(mqttUri = "tcp://1-2-3-4.sslip.io:1883", vehicleAccessToken = "jwt-2"))
         assertEquals(since, gateway.status.value.notConnectedSinceMs)
 
         val banner = HomeViewModel.banner(TokenStoreState.Present(creds), gateway.status.value, null, StoreRetryState(), since + 31_000)

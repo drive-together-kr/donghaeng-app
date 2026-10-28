@@ -1,5 +1,8 @@
 package app.donghaeng.car.feature.settings
 
+import android.os.SystemClock
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,6 +25,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -33,6 +37,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.donghaeng.car.R
 import app.donghaeng.car.core.common.TextMasking
 import app.donghaeng.car.core.common.TokenStoreState
+import app.donghaeng.car.core.network.ServerAddressRules
+import app.donghaeng.car.core.network.ServerOverrides
 import app.donghaeng.car.ui.components.DestructiveConfirmDialog
 import app.donghaeng.car.ui.components.clearReasonLabel
 import app.donghaeng.car.ui.components.formatShortTime
@@ -47,12 +53,17 @@ fun SettingsRoute(
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    SettingsScreen(state = state, onBack = onBack, onDisconnect = viewModel::disconnect, onOpenDiagnostics = onOpenDiagnostics, onVoiceEnabled = viewModel::setVoiceEnabled, onAutoFollow = viewModel::setAutoFollow, onLatencyOverlay = viewModel::setLatencyOverlay, onResetStore = viewModel::resetStore)
+    SettingsScreen(
+        state = state, onBack = onBack, onDisconnect = viewModel::disconnect, onOpenDiagnostics = onOpenDiagnostics, onVoiceEnabled = viewModel::setVoiceEnabled,
+        onAutoFollow = viewModel::setAutoFollow, onLatencyOverlay = viewModel::setLatencyOverlay, onResetStore = viewModel::resetStore,
+        onCheckServer = viewModel::checkServerForm, onApplyServer = viewModel::applyServer, onResetServer = viewModel::resetServer,
+    )
 }
 
 /**
  * 설정 화면 — 연결 상태·연결 해제(T12), 진단 진입(T11). 닉네임은 폰 쪽(`PATCH /me/vehicles`)에서 바꾼다.
  * T33: '연결 해제'·'저장소 초기화' 는 확인 창 뒤로, 주행 중 비활성. 마지막 해제 사유·시각을 보여 준다(docs/10 R13).
+ * T32: 제목을 3초 안에 5번 탭하면 숨은 메뉴 '서버 주소'([ServerAddressDialog]) — 주행 중에는 탭을 무시한다.
  */
 @Composable
 fun SettingsScreen(
@@ -64,8 +75,23 @@ fun SettingsScreen(
     onAutoFollow: (Boolean) -> Unit = {},
     onLatencyOverlay: (Boolean) -> Unit = {},
     onResetStore: () -> Unit = {},
+    onCheckServer: (String, String) -> ServerAddressRules.FormResult = { _, _ -> ServerAddressRules.FormResult.Unchanged },
+    onApplyServer: (ServerOverrides) -> Unit = {},
+    onResetServer: () -> Unit = {},
 ) {
     var confirm by rememberSaveable { mutableStateOf<String?>(null) }
+    var serverDialog by rememberSaveable { mutableStateOf(false) }
+    val titleTaps = remember { HiddenTapCounter() }
+    if (serverDialog) {
+        ServerAddressDialog(
+            current = state.server,
+            isDriving = state.isDriving,
+            onCheck = onCheckServer,
+            onApply = onApplyServer,
+            onReset = onResetServer,
+            onDismiss = { serverDialog = false },
+        )
+    }
     when (confirm) {
         CONFIRM_DISCONNECT -> DestructiveConfirmDialog(
             title = stringResource(R.string.t33_disconnect_confirm_title),
@@ -96,7 +122,14 @@ fun SettingsScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(onClick = onBack, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.settings_back)) }
                 Spacer(Modifier.width(20.dp))
-                Text(stringResource(R.string.settings_title), style = MaterialTheme.typography.headlineMedium)
+                Text(
+                    stringResource(R.string.settings_title),
+                    style = MaterialTheme.typography.headlineMedium,
+                    // T32 숨은 메뉴: 표시 없는 탭 영역(리플 없음). 주행 중에는 세지 않는다
+                    modifier = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                        if (state.isDriving) titleTaps.reset() else if (titleTaps.tap(SystemClock.elapsedRealtime())) serverDialog = true
+                    },
+                )
             }
 
             Card(modifier = Modifier.widthIn(max = 720.dp)) {
@@ -143,6 +176,13 @@ fun SettingsScreen(
                     }
                     if (state.isDriving) {
                         Text(stringResource(R.string.t33_driving_disabled), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.tertiary)
+                    }
+                    state.serverNotice?.let { notice ->
+                        Text(
+                            stringResource(if (notice == ServerNotice.BASE_CHANGED) R.string.t32_server_notice_base_changed else R.string.t32_server_notice_mqtt_reconnected),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
                     }
                     if (state.justDisconnected && tokens is TokenStoreState.Empty) {
                         Text(
