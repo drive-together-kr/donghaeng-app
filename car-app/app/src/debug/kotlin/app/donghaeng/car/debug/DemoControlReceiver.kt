@@ -149,6 +149,7 @@ class DemoControlReceiver : BroadcastReceiver() {
                 DhLog.i("demo: overlay on=$on canDraw=${android.provider.Settings.canDrawOverlays(context)}")
             }
             "notify" -> ProbeNotifications.post(context, intent.getStringExtra("kind") ?: "status")
+            "ongoing" -> if (intent.getBooleanExtra("on", true)) ProbeNotifications.postOngoing(context, intent.getStringExtra("importance") ?: "min") else ProbeNotifications.cancelOngoing(context)
             "panel" -> {
                 val svc = Intent(context, FloatingPanelProbeService::class.java)
                     .putExtra("on", intent.getBooleanExtra("on", true))

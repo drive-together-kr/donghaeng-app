@@ -101,6 +101,26 @@ class OverlayProbeService : Service() {
 /** (e) 헤드업 알림 — 카테고리·중요도별로 순정 내비 위에 뜨는지 본다 */
 object ProbeNotifications {
     private const val CHANNEL = "dh_probe_hun"
+    private const val CHANNEL_MIN = "dh_probe_min"
+    private const val CHANNEL_LOW = "dh_probe_low"
+
+    /** 상시 알림 후보 조사: 중요도 MIN/LOW 의 ongoing 알림이 Pleos 상단 카드로 뜨는지 */
+    fun postOngoing(context: Context, importance: String) {
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val (id, imp) = if (importance == "low") CHANNEL_LOW to NotificationManager.IMPORTANCE_LOW else CHANNEL_MIN to NotificationManager.IMPORTANCE_MIN
+        nm.createNotificationChannel(NotificationChannel(id, "동행 상시(조사 $importance)", imp).apply { setSound(null, null); enableVibration(false); setShowBadge(false) })
+        val n = NotificationCompat.Builder(context, id)
+            .setSmallIcon(R.mipmap.ic_launcher).setContentTitle("동행 그룹 주행 중(조사 $importance)").setContentText("상시 알림 표시 확인")
+            .setOngoing(true).setSilent(true).setOnlyAlertOnce(true).setPriority(if (importance == "low") NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_MIN)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE).build()
+        nm.notify(7700 + imp, n)
+        DhLog.i("probe ongoing: importance=$importance channelImp=${nm.getNotificationChannel(id)?.importance}")
+    }
+
+    fun cancelOngoing(context: Context) {
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.cancel(7700 + NotificationManager.IMPORTANCE_MIN); nm.cancel(7700 + NotificationManager.IMPORTANCE_LOW)
+    }
 
     fun post(context: Context, kind: String) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
