@@ -41,7 +41,6 @@ sealed interface TokenStoreState {
         override fun toString(): String = "Present(credentials=$credentials)"
     }
 
-
     /** @param reason 예외 요약(클래스 이름 위주, 토큰·경로 없음) — 진단·홈 배너 표시용 */
     data class Unavailable(val reason: String) : TokenStoreState
 }
@@ -101,6 +100,12 @@ interface TokenStore {
     suspend fun updateTokens(expectedRefreshToken: String, accessToken: String, refreshToken: String): StoredCredentials?
 
     suspend fun clear(reason: TokenClearReason)
+
+    /**
+     * 지금 저장된 refresh 토큰이 [expectedRefreshToken] 일 때만 [clear] 한다(compare-and-set — 비교와 삭제가 저장소 잠금 안에서 한 번에).
+     * 갱신 응답을 기다리는 사이 재페어링([save])으로 들어온 새 자격 증명을 옛 거부 결과로 지우지 않게 한다(T33 리뷰). 지웠으면 true.
+     */
+    suspend fun clearIf(expectedRefreshToken: String, reason: TokenClearReason): Boolean
 }
 
 /** 테스트·폴백용 메모리 저장소. 프로세스가 끝나면 사라진다. */
@@ -147,6 +152,12 @@ class InMemoryTokenStore(
         stored = updated
         publish(updated)
         return updated
+    }
+
+    override suspend fun clearIf(expectedRefreshToken: String, reason: TokenClearReason): Boolean {
+        if (stored?.refreshToken != expectedRefreshToken) return false
+        clear(reason)
+        return true
     }
 
     override suspend fun clear(reason: TokenClearReason) {

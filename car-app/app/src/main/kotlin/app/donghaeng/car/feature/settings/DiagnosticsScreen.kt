@@ -170,8 +170,13 @@ private fun TokenCard(t33: T33DiagState, state: DiagnosticsUiState) {
             LabelRow(stringResource(R.string.t33_diag_last_session_clear), clearRecordText(t33.lastSessionClear))
             val retry = t33.storeRetry
             LabelRow(stringResource(R.string.t33_diag_store_retry), "${retry.attempts}/${retry.maxAttempts}" + if (retry.exhausted) "  (소진)" else "")
+            LabelRow(stringResource(R.string.t33_diag_repair_needed), r.repairNeededSinceMs?.let { "예 — 갱신 거부 ${formatShortTime(it)} (지금 토큰 만료 때 해제)" } ?: "아니오")
             val m = state.mqtt
             LabelRow(stringResource(R.string.t33_diag_mqtt_auth), "${m.authFailures}회" + (m.lastAuthFailureAtMs?.let { "  마지막 ${formatShortTime(it)}" } ?: ""))
+            LabelRow(
+                stringResource(R.string.t33_diag_mqtt_rotation),
+                "연속 회전 ${r.mqttRotationStreak}회" + (r.mqttNextRotationAtMs?.takeIf { it > now }?.let { "  다음 허용 ${formatShortTime(it)}" } ?: ""),
+            )
         }
     }
 }

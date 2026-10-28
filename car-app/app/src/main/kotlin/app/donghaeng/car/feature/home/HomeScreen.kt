@@ -33,6 +33,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.donghaeng.car.R
 import app.donghaeng.car.adapter.sdk.ProbeLine
 import app.donghaeng.car.core.common.TokenClearReason
+import app.donghaeng.car.ui.components.formatShortTime
 import app.donghaeng.car.ui.theme.DongHaengTheme
 
 /** 홈 화면 진입점 — ViewModel 연결. */
@@ -178,6 +179,11 @@ private fun StatusBanner(state: HomeUiState, onRetryStore: () -> Unit) {
         is HomeBanner.RepairNeeded -> Triple<String, String, (() -> Unit)?>(
             stringResource(R.string.t33_banner_repair_title),
             if (banner.reason == TokenClearReason.TOKEN_REVOKED_CMD) stringResource(R.string.t33_banner_repair_revoked) else stringResource(R.string.t33_banner_repair_rejected),
+            null,
+        )
+        is HomeBanner.RepairSoon -> Triple<String, String, (() -> Unit)?>(
+            stringResource(R.string.t33_banner_repair_title),
+            banner.expiresAtMs?.let { stringResource(R.string.t33_banner_repair_soon, formatShortTime(it)) } ?: stringResource(R.string.t33_banner_repair_soon_unknown),
             null,
         )
         is HomeBanner.ServerDisconnected -> Triple<String, String, (() -> Unit)?>(

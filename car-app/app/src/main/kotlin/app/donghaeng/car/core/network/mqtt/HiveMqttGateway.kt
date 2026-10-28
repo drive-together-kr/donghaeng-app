@@ -136,7 +136,14 @@ class HiveMqttGateway @Inject constructor() : MqttGateway {
             MqttUriPolicy.resolve(credentials.mqttUri, ServerConfig.publicBaseUrl)
         } catch (e: MqttUriPolicy.PolicyViolation) {
             DhLog.e("mqtt refused: ${e.message}")
-            _status.update { it.copy(state = MqttState.DISCONNECTED, brokerUri = credentials.mqttUri, lastError = e.message, notConnectedSinceMs = null) }
+            // 영구히 못 붙는 상태 — notConnectedSinceMs 를 남겨 홈 '서버 연결 끊김' 배너(30 s 뒤, lastError 표시)로 드러낸다(T33 리뷰).
+            // 같은 거부가 반복돼도(토큰 갱신마다 connect) 처음 시각을 유지한다
+            _status.update {
+                it.copy(
+                    state = MqttState.DISCONNECTED, brokerUri = credentials.mqttUri, lastError = "refused: ${e.message}",
+                    notConnectedSinceMs = it.notConnectedSinceMs ?: System.currentTimeMillis(),
+                )
+            }
             return
         }
         this.credentials = credentials

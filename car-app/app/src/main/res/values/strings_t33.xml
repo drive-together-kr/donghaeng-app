@@ -26,6 +26,8 @@
     <string name="t33_banner_repair_title">다시 연결이 필요해요</string>
     <string name="t33_banner_repair_revoked">폰에서 이 차량의 연결이 해제됐어요. 폰에서 다시 연결해 주세요.</string>
     <string name="t33_banner_repair_rejected">차량 연결이 만료됐어요. 폰에서 다시 연결해 주세요.</string>
+    <string name="t33_banner_repair_soon">연결 갱신이 거부됐어요. %1$s 까지는 지금처럼 동작하고 그 뒤 끊겨요. 정차 중에 폰에서 다시 연결해 주세요.</string>
+    <string name="t33_banner_repair_soon_unknown">연결 갱신이 거부됐어요. 곧 연결이 끊길 수 있어요. 정차 중에 폰에서 다시 연결해 주세요.</string>
     <string name="t33_banner_server_title">서버 연결이 끊겼어요</string>
     <string name="t33_banner_server_body">%1$d초째 다시 연결하는 중이에요. %2$s</string>
     <string name="t33_banner_server_auth">인증이 거부돼 토큰을 갱신하고 있어요.</string>
@@ -52,7 +54,9 @@
     <string name="t33_diag_last_session_clear">마지막 그룹 세션 삭제</string>
     <string name="t33_diag_store_retry">저장소 재시도</string>
     <string name="t33_diag_mqtt_auth">인증 거부</string>
+    <string name="t33_diag_repair_needed">다시 연결 필요</string>
+    <string name="t33_diag_mqtt_rotation">MQTT 발 갱신 백오프</string>
     <string name="t33_diag_section_logs">최근 로그 (T33, 마지막 30줄)</string>
     <string name="t33_diag_logs_empty">아직 남은 로그가 없어요</string>
-    <string name="t33_diag_logs_hint">전체(최대 64 KB): adb shell run-as app.donghaeng.car cat files/dh_log.txt</string>
+    <string name="t33_diag_logs_hint">전체(최대 512 KB): adb shell run-as app.donghaeng.car cat files/dh_log.txt</string>
 </resources>

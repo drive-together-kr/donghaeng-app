@@ -20,7 +20,9 @@ import java.util.concurrent.Executors
  *
  * **로그 보존 (T33, docs/10 R13):** logcat main 버퍼는 위치·차량 신호 로그 때문에 7분 만에 회전해 사후 원인 추적이 불가능했다.
  * I/W/E 줄은 (1) 메모리 링 버퍼 [RING_CAPACITY] 줄(진단 화면 '최근 로그' 카드)과 (2) [attach] 이후 `files/dh_log.txt`
- * (32 KB 넘으면 `dh_log.1.txt` 로 밀어내는 2개 순환 = 최대 64 KB)에 **이미 마스킹된 문자열 그대로** 남는다.
+ * (256 KB 넘으면 `dh_log.1.txt` 로 밀어내는 2개 순환 = 최대 512 KB)에 **이미 마스킹된 문자열 그대로** 남는다.
+ * 그룹 주행 중 보존 줄은 분당 약 20줄 × 130 B ≈ 2.6 KB 라 파일 두 개로 약 3시간을 덮는다 — R13 처럼 40분 뒤 발견해도
+ * `token store: cleared …` 같은 핵심 줄이 남는다(64 KB 일 때는 25~30분이라 밀려날 수 있었다, T33 리뷰).
  * 예외는 클래스 이름만 남긴다(메시지에 URL·좌표가 섞일 수 있다). D 레벨과 `keep = false` 로 부른 고빈도 줄은 보존하지 않는다.
  * 꺼내기(debug 빌드): `adb shell run-as app.donghaeng.car cat files/dh_log.txt` (Pleos AVD 는 `run-as --user 10 app.donghaeng.car …`).
  */
@@ -33,8 +35,8 @@ object DhLog {
     /** 메모리 링 버퍼 줄 수 */
     const val RING_CAPACITY = 300
 
-    /** 파일 하나의 최대 크기 — 넘으면 `.1` 로 밀어내고 새로 쓴다(두 파일 합 최대 64 KB) */
-    const val FILE_ROTATE_BYTES = 32 * 1024L
+    /** 파일 하나의 최대 크기 — 넘으면 `.1` 로 밀어내고 새로 쓴다(두 파일 합 최대 512 KB ≈ 그룹 주행 3시간) */
+    const val FILE_ROTATE_BYTES = 256 * 1024L
 
     const val FILE_NAME = "dh_log.txt"
     const val FILE_NAME_PREVIOUS = "dh_log.1.txt"

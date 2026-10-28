@@ -38,6 +38,12 @@ class FakeIdentityApi : IdentityApi {
             401,
             """{"error":{"code":"INVALID_TOKEN","message":"토큰이 유효하지 않아요.","traceId":"t"}}""".toResponseBody("application/json".toMediaType()),
         )
+
+        /** 동행 서버가 아닌 곳(프록시·캡티브 포털)의 401 — 오류 봉투 없음 */
+        fun foreignUnauthorized(): Response<TokenResponse> = Response.error(
+            401,
+            "<html>401 Authorization Required</html>".toResponseBody("text/html".toMediaType()),
+        )
     }
 }
 

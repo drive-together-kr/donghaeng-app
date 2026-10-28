@@ -24,9 +24,10 @@ import javax.inject.Singleton
  * 30초마다 상태 한 줄(`health …`)을 남긴다 (T33 — 30분 연속 실행 실측 `tools/demo/soak.py` 가 이 줄을 읽는다).
  *
  * ```
- * health mqtt=CONNECTED rc=0 auth=0 in=1520 out=1830 tel=1790 telFail=0 group=grp_…7Q stateAgeMs=812 token=PRESENT expMin=1310 refresh=0/0
+ * health mqtt=CONNECTED rc=0 auth=0 in=1520 out=1830 tel=1790 telFail=0 group=grp_…7Q stateAgeMs=812 token=PRESENT expMin=1310 refresh=0/0 mqttRot=0 repair=0
  * ```
  * 값은 모두 카운터·상태 이름·마스킹 ID 뿐이다(좌표·닉네임·토큰 없음, 규칙 8). 링 버퍼·`files/dh_log.txt` 에도 남는다.
+ * `mqttRot` = 회전한 토큰도 브로커가 거부해 이어진 MQTT 발 회전 횟수(백오프 단계), `repair` = 선제 갱신 거부로 '다시 연결 필요'(1) 인지.
  */
 @Singleton
 class HealthLogger @Inject constructor(
@@ -66,7 +67,8 @@ class HealthLogger @Inject constructor(
         val expMin = r.accessExpiresAtMs?.let { (it - nowMs) / 60_000 }
         return "health mqtt=${m.state} rc=${m.reconnects} auth=${m.authFailures} in=${m.inboundCount} out=${m.outboundCount} " +
             "tel=${t.sentCount} telFail=${t.failedCount} group=${session?.groupId?.let(TextMasking::maskVehicleId) ?: "-"} " +
-            "stateAgeMs=${stateAge ?: "-"} token=$tokenText expMin=${expMin ?: "-"} refresh=${r.refreshes}/${r.failures}"
+            "stateAgeMs=${stateAge ?: "-"} token=$tokenText expMin=${expMin ?: "-"} refresh=${r.refreshes}/${r.failures} " +
+            "mqttRot=${r.mqttRotationStreak} repair=${if (r.repairNeededSinceMs != null) 1 else 0}"
     }
 
     companion object {

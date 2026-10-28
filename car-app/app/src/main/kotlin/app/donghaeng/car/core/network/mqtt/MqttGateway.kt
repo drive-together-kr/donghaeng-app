@@ -21,7 +21,7 @@ enum class MqttState { DISCONNECTED, CONNECTING, CONNECTED, RECONNECTING }
  * @param subscribed   현재 구독 중인 토픽
  * @param authFailures 브로커가 CONNACK 에서 인증을 거부한 횟수(NOT_AUTHORIZED / BAD_USER_NAME_OR_PASSWORD, T33)
  * @param lastAuthFailureAtMs 마지막 인증 거부 시각
- * @param notConnectedSinceMs 연결 시도를 시작했거나 끊긴 뒤 아직 못 붙은 시작 시각. 연결돼 있거나 앱이 끊었으면 null (홈 '서버 연결 끊김' 배너, T33)
+ * @param notConnectedSinceMs 연결 시도를 시작했거나 끊긴 뒤(또는 [MqttUriPolicy] 가 접속을 거부한 뒤) 아직 못 붙은 시작 시각. 연결돼 있거나 앱이 끊었으면 null (홈 '서버 연결 끊김' 배너, T33)
  */
 data class MqttStatus(
     val state: MqttState = MqttState.DISCONNECTED,

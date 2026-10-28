@@ -4,9 +4,12 @@ import app.donghaeng.car.core.common.ClearRecord
 import app.donghaeng.car.core.common.StoredCredentials
 import app.donghaeng.car.core.common.TokenClearReason
 import app.donghaeng.car.core.common.TokenStoreState
+import app.donghaeng.car.core.network.mqtt.HiveMqttGateway
 import app.donghaeng.car.core.network.mqtt.MqttState
 import app.donghaeng.car.core.network.mqtt.MqttStatus
+import app.donghaeng.car.domain.pairing.TokenRefreshState
 import app.donghaeng.car.domain.session.StoreRetryState
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -46,5 +49,38 @@ class HomeBannerTest {
         val plain = HomeViewModel.banner(present, reconnecting.copy(lastError = "Connection refused"), null, StoreRetryState(), now) as HomeBanner.ServerDisconnected
         assertEquals("Connection refused", plain.lastError)
         assertTrue(!plain.authRejected)
+    }
+
+    @Test
+    fun `선제 갱신이 거부되면(아직 동작) 곧 다시 연결 배너 — 서버 연결 끊김보다 먼저 (T33 리뷰)`() {
+        val present = TokenStoreState.Present(creds)
+        val rejected = TokenRefreshState(accessExpiresAtMs = now + 600_000, repairNeededSinceMs = now - 1_000)
+        val connected = MqttStatus(state = MqttState.CONNECTED, connectedAtMs = now)
+        assertEquals(HomeBanner.RepairSoon(now + 600_000), HomeViewModel.banner(present, connected, null, StoreRetryState(), now, rejected))
+        val reconnecting = MqttStatus(state = MqttState.RECONNECTING, notConnectedSinceMs = now - 45_000)
+        assertEquals(HomeBanner.RepairSoon(now + 600_000), HomeViewModel.banner(present, reconnecting, null, StoreRetryState(), now, rejected))
+        assertNull("거부가 없으면 배너 없음", HomeViewModel.banner(present, connected, null, StoreRetryState(), now, TokenRefreshState(accessExpiresAtMs = now + 600_000)))
+    }
+
+    @Test
+    fun `브로커 주소 정책 거부도 30초 뒤 서버 연결 끊김 배너로 보인다 (T33 리뷰)`() = runTest {
+        val gateway = HiveMqttGateway()
+        // ws:// 는 지원하지 않는 스킴 → MqttUriPolicy 가 거부(클라이언트를 만들지 않는다)
+        gateway.connect(creds.copy(mqttUri = "ws://10.0.2.2:8083"))
+        val first = gateway.status.value
+        assertEquals(MqttState.DISCONNECTED, first.state)
+        assertTrue("refused 사유: ${first.lastError}", first.lastError?.startsWith("refused:") == true)
+        val since = assertNotNullValue(first.notConnectedSinceMs)
+        // 토큰 갱신마다 connect 가 다시 와도 처음 시각을 유지한다
+        gateway.connect(creds.copy(mqttUri = "ws://10.0.2.2:8083", vehicleAccessToken = "jwt-2"))
+        assertEquals(since, gateway.status.value.notConnectedSinceMs)
+
+        val banner = HomeViewModel.banner(TokenStoreState.Present(creds), gateway.status.value, null, StoreRetryState(), since + 31_000)
+        assertTrue("배너: $banner", banner is HomeBanner.ServerDisconnected && banner.lastError?.startsWith("refused:") == true && !banner.authRejected)
+    }
+
+    private fun <T : Any> assertNotNullValue(value: T?): T {
+        assertTrue("값이 있어야 한다", value != null)
+        return value!!
     }
 }

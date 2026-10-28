@@ -120,4 +120,15 @@ class InMemoryTokenStoreTest {
         assertEquals(secret, secret.copy())
         assertTrue(secret != secret.copy(refreshToken = "other"))
     }
+
+    @Test
+    fun `clearIf 는 저장된 refresh 가 같을 때만 지운다 (T33 리뷰 CAS)`() = runTest {
+        val store = InMemoryTokenStore(creds).also { it.load() }
+        assertFalse(store.clearIf("other-refresh", TokenClearReason.REFRESH_REJECTED))
+        assertEquals(TokenStoreState.Present(creds), store.state.value)
+        assertTrue(store.clearIf("opaque", TokenClearReason.REFRESH_REJECTED))
+        assertEquals(TokenStoreState.Empty, store.state.value)
+        assertFalse("비어 있으면 지울 것이 없다", store.clearIf("opaque", TokenClearReason.REFRESH_REJECTED))
+        assertEquals(listOf(TokenClearReason.REFRESH_REJECTED), store.clearReasons)
+    }
 }

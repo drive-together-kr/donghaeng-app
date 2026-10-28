@@ -14,6 +14,8 @@ import app.donghaeng.car.core.network.ServerConfig
 import app.donghaeng.car.core.network.mqtt.MqttGateway
 import app.donghaeng.car.core.network.mqtt.MqttState
 import app.donghaeng.car.core.network.mqtt.MqttStatus
+import app.donghaeng.car.domain.pairing.TokenRefreshState
+import app.donghaeng.car.domain.pairing.TokenRefresher
 import app.donghaeng.car.domain.session.GroupSession
 import app.donghaeng.car.domain.session.GroupSessionStore
 import app.donghaeng.car.domain.session.MqttSessionManager
@@ -34,7 +36,7 @@ import javax.inject.Inject
 enum class VehicleConnection { CHECKING, DISCONNECTED, CONNECTED, UNAVAILABLE }
 
 /**
- * 홈 상태 배너 (T33). 하나만 보인다 — 우선순위: 저장소 오류 > 다시 연결 필요 > 서버 연결 끊김.
+ * 홈 상태 배너 (T33). 하나만 보인다 — 우선순위: 저장소 오류 > 다시 연결 필요(지워짐) > 곧 다시 연결 필요(갱신 거부, 아직 동작) > 서버 연결 끊김.
  * 주행 중에는 버튼 없이 문구만(화면이 판단).
  */
 sealed interface HomeBanner {
@@ -43,6 +45,12 @@ sealed interface HomeBanner {
 
     /** 서버가 끊은 연결(TOKEN_REVOKED · refresh 거부) — '폰에서 다시 연결해 주세요' */
     data class RepairNeeded(val reason: TokenClearReason) : HomeBanner
+
+    /**
+     * 선제 갱신이 거부됐지만 지금 토큰은 [expiresAtMs] 까지 유효하다(T33 리뷰 — 지우지 않음). 그 뒤엔 연결이 끊긴다 → 정차 중에 폰에서 다시 연결.
+     * [expiresAtMs] 를 모르면 null.
+     */
+    data class RepairSoon(val expiresAtMs: Long?) : HomeBanner
 
     /** MQTT 가 [SERVER_BANNER_AFTER_MS] 이상 못 붙음 */
     data class ServerDisconnected(val seconds: Long, val lastError: String?, val authRejected: Boolean) : HomeBanner
@@ -80,7 +88,7 @@ data class HomeUiState(
     val showSdkProbe: Boolean get() = flavor == "pleos"
 }
 
-private data class HealthSide(val mqtt: MqttStatus, val lastClear: ClearRecord?, val retry: StoreRetryState, val nowMs: Long)
+private data class HealthSide(val mqtt: MqttStatus, val lastClear: ClearRecord?, val retry: StoreRetryState, val nowMs: Long, val refresh: TokenRefreshState)
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
@@ -90,6 +98,7 @@ class HomeViewModel @Inject constructor(
     driving: app.donghaeng.car.core.common.DrivingStateMonitor,
     mqtt: MqttGateway,
     private val sessionManager: MqttSessionManager,
+    refresher: TokenRefresher,
 ) : ViewModel() {
 
     init {
@@ -104,7 +113,7 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private val health = combine(mqtt.status, tokenStore.lastClear, sessionManager.storeRetry, ticker) { m, c, r, now -> HealthSide(m, c, r, now) }
+    private val health = combine(mqtt.status, tokenStore.lastClear, sessionManager.storeRetry, ticker, refresher.state) { m, c, r, now, rf -> HealthSide(m, c, r, now, rf) }
 
     val uiState: StateFlow<HomeUiState> = combine(sdkProbe.report, tokenStore.state, sessionStore.session, driving.isDriving().onStart { emit(false) }, health) { lines, tokens, session, isDriving, h ->
         build(lines, tokens, session).copy(isDriving = isDriving, banner = banner(tokens, h))
@@ -132,12 +141,21 @@ class HomeViewModel @Inject constructor(
         const val TICK_MS = 5_000L
 
         /** 배너 결정 — 순수 함수(단위 테스트 대상) */
-        fun banner(tokens: TokenStoreState, mqtt: MqttStatus, lastClear: ClearRecord?, retry: StoreRetryState, nowMs: Long): HomeBanner? = when (tokens) {
+        fun banner(
+            tokens: TokenStoreState,
+            mqtt: MqttStatus,
+            lastClear: ClearRecord?,
+            retry: StoreRetryState,
+            nowMs: Long,
+            refresh: TokenRefreshState = TokenRefreshState(),
+        ): HomeBanner? = when (tokens) {
             is TokenStoreState.Unavailable -> HomeBanner.StorageUnavailable(tokens.reason, retry.attempts, retry.maxAttempts, retry.exhausted)
             TokenStoreState.Empty -> TokenClearReason.fromName(lastClear?.reason)?.takeIf { it.needsRepairFromPhone }?.let { HomeBanner.RepairNeeded(it) }
             is TokenStoreState.Present -> {
                 val since = mqtt.notConnectedSinceMs
-                if (mqtt.state != MqttState.CONNECTED && since != null && nowMs - since >= HomeBanner.SERVER_BANNER_AFTER_MS) {
+                if (refresh.repairNeededSinceMs != null) {
+                    HomeBanner.RepairSoon(refresh.accessExpiresAtMs)
+                } else if (mqtt.state != MqttState.CONNECTED && since != null && nowMs - since >= HomeBanner.SERVER_BANNER_AFTER_MS) {
                     HomeBanner.ServerDisconnected(
                         seconds = (nowMs - since) / 1000,
                         lastError = mqtt.lastError?.take(HomeBanner.ERROR_SUMMARY_MAX),
@@ -151,5 +169,5 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private fun banner(tokens: TokenStoreState, h: HealthSide): HomeBanner? = banner(tokens, h.mqtt, h.lastClear, h.retry, h.nowMs)
+    private fun banner(tokens: TokenStoreState, h: HealthSide): HomeBanner? = banner(tokens, h.mqtt, h.lastClear, h.retry, h.nowMs, h.refresh)
 }

@@ -85,7 +85,19 @@ class EncryptedTokenStore(
         updated
     }
 
-    override suspend fun clear(reason: TokenClearReason) = mutex.withLock {
+    override suspend fun clear(reason: TokenClearReason) = mutex.withLock { clearUnlocked(reason) }
+
+    override suspend fun clearIf(expectedRefreshToken: String, reason: TokenClearReason): Boolean = mutex.withLock {
+        val current = currentUnlocked() ?: return false
+        if (current.refreshToken != expectedRefreshToken) {
+            DhLog.i("token store: clear($reason) skipped — credentials changed meanwhile vehicleId=${TextMasking.maskVehicleId(current.vehicleId)}")
+            return false
+        }
+        clearUnlocked(reason)
+        true
+    }
+
+    private suspend fun clearUnlocked(reason: TokenClearReason) {
         val vehicleId = currentUnlocked()?.vehicleId ?: memoryOnly?.vehicleId
         val record = ClearRecord(reason.name, clock(), vehicleId?.let(TextMasking::maskVehicleId))
         withContext(io) {

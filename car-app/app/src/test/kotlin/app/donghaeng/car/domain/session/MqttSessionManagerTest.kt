@@ -7,6 +7,7 @@ import app.donghaeng.car.core.common.TokenClearReason
 import app.donghaeng.car.core.common.TokenStoreState
 import app.donghaeng.car.core.network.mqtt.InMemoryMqttGateway
 import app.donghaeng.car.core.network.mqtt.MqttGateway
+import app.donghaeng.car.core.network.mqtt.MqttState
 import app.donghaeng.car.testing.FakeIdentityApi
 import app.donghaeng.car.testing.fakeJwt
 import app.donghaeng.car.testing.testRefresher
@@ -296,5 +297,26 @@ class MqttSessionManagerTest {
         listOf("SECRETACCESS", "SECRETREFRESHVALUE", "비밀차", "SECRETOWNERX").forEach { raw ->
             assertTrue("원문 '$raw' 이 로그에 남았다", lines.none { it.contains(raw) })
         }
+    }
+
+    @Test
+    fun `T33 리뷰 - 인증 거부 뒤 새 토큰으로 다시 붙으면 MQTT 발 회전 백오프가 처음부터`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val tokens = InMemoryTokenStore(creds)
+        val gateway = InMemoryMqttGateway()
+        val api = FakeIdentityApi().apply { refreshHandler = { FakeIdentityApi.ok("jwt-2", "r2") } }
+        val refresher = testRefresher(tokens, api)
+        val manager = MqttSessionManager(tokens, gateway, InMemoryGroupSessionStore(), refresher)
+        manager.start(dispatcher)
+        runCurrent()
+
+        gateway.emitAuthFailure(accessToken = "jwt-1")   // RECONNECTING
+        runCurrent()
+        assertEquals(1, api.refreshCalls.size)
+        // 갱신 → 저장소 Present(새 토큰) → connect → CONNECTED → TokenRefresher.onMqttConnected()
+        assertEquals(MqttState.CONNECTED, gateway.status.value.state)
+        assertEquals(0, refresher.state.value.mqttRotationStreak)
+        assertNull(refresher.state.value.mqttNextRotationAtMs)
+        assertEquals("OK MQTT_AUTH", refresher.state.value.lastResult)
     }
 }

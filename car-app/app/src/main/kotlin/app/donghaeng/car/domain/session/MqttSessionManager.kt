@@ -9,6 +9,8 @@ import app.donghaeng.car.core.common.TokenStoreState
 import app.donghaeng.car.core.network.mqtt.InboundMessage
 import app.donghaeng.car.core.network.mqtt.MqttAuthFailure
 import app.donghaeng.car.core.network.mqtt.MqttGateway
+import app.donghaeng.car.core.network.mqtt.MqttState
+import app.donghaeng.car.domain.pairing.RefreshOutcome
 import app.donghaeng.car.domain.pairing.RefreshTrigger
 import app.donghaeng.car.domain.pairing.TokenRefresher
 import app.donghaeng.protocol.CmdType
@@ -36,6 +38,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
@@ -63,9 +67,10 @@ data class StoreRetryState(val attempts: Int = 0, val maxAttempts: Int = MqttSes
  *   [SessionClearReason.UNPAIRED] 로 지운다. **Unavailable**(저장소 읽기 실패, T33)은 미페어링이 아니다 — 세션을 지우지 않고 연결도 하지 않으며
  *   [STORE_RETRY_INTERVAL_MS](30 s) 마다 최대 [STORE_RETRY_MAX] 회 다시 읽는다(docs/10 R13).
  * - cmd `GROUP_JOINED` → [GroupSessionStore] 에 저장하고 그룹 `state/event` 구독. `GROUP_ENDED` 또는 내 차의 그룹 이벤트 `MEMBER_LEFT`(폰이 내보냄) → 세션 삭제·구독 해제.
- *   `TOKEN_REVOKED` → 자격 증명 삭제([TokenClearReason.TOKEN_REVOKED_CMD]) — 단 **지금 토큰보다 먼저 발행된 것**(봉투 ts ≤ JWT iat, 둘 다 서버 시계)은
- *   재페어링 전 MQTT 영속 세션에 쌓였다 늦게 온 것이라 무시한다.
+ *   `TOKEN_REVOKED` → 자격 증명 삭제([TokenClearReason.TOKEN_REVOKED_CMD]) — 단 **지금 토큰보다 먼저 발행된 것**(봉투 `ts`(epoch ms)를 초로 내린 값 ≤ JWT `iat`(초),
+ *   둘 다 서버 시계)은 재페어링 전 MQTT 영속 세션에 쌓였다 늦게 온 것이라 무시한다. 같은 초도 무시하므로 해제 직전 같은 초에 갱신된 토큰은 남을 수 있다(docs/03 §5.5).
  * - 브로커 인증 거부([MqttGateway.authFailures]) → [TokenRefresher] 로 갱신. 성공하면 저장소가 새 토큰을 내고, 그 토큰으로 [MqttGateway.connect] 가 즉시 다시 붙는다.
+ *   회전한 토큰도 거부되면 갱신기가 MQTT 발 회전을 1→2→4…→30분 백오프한다 — 접속에 성공하면([TokenRefresher.onMqttConnected]) 처음부터.
  * - 그룹 토픽 수신은 [groupEvents]/[groupState] 로 내보낸다(T25 주행 화면·T27 음성이 구독).
  *
  * 앱 프로세스가 살아 있는 동안 페어링만 돼 있으면 연결을 유지한다 — 폰이 이 차를 그룹에 넣는 순간(`GROUP_JOINED`)을 받으려면
@@ -135,6 +140,13 @@ class MqttSessionManager @Inject constructor(
         }
         scope.launch { gateway.inbound.collect { message -> guarded("inbound ${message.envelope.type}") { onInbound(message) } } }
         scope.launch { gateway.authFailures.collect { failure -> guarded("auth failure") { onAuthFailure(failure) } } }
+        // 접속 성공 = 지금 토큰이 브로커에 통했다 → MQTT 발 토큰 회전 백오프를 처음부터(T33 리뷰).
+        // connectedAtMs 를 함께 봐서 RECONNECTING 이 합쳐져(StateFlow conflation) 안 보여도 새 접속은 놓치지 않는다
+        scope.launch {
+            gateway.status.map { (it.state == MqttState.CONNECTED) to it.connectedAtMs }.distinctUntilChanged().collect { (connected, _) ->
+                if (connected) guarded("mqtt connected") { refresher.onMqttConnected() }
+            }
+        }
         DhLog.i("mqtt session manager started")
     }
 
@@ -218,9 +230,9 @@ class MqttSessionManager @Inject constructor(
 
     private suspend fun onAuthFailure(failure: MqttAuthFailure) {
         if (tokenStore.state.value !is TokenStoreState.Present) return
-        DhLog.w("mqtt auth rejected reason=${failure.reasonCode} → token refresh")
         val outcome = refresher.refreshAfterRejection(failure.accessToken, RefreshTrigger.MQTT_AUTH)
-        DhLog.i("mqtt auth recovery → $outcome")
+        // Throttled(백오프 중)는 재연결마다 오므로 줄을 남기지 않는다 — 게이트웨이 'mqtt auth rejected' 줄과 갱신기의 백오프 줄(구간마다 한 번)로 충분
+        if (outcome !is RefreshOutcome.Throttled) DhLog.i("mqtt auth rejected reason=${failure.reasonCode} → token refresh $outcome")
         // Refreshed: 저장소가 새 토큰을 냈고 onTokenState → gateway.connect(새 토큰) 이 대기 중인 재연결을 바로 연다.
         // Rejected: 저장소가 Empty → 연결 해제·세션 정리. 나머지(Failed/Throttled)는 게이트웨이가 잠시 뒤 가진 토큰으로 다시 시도한다
     }
