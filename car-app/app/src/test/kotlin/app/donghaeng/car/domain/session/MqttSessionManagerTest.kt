@@ -2,12 +2,16 @@ package app.donghaeng.car.domain.session
 
 import app.donghaeng.car.core.common.InMemoryTokenStore
 import app.donghaeng.car.core.common.StoredCredentials
+import app.donghaeng.car.core.common.TokenStoreState
 import app.donghaeng.car.core.network.mqtt.InMemoryMqttGateway
 import app.donghaeng.protocol.CmdType
 import app.donghaeng.protocol.GroupEnded
 import app.donghaeng.protocol.GroupEvent
 import app.donghaeng.protocol.GroupJoined
+import app.donghaeng.protocol.GroupState
 import app.donghaeng.protocol.GroupTopics
+import app.donghaeng.protocol.MemberState
+import app.donghaeng.protocol.MemberStatus
 import app.donghaeng.protocol.MessageTypes
 import app.donghaeng.protocol.Place
 import app.donghaeng.protocol.Severity
@@ -22,6 +26,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -115,6 +120,50 @@ class MqttSessionManagerTest {
         runCurrent()
         assertNull(sessions.session.value)
         assertEquals(setOf(Topics.vehicleCmd("veh_B")), gateway.subscriptions)
+    }
+
+    @Test
+    fun `a renamed nickname in the group state updates the stored credentials without reconnecting`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val tokens = InMemoryTokenStore(creds)
+        val gateway = InMemoryMqttGateway()
+        val sessions = InMemoryGroupSessionStore(GroupSession.from(joined, 1L))
+        val manager = MqttSessionManager(tokens, gateway, sessions)
+        manager.start(dispatcher)
+        runCurrent()
+
+        fun state(myNick: String) = GroupState(
+            "grp_1", "veh_A",
+            listOf(
+                MemberState("veh_A", "아빠 차", "#2E7DFF", true, null, null, null, null, null, null, null, 0, MemberStatus.DRIVING),
+                MemberState("veh_B", myNick, "#FF6B2E", true, null, null, null, null, null, null, null, 100, MemberStatus.DRIVING),
+            ),
+        )
+        // 폰에서 "엄마 차" → "둘째 차" 로 바꿈 → 다음 스냅샷에서 저장값이 따라온다
+        gateway.emitInbound("dh/v1/group/grp_1/state", MessageTypes.STATE, "srv_1", state("둘째 차"), GroupState.serializer(), seq = 2)
+        runCurrent()
+        assertEquals("둘째 차", (tokens.state.value as TokenStoreState.Present).credentials.nickname)
+        assertEquals("토큰·차는 그대로", "jwt-1", tokens.load()?.vehicleAccessToken)
+        assertEquals(0, gateway.disconnectCount)
+
+        // 같은 닉네임 스냅샷은 저장하지 않는다
+        val before = tokens.state.value
+        gateway.emitInbound("dh/v1/group/grp_1/state", MessageTypes.STATE, "srv_1", state("둘째 차"), GroupState.serializer(), seq = 3)
+        runCurrent()
+        assertSame(before, tokens.state.value)
+    }
+
+    @Test
+    fun `nickname sync ignores other cars, a blank or id-like server value and other vehicles' credentials`() {
+        val present = TokenStoreState.Present(creds)
+        fun st(vararg m: Pair<String, String>) = GroupState("grp_1", "veh_A", m.map { (vid, nick) -> MemberState(vid, nick, "#2E7DFF", true, null, null, null, null, null, null, null, null, MemberStatus.DRIVING) })
+        assertEquals("둘째 차", MqttSessionManager.nicknameFromState(st("veh_B" to " 둘째 차 "), "veh_B", present)?.nickname)
+        assertNull("다른 차만 바뀜", MqttSessionManager.nicknameFromState(st("veh_A" to "삼촌 차", "veh_B" to "엄마 차"), "veh_B", present))
+        assertNull("스냅샷에 내 차 없음", MqttSessionManager.nicknameFromState(st("veh_A" to "삼촌 차"), "veh_B", present))
+        assertNull("빈 값", MqttSessionManager.nicknameFromState(st("veh_B" to "  "), "veh_B", present))
+        assertNull("서버가 별명 대신 id 를 줌", MqttSessionManager.nicknameFromState(st("veh_B" to "veh_B"), "veh_B", present))
+        assertNull("저장된 차가 아님", MqttSessionManager.nicknameFromState(st("veh_C" to "둘째 차"), "veh_C", present))
+        assertNull("페어링 없음", MqttSessionManager.nicknameFromState(st("veh_B" to "둘째 차"), "veh_B", TokenStoreState.Empty))
     }
 
     @Test

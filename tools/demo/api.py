@@ -6,9 +6,10 @@
 
   python tools/demo/api.py --email dev@example.com login                       # dev 간편 로그인(토큰 캐시 tools/demo/out/.token)
   python tools/demo/api.py --email dev@example.com vehicles                    # 내 차 목록
-  python tools/demo/api.py --email dev@example.com pair KQ7-4MZ --nickname DemoCarB   # 차 화면의 코드로 페어링 승인
+  python tools/demo/api.py --email dev@example.com pair KQ7-4MZ --nickname "둘째 차"   # 차 화면의 코드로 페어링 승인
+  python tools/demo/api.py --email dev@example.com rename DemoCarB "둘째 차"   # 내 차 닉네임 바꾸기(PATCH /me/vehicles/{id}) — 차는 지금 닉네임 또는 vehicleId
   python tools/demo/api.py --email dev@example.com groups                      # 내 활성 그룹
-  python tools/demo/api.py --email dev@example.com join --vehicle DemoCarB     # 내 활성 그룹(선두차 A 의 그룹)에 새 초대를 만들어 차 B 합류
+  python tools/demo/api.py --email dev@example.com join --vehicle "둘째 차"    # 내 활성 그룹(선두차 A 의 그룹)에 새 초대를 만들어 차 B 합류
   python tools/demo/api.py --email dev@example.com message "휴게소 들렀다 가요" # 동승자 메시지(PASSENGER_MESSAGE)
 
 서버 주소 기본값 http://127.0.0.1:8080 (환경변수 DH_SERVER). 토큰·이메일은 로그에 남기지 않는다.
@@ -110,6 +111,11 @@ class DhApi:
             body["vehicleId"] = vehicle_id
         return self.call("POST", "/groups/join", body)
 
+    def rename_vehicle(self, vehicle_id: str, nickname: str):
+        """PATCH /me/vehicles/{vehicleId} {nickname} (docs/03 §1.3) → 200 MyVehicleDto / 404 내 차 아님 / 400 1~30자 아님.
+        그룹 스냅샷·이벤트 문구는 서버가 매번 DB 에서 닉네임을 읽으므로 다음 스냅샷(2초)부터 바뀐다."""
+        return self.call("PATCH", f"/me/vehicles/{vehicle_id}", {"nickname": nickname})
+
     def send_message(self, group_id: str, text: str, from_vehicle_id: str | None = None):
         body = {"text": text}
         if from_vehicle_id:
@@ -124,6 +130,11 @@ def mask(s: str | None) -> str:
 
 
 def main():
+    # 출력을 파이프로 받으면 Windows 는 cp949 로 써서 "—" 같은 글자에서 죽는다(--help 포함) → 못 쓰는 글자는 ? 로
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--server", default=os.environ.get("DH_SERVER", "http://127.0.0.1:8080"))
     ap.add_argument("--email", default=os.environ.get("DH_DEMO_EMAIL"))
@@ -132,7 +143,8 @@ def main():
     sub.add_parser("login")
     sub.add_parser("vehicles")
     sub.add_parser("groups")
-    p = sub.add_parser("pair"); p.add_argument("code"); p.add_argument("--nickname", default="DemoCarB")
+    p = sub.add_parser("pair"); p.add_argument("code"); p.add_argument("--nickname", default="둘째 차")
+    p = sub.add_parser("rename", help="내 차 닉네임 바꾸기"); p.add_argument("vehicle", help="바꿀 차(지금 닉네임 또는 vehicleId)"); p.add_argument("nickname", help="새 닉네임(1~30자)")
     p = sub.add_parser("join"); p.add_argument("--vehicle", help="합류시킬 내 차(닉네임 또는 vehicleId, 생략 시 대표 차량)"); p.add_argument("--group", help="그룹 ID(생략 시 내 활성 그룹 중 첫 번째)")
     p = sub.add_parser("message"); p.add_argument("text"); p.add_argument("--vehicle", help="보내는 차(닉네임 또는 vehicleId)"); p.add_argument("--group")
     a = ap.parse_args()
@@ -150,6 +162,16 @@ def main():
     elif a.cmd == "pair":
         st, res = api.approve_pairing(a.code, a.nickname)
         print(st, res if st != 200 else f"approved {mask(res.get('vehicleId'))} {res.get('nickname')}")
+    elif a.cmd == "rename":
+        v = api.find_vehicle(a.vehicle)
+        if not v:
+            raise SystemExit(f"차량을 못 찾음: {a.vehicle} (vehicles 로 확인)")
+        new = a.nickname.strip()
+        if v.get("nickname") == new:
+            print(f"skip {mask(v['vehicleId'])} 이미 '{new}'")
+        else:
+            st, res = api.rename_vehicle(v["vehicleId"], new)
+            print(st, res if st != 200 else f"renamed {mask(res.get('vehicleId'))} '{v.get('nickname')}' → '{res.get('nickname')}'")
     elif a.cmd == "join":
         v = api.find_vehicle(a.vehicle)
         if not v:

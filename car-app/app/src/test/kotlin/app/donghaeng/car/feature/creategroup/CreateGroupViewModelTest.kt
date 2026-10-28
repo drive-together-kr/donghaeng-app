@@ -107,7 +107,7 @@ class CreateGroupViewModelTest {
         val form = vm.state.value as CreateGroupState.Form
         assertEquals(DESTINATION_PRESETS.first().name, form.destination?.name)
         assertTrue(!form.fromNavi && form.canCreate && !form.notPaired)
-        assertTrue(form.name.contains("아빠 차"))
+        assertEquals("받침 없는 닉네임 → 와(공백 없이)", "아빠 차와 같이 가기", form.name)
 
         vm.setName("추석 귀성길"); vm.setMaxMembers(4); vm.pickPreset(DESTINATION_PRESETS[2])
         vm.create()

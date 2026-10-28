@@ -9,6 +9,7 @@
 
 순서
   0 preflight  : 기기·앱·서버·Virtual Console·차 B GPX 역할(follow)·플로팅 창 권한·차 A 위치 소스(android_first) 확인
+                 + 시연 닉네임(--email 필요): 차 A "아빠 차"·차 B "둘째 차"·같은 계정의 나머지 차 하나 "삼촌 차"(--nick-a/-b/-c)
   2~3 대기     : 차 A '같이 가기 시작' → 폰(demo-host)으로 QR 합류(또는 api.py join). 차 B 의 합류를 로그로 감지하면 합류 제안을 자동 수락(--no-auto-accept 면 화면에서)
   4 함께 주행  : T0 — 차 A GPS 재생 시작 + Virtual Console 기어 D·속도. 차 B 는 수락 순간부터 스스로 달린다
   5 저잔량     : T0+20s  VC soc=12 → 차 B 음성 "…배터리가 12% 남았어요"
@@ -21,9 +22,11 @@
 기대 로그는 docs/09 §4 표와 같다. 좌표·ID 는 앱이 마스킹해 남긴다.
 """
 import argparse
+import base64
 import datetime as dt
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -91,6 +94,17 @@ class LogWatcher:
                 return hits[-1]
             time.sleep(poll_s)
         return None
+
+
+def gwa_wa(word: str) -> str:
+    """차 앱 GroupNaming 과 같은 조사 규칙(안내 문구용): 한글 받침 → 과, 숫자는 읽는 소리(0·1·3·6·7·8 → 과), 영문·기호 → 와"""
+    w = word.rstrip().rstrip(")]}\"'”’」』.!? ")
+    if not w:
+        return "와"
+    c = w[-1]
+    if "가" <= c <= "힣":
+        return "과" if (ord(c) - 0xAC00) % 28 else "와"
+    return "과" if c in "013678" else "와"
 
 
 def status(serial: str) -> dict:
@@ -168,11 +182,14 @@ class Demo:
             rows.append((f"A 현재 프로세스 텔레메트리 src=ANDROID (지금 {src or '아직 없음 — 1분 뒤 다시'})", src == "ANDROID"))
         else:
             print("  (A 그룹 없음 — 위치 소스 src=ANDROID 는 장면 4 직전에 확인)")
+        # 시연 닉네임(2026-10-28): 패널·음성·카드에 나오는 차 이름을 "아빠 차"·"둘째 차"·"삼촌 차"로 맞춘다
+        self.ensure_nicknames(rows)
         print("\n== preflight ==")
         bad = 0
         for k, ok in rows:
-            print(f"  {'OK  ' if ok else 'FAIL'} {k}")
-            bad += 0 if ok else 1
+            # ok: True = OK, False = FAIL(시연 중단 사유), None = WARN(알리기만, 실패로 세지 않음)
+            print(f"  {'WARN' if ok is None else 'OK  ' if ok else 'FAIL'} {k}")
+            bad += 0 if ok or ok is None else 1
         if bad and not self.a.skip_preflight:
             print("preflight 실패 항목이 있다. --skip-preflight 로 무시할 수 있다.")
             if not self.a.dry_run:
@@ -197,6 +214,94 @@ class Demo:
             time.sleep(5)
             src = self.a_location_source()
         self.say(f"차 A 위치 소스 = {src}" + ("" if src == "ANDROID" else " — 경고: 간격이 순정 내비 고정 위치 기준으로 보일 수 있다"))
+
+    # ---- 시연 닉네임 ----
+    def which_vehicle(self, serial: str, ids: list) -> str | None:
+        """차 앱에 vehicleId 후보를 하나씩 물어(debug 리시버 is_me) 그 차의 id 를 찾는다. 못 찾으면 None.
+        앱은 `demo: is_me=true|false tag=<꼬리표>` 만 남긴다 — id 원문은 기기 로그에 남지 않고, 대응은 이 스크립트 메모리에서만 한다."""
+        if not ids:
+            return None
+        w = LogWatcher(serial)
+        run = secrets.token_hex(3)   # 이전 실행·다른 질의의 줄과 섞이지 않게
+        tags = {f"{run}-{i}": vid for i, vid in enumerate(ids)}
+        for tag, vid in tags.items():
+            broadcast(serial, "is_me", vid=vid, tag=tag)
+        rx = re.compile(r"demo: is_me=(true|false) tag=([0-9a-f]+-\d+)")
+        answered = {}
+        end = time.time() + 8
+        while time.time() < end:
+            for line in w.new():
+                m = rx.search(line)
+                if m and m.group(2) in tags:
+                    answered[m.group(2)] = m.group(1) == "true"
+            if len(answered) == len(tags) or any(answered.values()):
+                break
+            time.sleep(1.0)
+        mine = [tags[t] for t, yes in answered.items() if yes]
+        return mine[0] if len(mine) == 1 else None
+
+    def ensure_nicknames(self, rows):
+        """시연 닉네임을 서버(PATCH /me/vehicles/{id})와 두 차 앱 저장값에 맞춘다 (docs/09 §5).
+        차 A = --nick-a, 차 B = --nick-b, 같은 계정의 나머지 차 하나(있으면) = --nick-c. 이미 같으면 건너뛰고, --dry-run 이면 계획만 출력한다.
+        그룹 스냅샷·이벤트 문구는 서버가 매번 DB 에서 닉네임을 읽어 바로 반영되고, 차 앱 저장값(홈 화면·그룹 기본 이름 "아빠 차와 같이 가기")은
+        그룹 스냅샷으로도 맞춰지지만 그룹 전에는 알 길이 없어 debug 리시버 `nickname` 으로 같은 값을 넣는다."""
+        a = self.a
+        if not a.email:
+            rows.append(("시연 닉네임 — --email 없음: 서버 닉네임을 바꾸지 않았다(패널·음성에 페어링 때 이름이 나온다)", None))
+            return
+        try:
+            from api import DhApi, mask
+            api = DhApi(a.server, a.email)
+            api.login()
+            vehicles = api.vehicles()
+        except SystemExit as e:
+            rows.append((f"시연 닉네임 — 서버 조회 실패({e})", False))
+            return
+        print("\n== 시연 닉네임 ==")
+        by_id = {v["vehicleId"]: v for v in vehicles}
+        ids = list(by_id)
+        found = {"A": self.which_vehicle(self.A, ids), "B": self.which_vehicle(self.B, ids)}
+        plan = []   # (역할, vehicleId, 새 닉네임)
+        for role, nick in (("A", a.nick_a), ("B", a.nick_b)):
+            if found[role]:
+                plan.append((role, found[role], nick))
+            else:
+                rows.append((f"시연 닉네임 — 차 {role} 를 이 계정 차량 {len(ids)}대에서 못 찾음(다른 계정으로 페어링됐거나 앱 응답 없음)", False))
+        # 나머지 차 = A·B 를 둘 다 찾았을 때만 고른다(못 찾은 차의 id 가 '나머지' 로 섞여 엉뚱한 차가 '삼촌 차' 가 되지 않게). 대표 차량 먼저·등록순
+        rest = [vid for vid in ids if vid not in found.values()] if found["A"] and found["B"] else []
+        if rest:
+            plan.append(("C", rest[0], a.nick_c))
+        else:
+            print(f"  (나머지 차 없음 또는 차 A/B 미확인 — '{a.nick_c}' 는 건너뜀)")
+        for role, vid, nick in plan:
+            old = by_id[vid].get("nickname")
+            label = f"차 {role} {mask(vid)} '{old}' → '{nick}'"
+            if old == nick:
+                print(f"  같음  {label}")
+                rows.append((f"닉네임 차 {role} = '{nick}'", True))
+            elif a.dry_run:
+                print(f"  계획  {label} (dry-run — 바꾸지 않음)")
+                rows.append((f"닉네임 차 {role} = '{nick}' (dry-run: 지금 '{old}', 실제 실행 때 바꾼다)", None))
+            else:
+                st, res = api.rename_vehicle(vid, nick)
+                print(f"  {'변경' if st == 200 else '실패'}  {label} → HTTP {st}")
+                rows.append((f"닉네임 차 {role} = '{nick}'" + ("" if st == 200 else f" (PATCH {st} {str(res)[:80]})"), st == 200))
+        # 차 앱 저장값(홈·그룹 기본 이름) — 서버가 같아도 앱이 옛 값일 수 있어 항상 넣는다(같으면 앱이 changed=false)
+        if not a.dry_run:
+            for role, vid, nick in plan:
+                serial = {"A": self.A, "B": self.B}.get(role)
+                if not serial:
+                    continue
+                w = LogWatcher(serial)
+                broadcast(serial, "nickname", name_b64=base64.urlsafe_b64encode(nick.encode("utf-8")).decode("ascii"))
+                hit = w.wait(r"demo: nickname changed=(true|false)", 8, poll_s=1.0)
+                rows.append((f"차 {role} 앱 저장 닉네임 맞춤({'바꿈' if hit and 'changed=true' in hit else '이미 같음' if hit else '응답 없음'})", bool(hit)))
+        try:
+            groups = api.active_groups()
+        except SystemExit:
+            groups = []
+        if groups:
+            print(f"  (활성 그룹 '{groups[0].get('name')}' — 패널 머리글에 그대로 나온다. 이름을 바꾸려면 그룹을 끝내고 차 A 에서 새로 만든다: 기본 이름 '{a.nick_a}{gwa_wa(a.nick_a)} 같이 가기')")
 
     def seconds_since_last_event(self, serial: str, event: str) -> float:
         """기기 로그에서 마지막 `vehicle event <event>` 발행 뒤 지난 초(없으면 큰 값). 기기 시계 기준."""
@@ -233,7 +338,7 @@ class Demo:
             if sb.get("pending") not in (None, "없음") and self.a.auto_accept:
                 self.say("B 대기 중 제안 자동 수락 → " + broadcast(self.B, "accept"))
             return
-        print("\n== 장면 2~3: 차 A 에서 '같이 가기 시작' → 목적지 선택 → 폰(demo-host)으로 QR 합류 (또는: python tools/demo/api.py --email … join --vehicle DemoCarB)")
+        print(f"\n== 장면 2~3: 차 A 에서 '같이 가기 시작' → 목적지 선택 → 폰(demo-host)으로 QR 합류 (또는: python tools/demo/api.py --email … join --vehicle \"{self.a.nick_b}\")")
         self.say(f"차 B 의 합류를 최대 {self.a.wait_join}초 기다린다…")
         wb = LogWatcher(self.B)
         hit = wb.wait(r"GROUP_JOINED|routesync: join proposal", self.a.wait_join, poll_s=2.0)
@@ -360,6 +465,11 @@ class Demo:
 
 
 def main():
+    # 출력을 파이프로 받으면 Windows 는 cp949 로 써서 "—" 같은 글자에서 죽는다 → 못 쓰는 글자는 ? 로
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--car-a", default="emulator-5556", help="선두차(Pleos AVD, pleos flavor)")
     ap.add_argument("--car-b", default="emulator-5558", help="후속차(Pleos_B AVD, fake flavor)")
@@ -375,7 +485,15 @@ def main():
     ap.add_argument("--out", default=os.path.join(HERE, "out"))
     ap.add_argument("--dry-run", action="store_true", help="preflight 만")
     ap.add_argument("--skip-preflight", action="store_true")
+    ap.add_argument("--nick-a", default="아빠 차", help="preflight 가 맞출 차 A 닉네임(--email 필요)")
+    ap.add_argument("--nick-b", default="둘째 차", help="preflight 가 맞출 차 B 닉네임")
+    ap.add_argument("--nick-c", default="삼촌 차", help="같은 계정의 나머지 차 하나(있으면)의 닉네임")
     a = ap.parse_args()
+    for flag in ("nick_a", "nick_b", "nick_c"):
+        v = getattr(a, flag).strip()
+        if not 1 <= len(v) <= 30:
+            ap.error(f"--{flag.replace('_', '-')}: 1~30자여야 한다(서버 닉네임 한도)")
+        setattr(a, flag, v)
     ok = Demo(a).run()
     sys.exit(0 if ok else 1)
 

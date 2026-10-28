@@ -20,7 +20,8 @@ import kotlin.math.abs
  *
  * - 다른 차만, 선두부터(`distanceToLeaderM` 오름차순, 모르면 뒤로). 최대 [MAX_ROWS]대, 나머지는 "외 N대".
  * - 간격 = 상대.distanceToLeaderM − 나.distanceToLeaderM → 음수 "앞", 양수 "뒤"(1 km 미만 m), 어느 쪽이든 모르면 "—".
- * - 도착 시각 = `eta.destTs` 를 기기 시간대 HH:mm(없으면 "—"), 기준 문구 = "{그룹 목적지} 도착".
+ * - 도착 시각 = `eta.destTs` 를 기기 시간대 HH:mm(없으면 "—"), 기준 문구 = "{그룹 목적지} 도착"(`etaPlace` = 목적지 이름, 머리줄 배치는 FloatingPanel).
+ * - 머리글 = 그룹 이름(`GroupSession.name` 그대로 — 폭이 모자라면 화면에서 그룹 이름만 말줄임).
  * - 저잔량 = min(연료%, 배터리%) ≤ 15, 경고 = |간격| > 3 km 또는 연결 끊김, 연결 끊김 = !online 또는 OFFLINE.
  * - 이벤트 = [SurfaceEvents.banner]: 받은 지 10초 안 + 서버 시계로 60초 안에 생긴 것 중 가장 최근, 내 차가 출처인 이벤트는 제외(재접속 때 밀려 온 옛 이벤트는 빠진다).
  *   나이는 서버 시계 − 봉투 ts. 톤: 급제동·에어백 위험 / 저잔량·끊김·이탈 주의 / 그 밖 정보.
@@ -56,7 +57,7 @@ object FloatingPanelMapper {
             event = recentEvent(events, myVehicleId, nowMs, serverNowMs),
             ptt = ptt,
             connected = connected,
-            etaLabel = "${session.destination.name} 도착",
+            etaPlace = session.destination.name,
         )
     }
 

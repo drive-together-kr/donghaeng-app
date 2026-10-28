@@ -128,8 +128,8 @@ class CreateGroupViewModel @Inject constructor(
     private suspend fun startForm() {
         val paired = tokenStore.state.value is TokenStoreState.Present || tokenStore.load() != null
         val nickname = (tokenStore.state.value as? TokenStoreState.Present)?.credentials?.nickname
-        val defaultName = if (nickname.isNullOrBlank()) "같이 가기" else "$nickname 와 같이 가기"
-        _state.value = CreateGroupState.Form(name = defaultName, destination = null, fromNavi = false, maxMembers = 10, notPaired = !paired, loadingNavi = true)
+        // "아빠 차와 같이 가기" — 받침에 따라 와/과(GroupNaming). 예전엔 "$nickname 와 같이 가기"(공백·조사 오류)
+        _state.value = CreateGroupState.Form(name = GroupNaming.defaultName(nickname), destination = null, fromNavi = false, maxMembers = 10, notPaired = !paired, loadingNavi = true)
         loadNaviDestination()
     }
 

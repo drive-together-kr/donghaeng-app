@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -52,6 +53,8 @@ import app.donghaeng.car.R
  * 가독성(사용자 지시): 거리·도착 시각 숫자 31sp(시안 24sp의 1.3배), 이름 29sp(1.2배), 행 간격 10 dp 이상. 머리줄·이벤트 줄·무전 줄도 1.2배.
  *       이름 열(100 dp)에 안 들어가는 긴 닉네임("DemoCarB")은 20sp 까지 줄여 맞추고, 그래도 넘치면 말줄임(2026-10-28 실측 "De…" 개선).
  *       간격 숫자도 남은 폭에 안 들어가면(저잔량 아이콘 + "뒤 9.9 km" 처럼) 24sp 까지 줄여 단위 "km/m" 가 잘리지 않게 한다.
+ * 머리줄(2026-10-28 사용자 지시): 그룹 이름이 머리글 — 기준 문구 "{목적지} 도착"은 자기 폭(상한 180 dp)으로 먼저 자리를 잡고
+ *       그룹 이름이 남는 폭을 다 쓴다. 넘치면 **그룹 이름만** 말줄임("아빠 차와 같이…"), 상한을 넘는 아주 긴 목적지만 목적지 이름을 말줄임(" 도착"은 남김).
  * 위치: 오른쪽 위 고정(내비 TBT 왼쪽 위·하단 버튼을 피한다), 정차 중에만 드래그로 4모서리 중 선택(FloatingPanelService).
  * 주간/야간: 시스템 야간이면 짙은 반투명 바탕 + 흰 글씨, 주간이면 밝은 반투명 바탕 + 짙은 글씨. [무전] 라임 버튼은 둘 다 유지.
  */
@@ -72,22 +75,34 @@ data class FloatingCar(
 )
 
 data class FloatingPanelUi(
+    /** 머리줄 왼쪽 — 그룹 이름. 남는 폭을 다 쓰고, 그래도 넘치면 이것만 말줄임 */
     val groupName: String,
     /** 다른 차(선두부터, 최대 4대) */
     val cars: List<FloatingCar>,
     val event: EventBannerUi?,
     val ptt: PttUi = PttUi(),
     val connected: Boolean = true,
-    /** 도착 시각의 기준 지점 — "경포해변 도착" */
-    val etaLabel: String,
+    /** 도착 시각의 기준 지점 이름 — "경포해변"(머리줄에는 "경포해변 도착") */
+    val etaPlace: String,
     /** 4대를 넘는 나머지 차 수 — "외 N대" (0 이면 줄 없음) */
     val moreCount: Int = 0,
-)
+) {
+    /** 머리줄 기준 문구 전체 — "경포해변 도착" */
+    val etaLabel: String get() = etaPlace + FloatingPanelSpec.ETA_SUFFIX
+}
 
 /** 패널 기준 치수 — scale 1 = Pleos 가로 2창(1 dp = 1 px, 내비 1707 dp) */
 object FloatingPanelSpec {
     val WIDTH: Dp = 375.dp
     const val HEADER_SP = 22f
+    /** 기준 문구 끝("{목적지} 도착") — 목적지 이름이 상한에 걸려 말줄임돼도 이 부분은 남는다 */
+    const val ETA_SUFFIX = " 도착"
+    /**
+     * 머리줄 기준 문구("{목적지} 도착")의 상한 폭. 보통은 자기 폭 그대로(잘리지 않음) 두고 그룹 이름이 나머지를 쓴다.
+     * 아주 긴 목적지만 여기서 목적지 이름을 말줄임한다 — 머리줄 안쪽 319 dp(375 − 여백 28 − 연결 점·간격 28) 중
+     * 180 dp(22sp 한글 약 7자 + " 도착", "광주송정역 도착" ≈ 160 dp 까지 그대로)를 넘지 않게 해 그룹 이름 몫을 139 dp(약 6자) 이상 남긴다.
+     */
+    const val HEADER_LABEL_MAX_DP = 180f
     const val NAME_SP = 29f
     /** 긴 닉네임을 맞출 때 내려가는 하한 */
     const val NAME_MIN_SP = 20f
@@ -147,11 +162,11 @@ fun FloatingPanel(
     val sized = modifier.width(width).let { if (maxHeight != Dp.Unspecified) it.heightIn(max = maxHeight) else it }
     Surface(sized, shape = RoundedCornerShape(s.dp(22f)), color = p.bg, shadowElevation = 8.dp, border = p.border?.let { BorderStroke(1.dp, it) }) {
         Column(Modifier.padding(horizontal = s.dp(14f), vertical = s.dp(12f)), verticalArrangement = Arrangement.spacedBy(s.dp(10f))) {
-            // 머리줄: 그룹 이름 · 기준 지점 · 연결 점
+            // 머리줄: 그룹 이름(남는 폭, 넘치면 이것만 말줄임) · 기준 문구(자기 폭, 상한 180 dp) · 연결 점
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(ui.groupName, color = p.muted, fontSize = s.sp(FloatingPanelSpec.HEADER_SP), lineHeight = s.sp(26f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.45f))
+                Text(ui.groupName, color = p.muted, fontSize = s.sp(FloatingPanelSpec.HEADER_SP), lineHeight = s.sp(26f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 Spacer(Modifier.width(s.dp(8f)))
-                Text(ui.etaLabel, color = p.muted, fontSize = s.sp(FloatingPanelSpec.HEADER_SP), lineHeight = s.sp(26f), maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.End, modifier = Modifier.weight(0.55f))
+                EtaHeaderLabel(ui.etaPlace, p.muted, s)
                 Spacer(Modifier.width(s.dp(8f)))
                 Box(Modifier.size(s.dp(12f)).clip(CircleShape).background(if (ui.connected) p.info else p.caution))
             }
@@ -179,6 +194,20 @@ fun FloatingPanel(
             }
             PanelPttRow(ui.ptt, s, onPtt)
         }
+    }
+}
+
+/**
+ * 머리줄 기준 문구 "{목적지} 도착": 자기 폭 그대로 그린다(잘리지 않음). 전체가 [FloatingPanelSpec.HEADER_LABEL_MAX_DP] 를
+ * 넘는 아주 긴 목적지일 때만 목적지 이름을 말줄임하고 " 도착" 은 남긴다("강릉 경포해변 중앙… 도착").
+ * 바깥 머리줄에서 이 문구는 가중치 없이 먼저 재고, 그룹 이름(weight 1)이 남은 폭을 받는다.
+ */
+@Composable
+private fun EtaHeaderLabel(place: String, color: Color, s: Scaler) {
+    val size = s.sp(FloatingPanelSpec.HEADER_SP)
+    Row(Modifier.widthIn(max = s.dp(FloatingPanelSpec.HEADER_LABEL_MAX_DP)), verticalAlignment = Alignment.CenterVertically) {
+        Text(place, color = color, fontSize = size, lineHeight = s.sp(26f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+        Text(FloatingPanelSpec.ETA_SUFFIX, color = color, fontSize = size, lineHeight = s.sp(26f), maxLines = 1, softWrap = false)
     }
 }
 
@@ -319,7 +348,7 @@ private fun PanelPttRow(ptt: PttUi, s: Scaler, onPtt: () -> Unit) {
 object FloatingPanelSamples {
     val base = FloatingPanelUi(
         groupName = "강릉 가족 여행",
-        etaLabel = "경포해변 도착",
+        etaPlace = "경포해변",
         cars = listOf(
             FloatingCar("아빠", DriveDashboardSamples.BLUE, gapText = "앞 1.2", gapUnit = "km", etaText = "14:28"),
             FloatingCar("삼촌", DriveDashboardSamples.PURPLE, gapText = "뒤 2.1", gapUnit = "km", etaText = "14:31"),
@@ -335,10 +364,12 @@ object FloatingPanelSamples {
     )
 
     /**
-     * 폭 최악 조합(리뷰 2026-10-28): 긴 닉네임·저잔량 아이콘·경고 굵은 글씨 "뒤 9.9 km"·"앞 990 m"·"뒤 120 km" + "13:48".
-     * 단위가 잘리지 않고 이름·숫자가 줄어드는지 `screen=design&variant=panel_worst` 로 확인한다.
+     * 폭 최악 조합(리뷰 2026-10-28): 긴 닉네임·저잔량 아이콘·경고 굵은 글씨 "뒤 9.9 km"·"앞 990 m"·"뒤 120 km" + "13:48",
+     * 머리줄은 시연 기본 그룹 이름 "아빠 차와 같이 가기"(≈ 210 dp — "경포해변 도착" 옆 남은 ≈ 180 dp 에 안 들어감 → 그룹 이름만 말줄임).
+     * 단위가 잘리지 않고 이름·숫자가 줄어드는지, 기준 문구는 그대로인지 `screen=design&variant=panel_worst` 로 확인한다.
      */
     val worst = base.copy(
+        groupName = "아빠 차와 같이 가기",
         cars = listOf(
             FloatingCar("DemoCarB", DriveDashboardSamples.BLUE, gapText = "뒤 9.9", gapUnit = "km", etaText = "13:48", lowEnergy = true, warn = true),
             FloatingCar("아빠", DriveDashboardSamples.PURPLE, gapText = "앞 990", gapUnit = "m", etaText = "13:48", lowEnergy = true),
@@ -348,6 +379,15 @@ object FloatingPanelSamples {
         event = DriveDashboardSamples.eventDanger,
     )
 
+    /**
+     * 아주 긴 목적지 + 긴 그룹 이름: 기준 문구가 상한 180 dp 에 걸려 목적지 이름만 말줄임(" 도착" 남음),
+     * 그룹 이름은 남은 ≈ 139 dp 에서 말줄임 — `screen=design&variant=panel_longdest`.
+     */
+    val longDestination = base.copy(
+        groupName = "추석 귀성길 삼촌네 합류",
+        etaPlace = "강릉 경포해변 중앙광장 공영주차장",
+    )
+
     fun of(variant: String): FloatingPanelUi = when (variant) {
         "recording" -> base.copy(event = null, ptt = PttUi(PttPhase.RECORDING, seconds = 9, totalSeconds = 15, level = 0.7f))
         "confirm" -> base.copy(event = null, ptt = PttUi(PttPhase.CONFIRMING, seconds = 4, listening = true))
@@ -355,6 +395,7 @@ object FloatingPanelSamples {
         "noevent" -> base.copy(event = null)
         "full" -> full
         "worst" -> worst
+        "longdest" -> longDestination
         else -> base
     }
 }

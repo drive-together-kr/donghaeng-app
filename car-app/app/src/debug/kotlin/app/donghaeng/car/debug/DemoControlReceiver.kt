@@ -7,6 +7,7 @@ import app.donghaeng.car.adapter.navi.NaviAdapter
 import app.donghaeng.car.core.common.DemoPrefs
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.core.common.TextMasking
+import app.donghaeng.car.core.common.TokenStore
 import app.donghaeng.car.domain.model.Place
 import app.donghaeng.car.domain.model.Priority
 import app.donghaeng.car.domain.model.toLogString
@@ -31,6 +32,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.util.Base64
 
 /**
  * 시연·확인용 adb 조작 리시버 (debug 빌드 전용, T30 — `tools/demo/demo.py` 가 쓴다).
@@ -47,6 +49,8 @@ import kotlinx.coroutines.launch
  * | `voice` | `on`(ez) | 음성 안내 on/off |
  * | `navi_route` | | 그룹 목적지로 `requestRoute` |
  * | `gpx` | `role` = `lead`/`follow` | fake flavor GPX 역할 저장 — **앱 재시작 후 적용** |
+ * | `is_me` | `vid`, `tag`(선택, 영숫자·`-` 16자) | 이 차의 vehicleId 인가 — `demo: is_me=true\|false tag=…` 만 남긴다(id 원문 없음). demo.py preflight 가 `GET /me/vehicles` 의 id 를 차마다 물어 차 A/B 를 맞춘다 |
+ * | `nickname` | `name_b64`(UTF-8 base64, URL-safe 가능) 또는 `name` | 저장된 내 차 닉네임을 바꾼다(서버 `PATCH /me/vehicles/{id}` 와 같은 값으로 — 그룹이 없어도 홈·그룹 기본 이름이 바로 따라오게). 로그는 `demo: nickname changed=… len=N` |
  * | `status` | | 세션·제안·음성 상태 한 줄 로그 |
  * | `open` | `screen` = home/drive/events/create/settings/diagnostics | 앱을 전면으로 올리고 그 화면으로 이동(MainActivity extra `screen`) |
  * | `surface` | | 주행 중 표면 상태 한 줄 — `demo: surface mode=PANEL panelVisible=true canDraw=true appVisible=false … panelShown=true keeper=starts=1 … cards=…` |
@@ -223,6 +227,28 @@ class DemoControlReceiver : BroadcastReceiver() {
                         "autoFollow=${r.autoFollow} routeChangedSent=${r.routeChangedSent} voice=${voice.state.value.enabled} gpx=${DemoPrefs.gpxRole(context)}",
                 )
             }
+            "is_me" -> {
+                // 시연 preflight 가 서버 차량 목록의 id 를 하나씩 물어 이 차가 어느 vehicleId 인지 맞춘다 — 로그에는 참/거짓과 요청 꼬리표만(CLAUDE.md 8)
+                val vid = intent.getStringExtra("vid").orEmpty()
+                val mine = identityDeps(context).tokenStore().load()?.vehicleId
+                val tag = intent.getStringExtra("tag")?.filter { it.isLetterOrDigit() || it == '-' }?.take(16)?.takeIf { it.isNotEmpty() }
+                DhLog.i("demo: is_me=${vid.isNotEmpty() && vid == mine}" + (tag?.let { " tag=$it" } ?: ""))
+            }
+            "nickname" -> {
+                // 서버 닉네임을 바꾼 뒤(api.py rename / demo.py preflight) 저장값을 같은 값으로 — 그룹이 있으면 스냅샷이 알아서 맞추지만(MqttSessionManager) 그룹 전에는 알 길이 없다
+                val tokens = identityDeps(context).tokenStore()
+                val name = demoNickname(intent)?.trim().orEmpty()
+                val creds = tokens.load()
+                when {
+                    creds == null -> DhLog.w("demo: nickname 페어링 없음")
+                    name.isEmpty() || name.length > NICKNAME_MAX -> DhLog.w("demo: nickname 길이 ${name.length} — 1~${NICKNAME_MAX}자여야 한다")
+                    name == creds.nickname -> DhLog.i("demo: nickname changed=false len=${name.length}")
+                    else -> {
+                        tokens.save(creds.copy(nickname = name))
+                        DhLog.i("demo: nickname changed=true len=${name.length}")
+                    }
+                }
+            }
             else -> DhLog.w("demo: 모르는 action=$action")
         }
     }
@@ -243,4 +269,28 @@ class DemoControlReceiver : BroadcastReceiver() {
         const val EXTRA_ACTION = "action"
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     }
+}
+
+/** 시연 닉네임 액션(`is_me`·`nickname`) 전용 의존성 — 다른 액션의 [DemoControlReceiver.Deps] 와 따로 둔다 */
+@EntryPoint
+@InstallIn(SingletonComponent::class)
+interface DemoIdentityDeps {
+    fun tokenStore(): TokenStore
+}
+
+private fun identityDeps(context: Context): DemoIdentityDeps =
+    EntryPointAccessors.fromApplication(context.applicationContext, DemoIdentityDeps::class.java)
+
+/** 서버 닉네임 한도(docs/03 §1.2 — 1~30자)와 같다 */
+private const val NICKNAME_MAX = 30
+
+/**
+ * `nickname` 액션의 새 닉네임. `adb shell am broadcast --es name 아빠 차` 는 원격 셸이 공백에서 잘라 버리므로 demo.py 는
+ * UTF-8 base64(`name_b64`)로 보낸다. 손으로 칠 때는 `--es name` 도 받는다(공백이 있으면 `adb shell "am broadcast … --es name '아빠 차'"` 처럼 셸 명령 전체를 한 번 더 따옴표로).
+ */
+private fun demoNickname(intent: Intent): String? {
+    intent.getStringExtra("name_b64")?.let { b64 ->
+        return runCatching { String(Base64.getUrlDecoder().decode(b64.trim().replace('+', '-').replace('/', '_')), Charsets.UTF_8) }.getOrNull()
+    }
+    return intent.getStringExtra("name")
 }

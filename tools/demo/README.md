@@ -8,7 +8,7 @@ adb 는 환경변수 `ADB` 또는 `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb
 | `demo.py` | 장면 4~9 타임라인 실행 + 두 차 로그 수집·확인 표 (`out/<시각>/summary.md`) |
 | `replay_gpx.py` | GPX → `adb emu geo fix` 재생 (차 A, 실 SDK Pleos AVD 의 GPS) |
 | `vc.py` | Pleos 에뮬레이터 Virtual Console 클라이언트 (기어·속도·브레이크·EV 잔량·방향지시등) |
-| `api.py` | 서버 REST 보조 (dev 로그인, 페어링 승인, 초대·합류, 동승자 메시지) — 폰 없이 리허설할 때 |
+| `api.py` | 서버 REST 보조 (dev 로그인, 페어링 승인, 닉네임 바꾸기, 초대·합류, 동승자 메시지) — 폰 없이 리허설할 때 |
 
 GPX 는 `car-app/app/src/main/assets/gpx/{lead,follow}.gpx` 를 그대로 쓴다(단일 원본). 두 파일은 같은 가상 복도(직선 보간, 실제 도로·주소와 무관)를
 선두가 1.2 km 앞서 달리는 구성이며 덕평휴게소 좌표(37.2963, 127.4120)를 지난다 — `RouteSyncEngine.DEMO_WAYPOINT` 와 같아 차 B(fake)의 `WaypointArrived` 가 난다.
@@ -21,26 +21,36 @@ GPX 는 `car-app/app/src/main/assets/gpx/{lead,follow}.gpx` 를 그대로 쓴다
    adb -s emulator-5558 shell am broadcast -n app.donghaeng.car/.debug.DemoControlReceiver --es action gpx --es role follow
    adb -s emulator-5558 shell am force-stop app.donghaeng.car   # 재시작 후 적용
    ```
-   폰으로 페어링(닉네임 DemoCarB). 폰이 없으면 `python tools/demo/api.py --email <dev 이메일> pair <차 B 화면의 코드> --nickname DemoCarB`.
+   폰으로 페어링(닉네임은 아무거나 — preflight 가 "둘째 차"로 맞춘다). 폰이 없으면 `python tools/demo/api.py --email <dev 이메일> pair <차 B 화면의 코드> --nickname "둘째 차"`.
 4. Virtual Console 포워딩: `adb -s emulator-5556 forward tcp:8089 tcp:8088`
 
 ## 실행
 ```
 python tools/demo/demo.py --dry-run                                   # preflight 만
+python tools/demo/demo.py --email <dev 이메일> --dry-run               # preflight + 시연 닉네임 계획(바꾸지 않음)
 python tools/demo/demo.py --email <dev 이메일>                         # 전체. 장면 2~3(그룹 생성·QR 합류)은 화면·폰에서 → 합류를 감지하면 자동 진행
-python tools/demo/api.py --email <dev 이메일> join --vehicle DemoCarB  # 폰 없이 차 B 합류(리허설)
+python tools/demo/api.py --email <dev 이메일> join --vehicle "둘째 차"  # 폰 없이 차 B 합류(리허설)
+python tools/demo/api.py --email <dev 이메일> rename DemoCarB "둘째 차" # 닉네임 하나만 손으로 바꾸기(차는 지금 닉네임 또는 vehicleId)
 ```
+preflight 표의 `WARN` 은 알리기만 하고 실패로 세지 않는다(`FAIL` 이 있으면 `--skip-preflight` 없이는 멈춘다).
 `--no-auto-accept` 면 차 B 의 제안("선두차 목적지까지 안내할까요?", "따라갈까요?")을 화면에서 직접 누른다(30초 안에, 주행 중엔 버튼이 막히므로 정차 상태에서).
 
 ## 디버그 리시버 (debug 빌드 전용)
 `adb shell am broadcast -n app.donghaeng.car/.debug.DemoControlReceiver --es action <action>` — `route_test`(선두: 덕평휴게소 경유 ROUTE_CHANGED), `accept`, `decline`,
-`auto_follow --ez on true`, `speak --es text …`, `voice --ez on false`, `navi_route`(그룹 목적지로 내비 요청), `gpx --es role lead|follow`, `open --es screen home|drive|events|create|settings|diagnostics`(화면 열기), `status`. 결과는 `logcat -s DongHaeng` 의 `demo:` 줄.
+`auto_follow --ez on true`, `speak --es text …`, `voice --ez on false`, `navi_route`(그룹 목적지로 내비 요청), `gpx --es role lead|follow`, `open --es screen home|drive|events|create|settings|diagnostics`(화면 열기), `status`,
+`is_me --es vid <vehicleId> [--es tag <꼬리표>]`(이 차인가 — `demo: is_me=true|false tag=…` 만, id 원문 없음), `nickname --es name_b64 <UTF-8 base64>`(저장된 내 차 닉네임 바꾸기 — `demo: nickname changed=… len=N`). 결과는 `logcat -s DongHaeng` 의 `demo:` 줄.
 release 빌드에는 들어가지 않는다(`src/debug`).
 
 ## 주행 중 표면 준비 (2026-10-28)
 - 주행 장면에서는 두 대 모두 **순정 내비를 전면**에 둔다. 동행 정보는 내비 위 플로팅 패널·이벤트 알림 카드(8초)·음성으로 나온다.
 - 플로팅 창 권한(Pleos 에는 설정 화면이 없다): `adb -s <serial> shell appops set --user 10 app.donghaeng.car SYSTEM_ALERT_WINDOW allow`. 권한이 없으면 앱이 '알림 카드 + 음성' 모드로 바꾼다.
 - 차 A(Pleos AVD, 실 SDK)는 순정 내비 위치가 고정돼 있어 위치 소스를 Android 먼저로: `… DemoControlReceiver --es action loc_order --es order android_first` → 앱 재시작. 그래야 `replay_gpx.py` 의 `geo fix` 가 동행 위치·간격에 반영된다(docs/09 §1.2). 순정 내비 화면의 내 차 아이콘은 에뮬레이터에서 움직이지 않는다.
+
+## 시연 닉네임·그룹 이름 (2026-10-28)
+- `demo.py` preflight 가 `--email` 계정의 차 닉네임을 맞춘다: 차 A = `--nick-a`(기본 "아빠 차"), 차 B = `--nick-b`("둘째 차"), 같은 계정의 나머지 차 하나(대표 차량 먼저·등록순, 있으면) = `--nick-c`("삼촌 차"). 이미 같으면 건너뛰고(`같음`), `--dry-run` 이면 `계획` 만 출력하고 바꾸지 않는다. `--email` 이 없으면 WARN 한 줄.
+- 어느 vehicleId 가 차 A/B 인지: `GET /me/vehicles` 의 id 를 각 차에 `is_me` 로 물어 `demo: is_me=true` 인 것을 고른다(기기 로그에 id 원문이 남지 않는다). 차 A·B 를 둘 다 찾았을 때만 나머지 차를 고른다 — 못 찾은 차는 FAIL(다른 계정으로 페어링했거나 앱이 응답하지 않음).
+- 서버 쪽 이름(그룹 스냅샷의 패널 이름·음성 문구·멤버 목록)은 서버가 매번 DB 에서 읽어 다음 스냅샷(2초)부터 바뀐다. 차 앱의 저장값(홈 "연결됨: …"·그룹 기본 이름)은 그룹 스냅샷으로도 따라오지만 그룹 전에는 알 길이 없어, preflight 가 리시버 `nickname` 으로 같은 값을 넣는다(`차 A 앱 저장 닉네임 맞춤` 행).
+- 패널 머리글 = 그룹 이름. 닉네임을 맞춘 **뒤에** 차 A 에서 그룹을 만들면 기본 이름이 "아빠 차와 같이 가기"(받침에 따라 와/과). 옛 이름의 그룹이 살아 있으면 preflight 가 `(활성 그룹 '…')` 로 알려 준다 — 끝내고 새로 만든다.
 
 ## 리허설 사이 초기화 (실측에서 걸린 것들)
 - 차 B 를 다시 합류시키려면 먼저 내보낸다: `api.py` 로 `POST /groups/{id}/leave {vehicleId}` → 차 B 앱이 자기 `MEMBER_LEFT` 를 받고 세션을 지운다(홈이 '그룹 없음' 으로). 그 뒤 `api.py join`.

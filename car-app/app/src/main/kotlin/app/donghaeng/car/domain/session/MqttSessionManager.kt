@@ -1,6 +1,7 @@
 package app.donghaeng.car.domain.session
 
 import app.donghaeng.car.core.common.DhLog
+import app.donghaeng.car.core.common.StoredCredentials
 import app.donghaeng.car.core.common.TextMasking
 import app.donghaeng.car.core.common.TokenStore
 import app.donghaeng.car.core.common.TokenStoreState
@@ -51,6 +52,7 @@ data class ReceivedGroupState(val envelopeTsMs: Long, val receivedAtMs: Long, va
  * - [TokenStore] 에 자격 증명이 있으면 [MqttGateway.connect] + 자기 `cmd` 토픽(+ 저장된 그룹 토픽) 구독. 없어지면(연결 해제) 끊고 그룹 세션도 지운다.
  * - cmd `GROUP_JOINED` → [GroupSessionStore] 에 저장하고 그룹 `state/event` 구독. `GROUP_ENDED` 또는 내 차의 그룹 이벤트 `MEMBER_LEFT`(폰이 내보냄) → 세션 삭제·구독 해제. `TOKEN_REVOKED` → 자격 증명 삭제.
  * - 그룹 토픽 수신은 [groupEvents]/[groupState] 로 내보낸다(T25 주행 화면·T27 음성이 구독).
+ * - 스냅샷의 내 차 닉네임이 저장값과 다르면(폰에서 이름을 바꿈) [TokenStore] 의 닉네임만 바꾼다 — 홈·설정·그룹 기본 이름이 따라온다.
  *
  * 앱 프로세스가 살아 있는 동안 페어링만 돼 있으면 연결을 유지한다 — 폰이 이 차를 그룹에 넣는 순간(`GROUP_JOINED`)을 받으려면
  * 그룹 전에도 cmd 를 듣고 있어야 하기 때문이다(T18). 백그라운드 지속은 T23 의 DriveSessionService 가 맡는다.
@@ -165,6 +167,7 @@ class MqttSessionManager @Inject constructor(
                         _groupStateAt.value = message.receivedAtMs
                         stateCount++
                         _groupStatesReceived.emit(ReceivedGroupState(envelopeTsMs = message.envelope.ts, receivedAtMs = message.receivedAtMs, members = state.members.size))
+                        syncNickname(state, vid)
                         if (stateCount == 1 || stateCount % 15 == 0) {
                             DhLog.i("group state #$stateCount members=${state.members.size} online=${state.members.count { it.online }} status=${state.members.joinToString(",") { it.status.name }}")
                         }
@@ -173,6 +176,19 @@ class MqttSessionManager @Inject constructor(
             }
             else -> DhLog.d("inbound ignored type=${message.envelope.type}")
         }
+    }
+
+    /**
+     * 내 차 닉네임을 서버 값으로 맞춘다 (2026-10-28). 닉네임은 페어링 때 한 번 받아 [TokenStore] 에 저장하는데,
+     * 폰(`PATCH /me/vehicles/{id}`, docs/03 §1.3)에서 바꾸면 차에는 알려 주는 cmd 가 없어 홈·설정 화면과 그룹 기본 이름이 옛 값으로 남았다.
+     * 그룹 스냅샷(`GroupState`, 서버가 2초마다 DB 에서 다시 읽음)에 내 차가 다른 닉네임으로 있으면 저장값만 바꾼다 —
+     * 같은 차·같은 토큰이라 [MqttGateway.connect] 는 연결을 그대로 둔다. 같으면 아무것도 하지 않는다(2초마다 디스크 쓰기 없음).
+     * 그룹이 없을 때 바꾼 닉네임은 다음 그룹 스냅샷에서 반영된다(시연은 debug 리시버 `nickname` 으로 바로 맞춘다).
+     */
+    private suspend fun syncNickname(state: GroupState, vid: String) {
+        val updated = nicknameFromState(state, vid, tokenStore.state.value) ?: return
+        tokenStore.save(updated)
+        DhLog.i("nickname synced from group state vid=${TextMasking.maskVehicleId(vid)} len=${updated.nickname.length}")
     }
 
     private suspend fun onCommand(message: InboundMessage) {
@@ -251,5 +267,19 @@ class MqttSessionManager @Inject constructor(
 
     private fun note(type: CmdType, groupId: String?) {
         _lastCommand.value = LastCommand(type.name, groupId?.let(TextMasking::maskVehicleId), System.currentTimeMillis())
+    }
+
+    companion object {
+        /**
+         * 스냅샷의 내 차 닉네임이 저장값과 다르면 바꾼 자격 증명, 아니면 null (순수 함수 — 테스트용).
+         * 저장된 차와 다른 vehicleId 이거나, 스냅샷에 내 차가 없거나, 서버 값이 비었으면(별명 대신 id 가 올 때 포함) 바꾸지 않는다.
+         */
+        internal fun nicknameFromState(state: GroupState, vid: String, tokens: TokenStoreState): StoredCredentials? {
+            val creds = (tokens as? TokenStoreState.Present)?.credentials ?: return null
+            if (creds.vehicleId != vid) return null
+            val serverNick = state.members.firstOrNull { it.vehicleId == vid }?.nickname?.trim().orEmpty()
+            if (serverNick.isEmpty() || serverNick == vid || serverNick == creds.nickname) return null
+            return creds.copy(nickname = serverNick)
+        }
     }
 }
