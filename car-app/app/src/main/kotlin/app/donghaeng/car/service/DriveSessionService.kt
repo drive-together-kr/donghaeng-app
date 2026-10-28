@@ -27,9 +27,13 @@ class DriveSessionService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private var lastGroupName: String = ""
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val groupName = intent?.getStringExtra(EXTRA_GROUP_NAME) ?: ""
-        val notification = buildNotification(groupName)
+        val groupName = intent?.getStringExtra(EXTRA_GROUP_NAME) ?: lastGroupName
+        lastGroupName = groupName
+        // 상시 상태 카드(T34 조사): 제목·본문을 바꿔 다시 startForeground 하면 Pleos 상단 카드가 갱신되는지 — 주행 중 표면 후보
+        val notification = buildNotification(groupName, intent?.getStringExtra(EXTRA_STATUS_TITLE), intent?.getStringExtra(EXTRA_STATUS_TEXT))
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val type = if (LocationPermissions.fineGranted(this)) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
@@ -53,7 +57,7 @@ class DriveSessionService : Service() {
         super.onDestroy()
     }
 
-    private fun buildNotification(groupName: String): Notification {
+    private fun buildNotification(groupName: String, statusTitle: String? = null, statusText: String? = null): Notification {
         val manager = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && manager.getNotificationChannel(CHANNEL_ID) == null) {
             manager.createNotificationChannel(
@@ -70,8 +74,8 @@ class DriveSessionService : Service() {
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, CHANNEL_ID) else @Suppress("DEPRECATION") Notification.Builder(this)
         return builder
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setContentTitle(getString(R.string.drive_notification_title))
-            .setContentText(if (groupName.isBlank()) getString(R.string.drive_notification_text) else getString(R.string.drive_notification_text_named, groupName))
+            .setContentTitle(statusTitle ?: getString(R.string.drive_notification_title))
+            .setContentText(statusText ?: if (groupName.isBlank()) getString(R.string.drive_notification_text) else getString(R.string.drive_notification_text_named, groupName))
             .setOngoing(true)
             .setContentIntent(open)
             .setCategory(Notification.CATEGORY_NAVIGATION)
@@ -81,6 +85,9 @@ class DriveSessionService : Service() {
     companion object {
         const val CHANNEL_ID = "drive_session"
         const val NOTIFICATION_ID = 2301
+        /** 상시 카드 문구 갱신(선택) — 없으면 기본 문구 */
+        const val EXTRA_STATUS_TITLE = "statusTitle"
+        const val EXTRA_STATUS_TEXT = "statusText"
         const val EXTRA_GROUP_NAME = "groupName"
 
         fun intent(context: Context, groupName: String): Intent =

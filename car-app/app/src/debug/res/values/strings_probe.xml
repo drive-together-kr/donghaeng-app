@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="probe_widget_label">동행 미니앱(조사)</string>
+    <string name="probe_widget_desc">그룹 차량 간격·도착 시각 미니 목록 (조사용)</string>
+</resources>

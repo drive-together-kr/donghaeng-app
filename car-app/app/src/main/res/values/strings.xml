@@ -272,4 +272,10 @@
     <string name="dash_resend">재전송</string>
     <string name="dash_manage_group">그룹 관리</string>
     <string name="dash_settings">설정</string>
+    <string name="dash_ptt_hint">핸들 버튼으로도 가능</string>
+    <string name="dash_ptt_confirm_big">보낼까요?</string>
+    <string name="dash_ptt_say">"네" 또는 "아니"라고 말하세요</string>
+    <string name="dash_ptt_stop_hint">다시 누르면 녹음이 끝나요</string>
+    <string name="dash_ptt_seconds_left_unit">초 남음</string>
+    <string name="dash_ptt_playing_big">%1$s 무전 %2$s</string>
 </resources>

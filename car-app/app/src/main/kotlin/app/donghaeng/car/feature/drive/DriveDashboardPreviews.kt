@@ -1,6 +1,9 @@
 package app.donghaeng.car.feature.drive
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
@@ -21,7 +24,8 @@ fun DesignPreviewHost(variant: String) {
     val dark = variant != "drive_light"
     DongHaengTheme(darkTheme = dark) {
         if (variant == "drive_portrait") {
-            Box(Modifier.fillMaxHeight(), contentAlignment = Alignment.Center) {
+            // 세로 1창 시안: 폭 620 dp(세로형 헤드유닛 가정)를 어두운 배경 가운데 둔다 — 캡처는 이 열만 잘라 쓴다
+            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
                 DriveDashboardScreen(DriveDashboardSamples.of(variant), Modifier.width(620.dp).fillMaxHeight())
             }
         } else {

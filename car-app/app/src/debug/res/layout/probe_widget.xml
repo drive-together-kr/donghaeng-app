@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#E6181C22"
+    android:padding="12dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="동행 · 강릉 가족 여행"
+        android:textColor="#C4C6CF"
+        android:textSize="14sp" />
+
+    <TextView
+        android:id="@+id/probe_widget_line1"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="● 아빠 앞 1.2 km · 13:12"
+        android:textColor="#FFFFFF"
+        android:textSize="20sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/probe_widget_line2"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="● 삼촌 뒤 2.1 km · 둘째 뒤 5.7 km"
+        android:textColor="#FF9F1C"
+        android:textSize="18sp" />
+</LinearLayout>

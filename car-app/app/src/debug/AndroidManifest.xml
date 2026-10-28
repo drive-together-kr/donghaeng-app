@@ -2,7 +2,21 @@
 <!-- debug 빌드 전용: 시연 스크립트(tools/demo)가 adb 로 앱을 조작하는 리시버. release 에는 들어가지 않는다 (T30, docs/09 §1). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- 표면 조사용(debug): 플로팅 오버레이·헤드업 알림 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application>
+        <service android:name=".debug.OverlayProbeService" android:exported="false" />
+        <receiver
+            android:name=".debug.ProbeWidgetProvider"
+            android:exported="true"
+            android:label="@string/probe_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/probe_widget_info" />
+        </receiver>
         <!-- 호출: adb shell am broadcast -n app.donghaeng.car/.debug.DemoControlReceiver (extras: action = route_test | accept | decline | auto_follow | speak | voice | navi_route | gpx | status) -->
         <receiver
             android:name=".debug.DemoControlReceiver"

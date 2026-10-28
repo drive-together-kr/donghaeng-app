@@ -137,6 +137,25 @@ class DemoControlReceiver : BroadcastReceiver() {
                 context.startActivity(launch)
                 DhLog.i("demo: open screen=$screen")
             }
+            "overlay" -> {
+                val on = intent.getBooleanExtra("on", true)
+                val svc = Intent(context, OverlayProbeService::class.java).putExtra("cmd", if (on) "show" else "hide")
+                context.startService(svc)
+                DhLog.i("demo: overlay on=$on canDraw=${android.provider.Settings.canDrawOverlays(context)}")
+            }
+            "notify" -> ProbeNotifications.post(context, intent.getStringExtra("kind") ?: "status")
+            "fgs_text" -> {
+                // 상단 상시 카드(포그라운드 서비스 알림)가 내용 갱신을 반영하는지 — 같은 채널·ID 로 다시 올린다
+                val text = intent.getStringExtra("text") ?: "아빠 앞 1.2 km · 삼촌 뒤 2.1 km · 둘째 뒤 5.7 km"
+                val title = intent.getStringExtra("title") ?: "동행 · 강릉 가족 여행 · 그룹 도착 14:35"
+                // 서비스가 같은 ID 로 startForeground 를 다시 호출하게 한다(알림만 바꾸면 상단 카드가 안 바뀜 — 실측)
+                val svc = Intent(context, app.donghaeng.car.service.DriveSessionService::class.java)
+                    .putExtra(app.donghaeng.car.service.DriveSessionService.EXTRA_STATUS_TITLE, title)
+                    .putExtra(app.donghaeng.car.service.DriveSessionService.EXTRA_STATUS_TEXT, text)
+                runCatching { context.startForegroundService(svc) }.onFailure { DhLog.w("demo: fgs_text startForegroundService 실패 ${it.javaClass.simpleName}") }
+                DhLog.i("demo: fgs_text requested len=${text.length}")
+            }
+            "focus" -> ProbeAudioFocus.test(context, intent.getStringExtra("usage") ?: "nav")
             "status" -> {
                 val s = sessionStore.session.value
                 val r = routeSync.state.value
