@@ -34,11 +34,11 @@ python tools/demo/api.py --email <dev 이메일> join --vehicle DemoCarB  # 폰 
 
 ## 디버그 리시버 (debug 빌드 전용)
 `adb shell am broadcast -n app.donghaeng.car/.debug.DemoControlReceiver --es action <action>` — `route_test`(선두: 덕평휴게소 경유 ROUTE_CHANGED), `accept`, `decline`,
-`auto_follow --ez on true`, `speak --es text …`, `voice --ez on false`, `navi_route`(그룹 목적지로 내비 요청), `gpx --es role lead|follow`, `open --es screen home|drive|events|create|settings|diagnostics`(화면 열기), `status`. 결과는 `logcat -s DongHaeng` 의 `demo:` 줄.
+`auto_follow --ez on true`, `speak --es text …`, `voice --ez on false`, `navi_route`(그룹 목적지로 내비 요청), `gpx --es role lead|follow`, `open --es screen home|drive|events|create|settings|diagnostics`(화면 열기), `status`, `surface`(표면 상태 한 줄), `event --es type HARD_BRAKE`(로컬 이벤트로 패널·카드·음성 확인), `tbt --ei m 120 --ei for_s 60`(카드 TBT 게이트가 읽는 다음 회전 거리 덮어쓰기, `m=-1` 해제 — docs/09 §1.3). 결과는 `logcat -s DongHaeng` 의 `demo:` 줄.
 release 빌드에는 들어가지 않는다(`src/debug`).
 
 ## 주행 중 표면 준비 (2026-10-28)
-- 주행 장면에서는 두 대 모두 **순정 내비를 전면**에 둔다. 동행 정보는 내비 위 플로팅 패널·이벤트 알림 카드(8초)·음성으로 나온다.
+- 주행 장면에서는 두 대 모두 **순정 내비를 전면**에 둔다. 동행 정보는 내비 위 플로팅 패널(소식 줄)·음성으로 나온다 — 패널 모드에서는 헤드업 카드를 띄우지 않는다(권한이 없을 때만 알림 카드 5초, 회전 300 m 이내면 회전 후).
 - 플로팅 창 권한(Pleos 에는 설정 화면이 없다): `adb -s <serial> shell appops set --user 10 app.donghaeng.car SYSTEM_ALERT_WINDOW allow`. 권한이 없으면 앱이 '알림 카드 + 음성' 모드로 바꾼다.
 - 차 A(Pleos AVD, 실 SDK)는 순정 내비 위치가 고정돼 있어 위치 소스를 Android 먼저로: `… DemoControlReceiver --es action loc_order --es order android_first` → 앱 재시작. 그래야 `replay_gpx.py` 의 `geo fix` 가 동행 위치·간격에 반영된다(docs/09 §1.2). 순정 내비 화면의 내 차 아이콘은 에뮬레이터에서 움직이지 않는다.
 

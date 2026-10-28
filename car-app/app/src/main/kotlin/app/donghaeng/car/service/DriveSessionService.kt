@@ -28,7 +28,7 @@ import app.donghaeng.car.core.common.LocationPermissions
  *   포그라운드 서비스 알림이라 Android(NotificationManagerService)가 사용자 설정이 없으면 **LOW 로 올린다**(dumpsys 에 importance=2 로 보일 수 있음).
  *   LOW 여도 소리·진동·헤드업은 없다. Pleos 상단 카드를 막는 핵심은 **category service**(category navigation 이 카드로 뜨던 원인 — 78dcafd 프로브는
  *   FGS 가 아닌 ongoing 알림으로 확인, FGS 알림 실측은 메인 세션 확인 명령으로). 알림은 무음·한 번만·PRIORITY_MIN·CATEGORY_SERVICE 이고
- *   **문구는 고정**("동행 그룹 주행 중") — 내용을 갱신하지 않는다. 내비 위에 뜨는 것은 플로팅 패널과 이벤트 알림 카드(8초)뿐이다. 옛 채널은 지운다.
+ *   **문구는 고정**("동행 그룹 주행 중") — 내용을 갱신하지 않는다. 내비 위에 뜨는 것은 플로팅 패널과(권한이 없을 때만) 이벤트 알림 카드(5초)뿐이다. 옛 채널은 지운다.
  */
 class DriveSessionService : Service() {
 

@@ -4,6 +4,8 @@ import android.content.Context
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.model.Fix
 import app.donghaeng.car.domain.model.NaviEvent
+import app.donghaeng.car.domain.model.NextTurn
+import app.donghaeng.car.domain.model.NextTurnResult
 import app.donghaeng.car.domain.model.Place
 import app.donghaeng.car.domain.model.RouteState
 import app.donghaeng.car.domain.model.WaypointIndex
@@ -17,6 +19,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.math.floor
 import kotlin.math.roundToInt
 
 /**
@@ -28,6 +31,7 @@ import kotlin.math.roundToInt
  * - `requestRoute` / `requestRouteWithWaypoints` / `addWaypoint` 는 실제 내비처럼 해당 이벤트(DestinationChanged, WaypointChanged, RouteStateInfo)를 즉시 발행한다.
  * - 경로가 없으면(점 2개 미만) 예전처럼 기준점 주변을 조금씩 이동하는 드리프트 시나리오로 동작한다.
  * - [holdUntilRouted] 면 목적지가 설정될 때까지(`requestRoute*`) 첫 점에 머문다 — 후속차(T30 시연: 합류 → "선두 목적지까지 안내" 수락 → 출발).
+ * - [nextTurn]: 가상 TBT — 재생한 거리 기준 [FAKE_TURN_EVERY_M](1.2 km)마다 회전이 있는 척한다([fakeTurn], 알림 카드 TBT 게이트 확인용).
  *
  * GPX 는 `assets/gpx/lead.gpx`(선두) · `assets/gpx/follow.gpx`(후속) — 직선 보간한 **가상 경로**이며 실제 도로·주소와 무관하다.
  *
@@ -188,6 +192,13 @@ class FakeNaviAdapter(
         DhLog.i("FakeNavi showNavigation (내비 화면 없음 — 로그만)")
     }
 
+    /** 가상 TBT — 목적지가 없거나(안내 전) 경로가 없으면 [NextTurnResult.NoGuidance], 그 밖은 지금 재생 위치로 [fakeTurn] */
+    override suspend fun nextTurn(timeoutMs: Long): NextTurnResult {
+        if (track.isEmpty() || destination == null) return NextTurnResult.NoGuidance
+        val traveled = cumulativeM[position.coerceIn(0, track.lastIndex)]
+        return fakeTurn(traveled, cumulativeM.last())
+    }
+
     companion object {
         /** 데모 시작점(임의 지점) — 실제 장소·주소와 무관 */
         const val DEMO_START_LAT = 36.3500
@@ -198,11 +209,29 @@ class FakeNaviAdapter(
         const val ARRIVE_RADIUS_M = 60.0
         const val TRIP_EVERY_TICKS = 10
 
+        /** 가상 회전 간격 — 경로 시작부터 1.2 km, 2.4 km, … 지점에 회전이 있는 척한다 */
+        const val FAKE_TURN_EVERY_M = 1_200.0
+
         const val ASSET_LEAD = "gpx/lead.gpx"
         const val ASSET_FOLLOW = "gpx/follow.gpx"
 
         /** 시연용 GPX(lead/follow) 의 공통 종점 — 가상 경로의 끝, 실제 장소·주소와 무관 */
         val DEMO_DESTINATION = Place(lat = 37.2800, lon = 127.5400, name = "여주 방면(시연)", poiId = null, address = null)
+
+        /**
+         * 가상 TBT(순수 함수): 경로를 [traveledM] 만큼 달렸을 때 다음 회전까지 남은 거리.
+         * 다음 가상 회전([everyM] 배수 지점)보다 목적지가 가깝거나 같으면 `TURN_ARRIVE`, 경로 끝에 닿았으면 [NextTurnResult.NoGuidance](안내 끝).
+         * 회전 종류는 번호에 따라 오른쪽·왼쪽 번갈아, 문구는 "가상 회전 N" — 회전을 지나면 문구가 바뀐다.
+         */
+        fun fakeTurn(traveledM: Double, totalM: Double, everyM: Double = FAKE_TURN_EVERY_M): NextTurnResult {
+            val remain = totalM - traveledM
+            if (remain < 1.0) return NextTurnResult.NoGuidance
+            val index = floor(traveledM / everyM).toInt() + 1
+            val toTurn = index * everyM - traveledM
+            val turn = if (toTurn >= remain) NextTurn(remain.roundToInt(), "TURN_ARRIVE", "목적지")
+            else NextTurn(toTurn.roundToInt(), if (index % 2 == 1) "TURN_RIGHT" else "TURN_LEFT", "가상 회전 $index")
+            return NextTurnResult.Ahead(turn)
+        }
 
         /**
          * assets 의 GPX 로 만든다. 파일이 없거나 깨지면 드리프트 시나리오로 폴백(크래시 없음).

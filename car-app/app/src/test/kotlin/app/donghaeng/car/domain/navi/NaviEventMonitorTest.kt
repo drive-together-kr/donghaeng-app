@@ -4,6 +4,7 @@ import app.donghaeng.car.adapter.navi.FakeNaviAdapter
 import app.donghaeng.car.adapter.navi.LatLon
 import app.donghaeng.car.adapter.navi.NaviAdapter
 import app.donghaeng.car.domain.model.NaviEvent
+import app.donghaeng.car.domain.model.NextTurnResult
 import app.donghaeng.car.domain.model.Place
 import app.donghaeng.car.domain.model.WaypointIndex
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -75,6 +76,7 @@ class NaviEventMonitorTest {
             override suspend fun addWaypoint(place: Place, index: WaypointIndex) = Unit
             override suspend fun currentDestination(): Place? = null
             override suspend fun showNavigation() = Unit
+            override suspend fun nextTurn(timeoutMs: Long): NextTurnResult = NextTurnResult.Unknown
         }
         val monitor = NaviEventMonitor(flaky).apply { configureForTest(StandardTestDispatcher(testScheduler), restartDelayMs = 1_000) }
         monitor.start()

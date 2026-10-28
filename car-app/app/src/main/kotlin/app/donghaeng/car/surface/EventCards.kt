@@ -11,6 +11,8 @@ import androidx.core.app.NotificationCompat
 import app.donghaeng.car.MainActivity
 import app.donghaeng.car.R
 import app.donghaeng.car.core.common.DhLog
+import app.donghaeng.car.domain.model.NextTurnResult
+import app.donghaeng.car.domain.model.toLogString
 import app.donghaeng.car.domain.session.ReceivedGroupEvent
 import app.donghaeng.car.feature.drive.DriveFormat
 import app.donghaeng.car.feature.drive.Tone
@@ -20,11 +22,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlin.coroutines.cancellation.CancellationException
 
 /** 알림 카드 한 장 — 문구([title])는 화면에만, 로그에는 종류·id·카테고리만 */
 data class EventCard(
@@ -50,11 +56,13 @@ sealed interface CardDecision {
  * - 신선도: 서버 시계 기준 [FRESHNESS_MS](60초)보다 오래된 이벤트(재연결 뒤 밀려 온 옛 소식)는 카드로 띄우지 않는다.
  * - 카테고리: 메시지 → msg, 그 밖(저잔량·급제동·도착·합류·끊김) → navigation. Pleos 알림 표시기(ai.umos.notification)는 일반 앱 알림 중
  *   `call`·`msg`·`navigation`(·`connect.system`)만 헤드업 카드로 띄우고 `status` 는 알림 목록에만 넣는다(2026-10-28 실측 — 표시기 로그 `needHeadUpNotification`).
- *   그룹 주행 소식은 길 안내에 딸린 정보라 navigation 으로 둔다. 카드는 [TIMEOUT_MS](8초) 뒤 저절로 사라진다.
+ *   그룹 주행 소식은 길 안내에 딸린 정보라 navigation 으로 둔다. 카드는 [TIMEOUT_MS](5초) 뒤 저절로 사라진다(2026-10-28 사용자 지시 8초 → 5초 —
+ *   헤드업 카드가 순정 내비 상단 TBT 위에 겹치는 시간을 줄인다).
+ * - 이 판단은 '카드로 띄울 만한가'까지다. 어느 모드에서 띄우는지(카드 + 음성 모드만)·회전 직전에 미루는지는 [EventCardNotifier] 가 정한다.
  */
 object EventCardPolicy {
     const val FRESHNESS_MS = 60_000L
-    const val TIMEOUT_MS = 8_000L
+    const val TIMEOUT_MS = 5_000L
     const val BASE_ID = 4_100
 
     const val CATEGORY_NAVIGATION = "navigation"
@@ -97,15 +105,35 @@ fun interface CardPoster {
     fun post(card: EventCard, groupName: String?): Boolean
 }
 
-data class EventCardState(val running: Boolean = false, val posted: Int = 0, val skipped: Map<String, Int> = emptyMap(), val lastType: String? = null)
+/**
+ * 카드 진행 상태(디버그 `surface` 한 줄·테스트) — 문구 없이 수만.
+ * [held] = 지금 회전 직전이라 미뤄 둔 카드 수, [deferred]·[released]·[expired] = 누적(미룸·회전 후 올림·120초 넘어 버림), [lastTbt] = 마지막으로 읽은 TBT.
+ */
+data class EventCardState(
+    val running: Boolean = false,
+    val posted: Int = 0,
+    val skipped: Map<String, Int> = emptyMap(),
+    val lastType: String? = null,
+    val held: Int = 0,
+    val deferred: Int = 0,
+    val released: Int = 0,
+    val expired: Int = 0,
+    val lastTbt: String? = null,
+) {
+    override fun toString(): String =
+        "posted=$posted held=$held deferred=$deferred released=$released expired=$expired lastTbt=${lastTbt ?: "-"} last=${lastType ?: "-"} skipped=$skipped running=$running"
+}
+
+/** [EventCardNotifier.onEvent] 결과 */
+enum class CardOutcome { POSTED, DEFERRED, SKIPPED }
 
 /**
  * 알림 카드 빈도 제한 (docs/05 §5.2) — QoS1 at-least-once 중복 수신·재접속 때 몰려오는 60초 이내 이벤트·연결 들락날락(MEMBER_OFFLINE)으로
- * 헤드업이 반복되거나 8초 안에 여러 장 쌓이지 않게 한다. 음성(VoiceAnnouncer 10 s 중복 창)과 별개로 카드에만 적용.
+ * 헤드업이 반복되거나 카드 수명(5초) 안에 여러 장 쌓이지 않게 한다. 음성(VoiceAnnouncer 10 s 중복 창)과 별개로 카드에만 적용.
  *
  * - 같은 `eventId` 는 한 번만(최근 [maxIds]개 기억, LRU).
  * - 같은 종류·같은 출처는 [sameKeyWindowMs](30초) 안에 한 장. 메시지(PASSENGER_MESSAGE·VOICE_MESSAGE)는 내용이 매번 달라 이 규칙에서 뺀다(eventId 중복만 거른다).
- * - 전체로는 [burstWindowMs](8초 = 카드 수명) 안에 [burstMax](2장)까지. 단 위험(ALERT — 에어백)은 이 한도와 상관없이 띄운다.
+ * - 전체로는 [burstWindowMs](5초 = 카드 수명 [EventCardPolicy.TIMEOUT_MS]) 안에 [burstMax](2장)까지. 단 위험(ALERT — 에어백)은 이 한도와 상관없이 띄운다.
  *
  * [check] 로 거를 이유를 묻고(null = 통과), 실제로 올린 뒤 [record] 한다(알림이 꺼져 못 올린 건 한도를 쓰지 않는다).
  */
@@ -154,8 +182,16 @@ class CardThrottle(
 }
 
 /**
- * 그룹 이벤트를 받아 알림 카드로 띄운다 (docs/05 §5.2). 모드 [SurfaceMode.PANEL]·[SurfaceMode.CARDS_ONLY] 모두에서 동작하고 [SurfaceMode.OFF](그룹 없음)면 아무것도 안 한다.
- * 판단은 [EventCardPolicy], 빈도 제한은 [CardThrottle], 게시는 [CardPoster].
+ * 그룹 이벤트를 받아 알림 카드로 띄운다 (docs/05 §5.2, 사용자 지시 2026-10-28).
+ *
+ * - **카드는 '카드 + 음성' 대체 모드([SurfaceMode.CARDS_ONLY] — 플로팅 창 권한 없음)에서만.** [SurfaceMode.PANEL] 이면 같은 소식을 패널 소식 줄과
+ *   음성이 전하므로 카드를 올리지 않는다(skip `panel-mode`). [SurfaceMode.OFF](그룹 없음)면 아무것도 안 한다.
+ * - 판단은 [EventCardPolicy], 빈도 제한은 [CardThrottle], 게시는 [CardPoster].
+ * - **TBT 게이트([TurnCardGate]):** 올리기 직전에 [nextTurn] 으로 다음 회전까지 거리를 한 번 묻고 300 m 이내면 카드를 미룬다(음성은 VoiceAnnouncer 가
+ *   따로 이미 읽었다). 미룬 카드가 있는 동안만 [recheckMs](1초)마다 다시 물어 회전을 지나면 올리고, 120초 넘게 밀린 카드는 버린다. TBT 를 모르면 바로 올린다.
+ *
+ * 로그: `surface: card <종류> id=… category=… mode=… tbt=…`(올림), `surface: card deferred type=… tbt=…m`, `surface: card released type=… reason=… tbt=… after=…s`,
+ * `surface: card expired type=…`, `surface: card skip <종류> reason=…`(debug 빌드).
  */
 class EventCardNotifier(
     private val events: Flow<ReceivedGroupEvent>,
@@ -164,13 +200,23 @@ class EventCardNotifier(
     private val mode: StateFlow<SurfaceMode>,
     private val groupName: () -> String?,
     private val poster: CardPoster,
+    /** 다음 회전 조회(기기: [TurnProbe.read]). 기본 = 모름 → 게이트 없이 바로 올린다 */
+    private val nextTurn: suspend () -> NextTurnResult = { NextTurnResult.Unknown },
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
-    /** 빈도 제한용 기기 시계 */
+    /** 빈도 제한·미룬 시간용 시계(기기: 단조 시계 SystemClock.elapsedRealtime) */
     private val clock: () -> Long = System::currentTimeMillis,
     private val throttle: CardThrottle = CardThrottle(),
+    private val gate: TurnCardGate = TurnCardGate(),
+    private val recheckMs: Long = TurnCardGate.RECHECK_MS,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private var job: Job? = null
+
+    /** 수집 코루틴·디버그 리시버·재확인 루프가 함께 부르므로 한 번에 하나씩(TBT 조회 포함 — 최대 약 1초) */
+    private val mutex = Mutex()
+
+    /** 미룬 카드가 있는 동안만 도는 재확인 루프 — [mutex] 안에서만 바꾼다 */
+    @Volatile private var recheckJob: Job? = null
 
     private val _state = MutableStateFlow(EventCardState())
     val state: StateFlow<EventCardState> = _state
@@ -185,43 +231,135 @@ class EventCardNotifier(
     @Synchronized
     fun stop() {
         job?.cancel(); job = null
+        recheckJob?.cancel(); recheckJob = null
         _state.update { it.copy(running = false) }
     }
 
-    /** 이벤트 한 건 처리(디버그 리시버·테스트에서 직접 부를 수 있다). 올렸으면 true. 수집 코루틴과 디버그 리시버가 함께 부를 수 있어 직렬화한다 */
-    @Synchronized
-    fun onEvent(e: ReceivedGroupEvent): Boolean {
-        if (mode.value == SurfaceMode.OFF) return skip("no-group", e)
-        return when (val d = EventCardPolicy.decide(e, myVehicleId(), serverNow())) {
+    /** 이벤트 한 건 처리(디버그 리시버·테스트에서 직접 부를 수 있다) */
+    suspend fun onEvent(e: ReceivedGroupEvent): CardOutcome = mutex.withLock {
+        val m = mode.value
+        if (m == SurfaceMode.OFF) return@withLock skip("no-group", e)
+        when (val d = EventCardPolicy.decide(e, myVehicleId(), serverNow())) {
             is CardDecision.Skip -> skip(d.reason, e)
             is CardDecision.Post -> {
+                // 패널 모드: 패널 소식 줄 + 음성으로만 — 헤드업 카드가 순정 내비 TBT 를 가리지 않게
+                if (m == SurfaceMode.PANEL) return@withLock skip("panel-mode", e)
+                throttle.check(e, clock())?.let { return@withLock skip(it, e) }
+                val reading = readTurn()
                 val now = clock()
-                val limited = throttle.check(e, now)
-                if (limited != null) return skip(limited, e)
-                val ok = runCatching { poster.post(d.card, groupName()) }
-                    .onFailure { DhLog.w("surface: card post 실패 ${it.javaClass.simpleName}") }
-                    .getOrDefault(false)
-                if (ok) {
-                    throttle.record(e, now)
-                    _state.update { it.copy(posted = it.posted + 1, lastType = d.card.type) }
-                    DhLog.i("surface: card ${d.card.type} id=${d.card.notificationId} category=${d.card.category} mode=${mode.value}")
-                    true
+                // 먼저 미뤄 둔 카드부터 정리 — 회전을 지났으면 새 카드보다 먼저 나간다
+                settle(gate.observe(reading, now), now)
+                if (reading is NextTurnResult.Ahead && gate.isNear(reading)) {
+                    val replaced = gate.hold(d.card, e, now)
+                    DhLog.i(
+                        "surface: card deferred type=${d.card.type} tbt=${reading.turn.distanceM}m kind=${reading.turn.kind} held=${gate.heldCount}" +
+                            if (replaced != null) " (같은 종류 교체)" else "",
+                    )
+                    _state.update { it.copy(deferred = it.deferred + 1) }
+                    publishGate()
+                    ensureRecheck()
+                    CardOutcome.DEFERRED
                 } else {
-                    skip("not-posted", e)
+                    publishGate()
+                    // 방금 놓인 카드가 빈도 한도를 썼을 수 있어 한 번 더 본다
+                    throttle.check(e, now)?.let { return@withLock skip(it, e) }
+                    if (post(d.card, e, now)) CardOutcome.POSTED else CardOutcome.SKIPPED
                 }
             }
         }
     }
 
-    private fun skip(reason: String, e: ReceivedGroupEvent): Boolean {
+    /** 다음 회전 조회 — 실패는 모름 */
+    private suspend fun readTurn(): NextTurnResult = try {
+        nextTurn()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        DhLog.d("surface: tbt 조회 실패 ${e.javaClass.simpleName}")
+        NextTurnResult.Unknown
+    }
+
+    /** 게이트가 놓은 카드는 올리고(빈도 제한 burst 면 다시 넣어 다음 확인에), 오래 밀린 카드는 버린다 */
+    private fun settle(u: TurnCardGate.Update, now: Long) {
+        u.expired.forEach {
+            DhLog.i("surface: card expired type=${it.card.type} after=${(now - it.sinceMs) / 1000}s (120초 넘게 밀림 — 버림)")
+            _state.update { s -> s.copy(expired = s.expired + 1) }
+        }
+        if (u.released.isEmpty()) return
+        val tbt = gate.lastReading?.toLogString() ?: "-"
+        u.released.forEach { h ->
+            when (val limited = throttle.check(h.event, now)) {
+                null -> {
+                    DhLog.i("surface: card released type=${h.card.type} reason=${u.reason} tbt=$tbt after=${(now - h.sinceMs) / 1000}s")
+                    _state.update { s -> s.copy(released = s.released + 1) }
+                    post(h.card, h.event, now)
+                }
+                "burst" -> gate.putBack(h)
+                else -> skip(limited, h.event)
+            }
+        }
+        if (gate.heldCount > 0) ensureRecheck()
+    }
+
+    /** 미룬 카드가 있으면 재확인 루프를 띄운다 — [mutex] 안에서 부른다 */
+    private fun ensureRecheck() {
+        if (recheckJob != null || gate.heldCount == 0) return
+        recheckJob = scope.launch {
+            while (true) {
+                delay(recheckMs)
+                val more = mutex.withLock { recheck().also { if (!it) recheckJob = null } }
+                if (!more) break
+            }
+        }
+    }
+
+    /** 미룬 카드 재확인 한 번 — 아직 남았으면 true. [mutex] 안에서 부른다 */
+    private suspend fun recheck(): Boolean {
+        if (gate.heldCount == 0) return false
+        val m = mode.value
+        if (m != SurfaceMode.CARDS_ONLY) {
+            // 그사이 플로팅 창 권한이 생겼거나(→ 패널 소식 줄) 그룹이 끝났다 — 미룬 카드는 버린다
+            val dropped = gate.clear()
+            DhLog.i("surface: card dropped n=${dropped.size} types=${dropped.map { it.card.type }} reason=mode-$m")
+            dropped.forEach { skip("mode-$m", it.event) }
+            publishGate()
+            return false
+        }
+        val reading = readTurn()
+        val now = clock()
+        settle(gate.observe(reading, now), now)
+        publishGate()
+        return gate.heldCount > 0
+    }
+
+    private fun post(card: EventCard, e: ReceivedGroupEvent, now: Long): Boolean {
+        val ok = runCatching { poster.post(card, groupName()) }
+            .onFailure { DhLog.w("surface: card post 실패 ${it.javaClass.simpleName}") }
+            .getOrDefault(false)
+        return if (ok) {
+            throttle.record(e, now)
+            _state.update { it.copy(posted = it.posted + 1, lastType = card.type) }
+            DhLog.i("surface: card ${card.type} id=${card.notificationId} category=${card.category} mode=${mode.value} tbt=${gate.lastReading?.toLogString() ?: "-"}")
+            true
+        } else {
+            skip("not-posted", e)
+            false
+        }
+    }
+
+    private fun publishGate() {
+        _state.update { it.copy(held = gate.heldCount, lastTbt = gate.lastReading?.toLogString()) }
+    }
+
+    private fun skip(reason: String, e: ReceivedGroupEvent): CardOutcome {
         _state.update { it.copy(skipped = it.skipped + (reason to (it.skipped[reason] ?: 0) + 1)) }
         if (reason != "not-target") DhLog.d("surface: card skip ${e.event.type} reason=$reason")
-        return false
+        return CardOutcome.SKIPPED
     }
 }
 
 /**
- * 채널 [CHANNEL_ID](IMPORTANCE_HIGH — 헤드업 카드, **소리·진동 없음**)로 8초짜리 카드를 올린다. 알림 권한이 없으면 false.
+ * 채널 [CHANNEL_ID](IMPORTANCE_HIGH — 헤드업 카드, **소리·진동 없음**)로 5초짜리 카드([EventCardPolicy.TIMEOUT_MS])를 올린다. 알림 권한이 없으면 false.
  * 같은 이벤트를 VoiceAnnouncer 가 TTS 로 읽으므로 카드는 소리를 내지 않는다(알림음과 음성이 겹치지 않게). 채널 소리 설정은 만든 뒤 바꿀 수 없어
  * 소리가 켜진 채로 만들어진 옛 채널 [LEGACY_CHANNEL_ID] 는 지우고 새 id 로 만든다.
  */
