@@ -818,7 +818,7 @@ fun ParkedExtras(
             }
         }
         val side: @Composable (Modifier) -> Unit = { m ->
-            // 정차 중이라 스크롤 허용(보내지 않은 무전 최대 5 + 지난 무전 최대 5)
+            // 정차 중이라 스크롤 허용(보내지 않은 무전 최대 5 + 지난 무전 최근 20)
             Column(m.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 // 보내지 않은 무전(F16) — 없으면 숨긴다. 줄마다 [다시 보내기]·[지우기](정차 중에만 — 이 블록 자체가 정차 중에만 보인다)
                 if (ui.unsentPtt.isNotEmpty()) UnsentPttBlock(ui.unsentPtt, onResendUnsent, onDeleteUnsent)

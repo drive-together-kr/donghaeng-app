@@ -149,7 +149,7 @@ data class PastPttUi(
     val colorArgb: Long?,
     /** "3분 전"(서버 시계 기준) */
     val whenText: String,
-    /** 상태 꼬리표 — "못 들음"(60초 넘어 자동 재생 안 함)·"끊김"·"받기 실패"·"재생 실패". 다 들은 것은 null */
+    /** 상태 꼬리표 — "못 들음"(60초 넘어 자동 재생 안 함)·"다 못 들음"(무전 버튼으로 끊음)·"받기 실패"·"재생 실패". 다 들은 것은 null */
     val statusText: String? = null,
     val tone: Tone = Tone.NEUTRAL,
 )

@@ -35,7 +35,10 @@ class FakeVoiceTrigger(
     }
 
     override fun onInputsChanged() {
-        _status.update { it.copy(sessionActive = sessionActive, handleButton = settings.handleButton.value) }
+        val active = sessionActive
+        _status.update {
+            it.copy(sessionActive = active, sessionState = if (active) PttSessionPlayback.stateName(PttSessionPlayback.STATE) else null, handleButton = settings.handleButton.value)
+        }
     }
 
     override fun start() = onInputsChanged()

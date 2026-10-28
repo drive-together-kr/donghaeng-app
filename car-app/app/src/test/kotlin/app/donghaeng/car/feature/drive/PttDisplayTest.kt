@@ -65,7 +65,7 @@ class PttDisplayTest {
     }
 
     @Test
-    fun `지난 무전 줄 — 대기 중 제외, 최대 5개, 상태 꼬리표, 서버 시계 나이, 이름 없으면 무전만`() {
+    fun `지난 무전 줄 — 대기 중 제외, 들은 것도 남김, 상태 꼬리표(다 못 들음), 서버 시계 나이, 이름 없으면 무전만`() {
         val now = 1_700_000_000_000L
         fun v(id: String, status: PastStatus, ageS: Long, nick: String? = "아빠 차", color: String? = "#2E7DFF") =
             ReceivedVoice("e_$id", id, "grp_1", "veh_A", nick, color, 7_000, "audio/mp4", now - ageS * 1_000, "아빠 차 무전", status)
@@ -81,7 +81,7 @@ class PttDisplayTest {
             ),
             serverNowMs = now,
         )
-        assertEquals(listOf("a", "b", "c", "d", "e"), rows.map { it.voiceId })
+        assertEquals("다 들은 것(f)도 남는다", listOf("a", "b", "c", "d", "e", "f"), rows.map { it.voiceId })
         assertEquals("아빠 차 무전 0:07", rows[0].text)
         assertEquals("30초 전", rows[0].whenText)
         assertNull("다 들은 것은 꼬리표 없음", rows[0].statusText)
@@ -90,9 +90,23 @@ class PttDisplayTest {
         assertNull(rows[1].colorArgb)
         assertEquals("못 들음", rows[1].statusText)
         assertEquals("3분 전", rows[1].whenText)
-        assertEquals("끊김", rows[2].statusText)
+        assertEquals("무전 버튼으로 끊은 것", "다 못 들음", rows[2].statusText)
+        assertEquals(Tone.INFO, rows[2].tone)
         assertEquals("받기 실패", rows[3].statusText)
         assertEquals(Tone.CAUTION, rows[3].tone)
         assertEquals("재생 실패", rows[4].statusText)
+    }
+
+    @Test
+    fun `지난 무전 줄 — 들고 있는 최근 20개까지 보인다`() {
+        val now = 1_700_000_000_000L
+        val list = (0 until 25).map { i ->
+            ReceivedVoice("e_$i", "v$i", "grp_1", "veh_A", "아빠 차", "#2E7DFF", 3_000, "audio/mp4", now - i * 1_000L, null, PastStatus.PLAYED)
+        }
+        val rows = PttDisplay.pastRows(list, serverNowMs = now)
+        assertEquals(20, PttDisplay.PAST_COUNT)
+        assertEquals(20, rows.size)
+        assertEquals("v0", rows.first().voiceId)
+        assertEquals("v19", rows.last().voiceId)
     }
 }
