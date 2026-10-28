@@ -14,6 +14,8 @@ spring:
     redis:
       host: ${DH_REDIS_HOST:localhost}
       port: ${DH_REDIS_PORT:6379}
+      # 클라우드(T32)는 Redis requirepass 를 건다. 비우면 AUTH 를 보내지 않는다(로컬 compose·Testcontainers 무영향).
+      password: ${DH_REDIS_PASSWORD:}
   jackson:
     default-property-inclusion: non_null
 

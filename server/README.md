@@ -40,6 +40,7 @@ curl localhost:8080/v1/me/vehicles -H "Authorization: Bearer <accessToken>"
 | `DH_DB_URL` | `jdbc:postgresql://localhost:15432/donghaeng` | JDBC URL (compose 내부에서는 `jdbc:postgresql://postgres:5432/donghaeng`) |
 | `DH_DB_USER` / `DH_DB_PASSWORD` | `dh` / `dh` | DB 계정 |
 | `DH_REDIS_HOST` / `DH_REDIS_PORT` | `localhost` / `6379` | Redis |
+| `DH_REDIS_PASSWORD` | (없음 → AUTH 안 보냄) | Redis `requirepass` 비밀번호. 로컬 compose 는 비움, 클라우드(`infra/cloud`, T32)에서는 필수 |
 | `DH_PUBLIC_BASE_URL` | `http://10.0.2.2:8080` | QR·딥링크·응답 URL 의 공개 base URL (끝에 `/` 없음). 클라우드: `https://<VM-IP>.sslip.io` |
 | `DH_MQTT_URI` | `tcp://localhost:1883` | 서버 → 브로커 접속 주소 (compose: `tcp://emqx:1883`) |
 | `DH_MQTT_PUBLIC_URI` | `tcp://10.0.2.2:1883` | 차량 앱에 내려 주는 브로커 공개 주소. 클라우드: `ssl://<VM-IP>.sslip.io:8883` |
@@ -47,7 +48,8 @@ curl localhost:8080/v1/me/vehicles -H "Authorization: Bearer <accessToken>"
 | `DH_CAR_ID_SALT` | `dev-salt-change-me` | CarInfo 차량 ID 해시 salt (`SHA-256(id + salt)`). 운영에서 바꾸고 이후 유지 |
 | `DH_INTERNAL_TOKEN` | (없음 → 검사 안 함) | EMQX ACL 훅 `POST /internal/mqtt/acl` 의 `X-Internal-Token`. compose 의 emqx 서비스가 같은 값을 헤더로 보낸다. 클라우드에서는 필수 |
 | `DH_MQTT_ENABLED` | `true` | `false` 면 브로커에 붙지 않는다(브로커 없는 로컬 실행). 테스트 기본값은 false(`src/test/resources/application.properties`), `MqttIT` 만 켠다 |
-| `SPRING_PROFILES_ACTIVE` | (없음) | `local` 등 |
+| `SPRING_PROFILES_ACTIVE` | (없음) | `local`(로컬 compose, DEBUG 로그) / `cloud`(infra/cloud — 프로필 파일 없이 기본 INFO) |
+| `JAVA_TOOL_OPTIONS` | (없음) | JVM 옵션. 클라우드 오버라이드가 4 GB VM 용 힙·메타스페이스 상한을 넣는다(`infra/cloud/README.md` §4) |
 | `SERVER_PORT` | `8080` | HTTP 포트 |
 
 비밀 값(JWT 키 등)은 `.env`/환경 변수로만 주입하고 커밋하지 않는다 (`infra/.env.example` 만 커밋).
