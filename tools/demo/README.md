@@ -9,7 +9,7 @@ adb 는 환경변수 `ADB` 또는 `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb
 | `replay_gpx.py` | GPX → `adb emu geo fix` 재생 (차 A, 실 SDK Pleos AVD 의 GPS) |
 | `vc.py` | Pleos 에뮬레이터 Virtual Console 클라이언트 (기어·속도·브레이크·EV 잔량·방향지시등) |
 | `api.py` | 서버 REST 보조 (dev 로그인, 페어링 승인, 초대·합류, 동승자 메시지) — 폰 없이 리허설할 때 |
-| `soak.py` | T33 30분 연속 실행 점검 — 1분마다 두 차의 앱 pid 불변·MQTT 연결·텔레메트리 증가·그룹 STATE 나이 < 10 s·logcat E/FATAL 0 확인 → `out/<시각>_soak/soak.md` |
+| `soak.py` | T33 30분 연속 실행 점검 — 1분마다 두 차의 앱 pid 불변·MQTT 연결·텔레메트리 증가·그룹 STATE 나이 < 10 s·그 분(직전 점검 이후)의 logcat E/FATAL 0 확인(E/FATAL 줄은 실행 전체 누적·중복 제거로 보고서에) → `out/<시각>_soak/soak.md` |
 
 GPX 는 `car-app/app/src/main/assets/gpx/{lead,follow}.gpx` 를 그대로 쓴다(단일 원본). 두 파일은 같은 가상 복도(직선 보간, 실제 도로·주소와 무관)를
 선두가 1.2 km 앞서 달리는 구성이며 덕평휴게소 좌표(37.2963, 127.4120)를 지난다 — `RouteSyncEngine.DEMO_WAYPOINT` 와 같아 차 B(fake)의 `WaypointArrived` 가 난다.

@@ -8,7 +8,8 @@
   2. MQTT 연결              — 마지막 health 줄 `mqtt=CONNECTED`
   3. 텔레메트리 증가         — health `tel=` 가 직전 분보다 크다(그룹 활성 중 1 Hz 발행)
   4. 그룹 STATE 신선도       — health `stateAgeMs` < 10 000(서버 2초 스냅샷이 계속 온다)
-  5. logcat E / FATAL 0     — 시작 이후 앱 pid 의 E 레벨 줄과 crash 버퍼의 FATAL(우리 패키지) 0건
+  5. logcat E / FATAL 0     — **직전 점검 이후**(그 분) 앱 pid 의 E 레벨 줄과 crash 버퍼의 FATAL(우리 패키지) 0건.
+                              E 가 한 번 나도 다음 분들이 다시 실패로 세지지 않는다. 줄은 누적(중복 제거)해 보고서에 남긴다
 
   python tools/demo/soak.py --car-a emulator-5556 --car-b emulator-5558 [--minutes 30] [--interval 60]
 
@@ -38,6 +39,15 @@ def device_time(serial: str) -> str:
     return sh(serial, "date '+%m-%d %H:%M:%S.000'").strip()
 
 
+LOG_TS_RX = re.compile(r"^(\d\d-\d\d \d\d:\d\d:\d\d\.\d{3})")
+
+
+def before(line: str, cutoff: str) -> bool:
+    """`-v time` 줄의 시각이 cutoff(MM-DD HH:MM:SS.mmm) 보다 앞인가 — 같은 해 안에서는 문자열 비교가 곧 시각 비교. 시각이 없는 줄은 포함"""
+    m = LOG_TS_RX.match(line)
+    return m is None or m.group(1) < cutoff
+
+
 def pid_of(serial: str) -> str:
     out = sh(serial, f"pidof {PKG}").strip()
     return out.split()[0] if out and not out.startswith("ERR") else ""
@@ -63,32 +73,45 @@ class Car:
         self.ignore_tags = ignore_tags
         sh(serial, "logcat -G 8M")
         self.since = device_time(serial)
+        # 직전 점검 시각 — 매 점검은 [last_check, 지금) 구간의 E/FATAL 만 세서 그 분의 판정에 쓴다
+        self.last_check = self.since
         self.pid0 = pid_of(serial)
         self.last_tel = None
         self.health_lines: list[str] = []
+        # 실행 전체에서 본 E/FATAL 줄(누적, 중복 제거, 처음 본 순서) — logcat 버퍼에서 밀려나도 보고서에 남는다
         self.error_lines: list[str] = []
+        self._error_seen: set[str] = set()
         self.rows: list[dict] = []
 
     def dongHaeng_since(self) -> list[str]:
         out = sh(self.serial, f"logcat -d -v time -T '{self.since}' -s DongHaeng", timeout=60)
         return [l for l in out.splitlines() if "DongHaeng" in l]
 
-    def errors_since(self, pid: str) -> tuple[list[str], list[str]]:
-        """(앱 pid 의 E 줄, crash 버퍼의 우리 패키지 FATAL 줄)"""
+    def errors_between(self, pid: str, start: str, end: str) -> tuple[list[str], list[str]]:
+        """[start, end) 구간의 (앱 pid 의 E 줄, crash 버퍼의 우리 패키지 FATAL 줄)"""
         errors: list[str] = []
         if pid:
-            out = sh(self.serial, f"logcat -d -v time -T '{self.since}' --pid={pid} '*:E'", timeout=60)
+            out = sh(self.serial, f"logcat -d -v time -T '{start}' --pid={pid} '*:E'", timeout=60)
             for l in out.splitlines():
-                if not re.match(r"^\d\d-\d\d \S+ E/", l):
+                if not re.match(r"^\d\d-\d\d \S+ E/", l) or not before(l, end):
                     continue
                 if any(f"E/{t}" in l for t in self.ignore_tags):
                     continue
                 errors.append(l)
-        crash = sh(self.serial, f"logcat -d -b crash -v time -T '{self.since}'", timeout=60)
-        fatal = [l for l in crash.splitlines() if "FATAL" in l or (PKG in l and "AndroidRuntime" in l)]
+        crash = sh(self.serial, f"logcat -d -b crash -v time -T '{start}'", timeout=60)
+        fatal = [l for l in crash.splitlines() if before(l, end) and ("FATAL" in l or (PKG in l and "AndroidRuntime" in l))]
         return errors, fatal
 
+    def remember_errors(self, lines: list[str]) -> None:
+        for l in lines:
+            if l not in self._error_seen:
+                self._error_seen.add(l)
+                self.error_lines.append(l)
+
     def check(self, minute: int) -> dict:
+        # 이번 구간의 끝을 먼저 잡는다 — 조회하는 동안 찍힌 줄은 다음 구간으로 넘어간다(두 번 세지 않는다)
+        window_start, window_end = self.last_check, device_time(self.serial)
+        self.last_check = window_end
         pid = pid_of(self.serial)
         lines = self.dongHaeng_since()
         health = [l for l in lines if " health mqtt=" in l]
@@ -97,8 +120,8 @@ class Car:
         last = parse_health(health[-1]) if health else {}
         tel = as_int(last.get("tel"))
         state_age = as_int(last.get("stateAgeMs"))
-        errors, fatal = self.errors_since(pid or self.pid0)
-        self.error_lines = errors + fatal
+        errors, fatal = self.errors_between(pid or self.pid0, window_start, window_end)
+        self.remember_errors(errors + fatal)
 
         checks = {
             "pid": bool(pid) and pid == self.pid0,
@@ -114,11 +137,11 @@ class Car:
             "pid": pid or "-",
             "mqtt": last.get("mqtt", "-"),
             "rc": last.get("rc", "-"),
-            "auth": last.get("auth", "-"),
+            "auth": f"{last.get('auth', '-')} / rot {last.get('mqttRot', '-')}",
             "tel": "-" if tel is None else (f"{tel} (+{tel - self.last_tel})" if self.last_tel is not None else str(tel)),
             "state": "-" if state_age is None else f"{state_age} ms",
             "group": last.get("group", "-"),
-            "token": f"{last.get('token', '-')} exp {last.get('expMin', '-')}m",
+            "token": f"{last.get('token', '-')} exp {last.get('expMin', '-')}m" + (" repair" if last.get("repair") == "1" else ""),
             "errors": f"E {len(errors)} / FATAL {len(fatal)}",
             "checks": checks,
             "ok": all(checks.values()),
@@ -140,7 +163,7 @@ def write_report(out_dir: str, cars: list[Car], started: dt.datetime, minutes: i
         f"# 30분 연속 실행 점검 (T33) {started:%Y-%m-%d %H:%M}",
         "",
         f"- 기간 {minutes}분, 간격 {interval}초, 차: " + ", ".join(f"{c.name}={c.serial}(pid {c.pid0 or '없음'})" for c in cars),
-        f"- 기준: pid 불변 · mqtt=CONNECTED · 텔레메트리 증가 · 그룹 STATE 나이 < {STATE_AGE_LIMIT_MS // 1000} s · logcat E/FATAL 0 · health 줄 수신",
+        f"- 기준: pid 불변 · mqtt=CONNECTED · 텔레메트리 증가 · 그룹 STATE 나이 < {STATE_AGE_LIMIT_MS // 1000} s · 그 분의 logcat E/FATAL 0 · health 줄 수신",
         "",
     ]
     for c in cars:
@@ -152,7 +175,7 @@ def write_report(out_dir: str, cars: list[Car], started: dt.datetime, minutes: i
             "",
             "실패 분 수: " + ", ".join(f"{k} {v}" for k, v in fails.items()),
             "",
-            "| 분 | 시각 | pid | mqtt | 재연결 | 인증거부 | 텔레메트리 | STATE 나이 | 그룹 | 토큰 | E/FATAL | 판정 |",
+            "| 분 | 시각 | pid | mqtt | 재연결 | 인증거부 / MQTT발 회전 | 텔레메트리 | STATE 나이 | 그룹 | 토큰 | 그 분 E/FATAL | 판정 |",
             "|---|---|---|---|---|---|---|---|---|---|---|---|",
         ]
         for r in c.rows:
@@ -163,7 +186,7 @@ def write_report(out_dir: str, cars: list[Car], started: dt.datetime, minutes: i
                 f"{r['errors']} {'' if ch['errors'] else '✗'} | {mark(r['ok'])}{'' if ch['health'] else ' (health 줄 없음)'} |"
             )
         if c.error_lines:
-            lines += ["", "E / FATAL 줄(최대 30):", "```"] + c.error_lines[:30] + ["```"]
+            lines += ["", f"E / FATAL 줄 — 실행 전체 누적 {len(c.error_lines)}건(중복 제거, 최대 30):", "```"] + c.error_lines[:30] + ["```"]
         lines.append("")
         with open(os.path.join(out_dir, f"{c.name}_health.log"), "w", encoding="utf-8") as f:
             f.write("\n".join(c.health_lines) + "\n")
