@@ -81,7 +81,14 @@ data class MyDriveLineUi(
     val restSuggestionText: String? = null,
 )
 
-data class EventBannerUi(val text: String, val tone: Tone, val ageS: Int)
+/**
+ * 위험 이벤트(급제동·에어백) 강조 — `surface.EventHighlightPolicy`(docs/05 §5.2).
+ * [BLINK] = 음성이 3초 안에 시작되지 않았다(또는 지금 경로가 늦을 게 분명) → 빨간 강조 + 깜빡임을 먼저,
+ * [STEADY] = 강조 중에 음성이 시작됨 → 깜빡임만 멈추고 강조를 잠시(3초) 유지.
+ */
+enum class EventHighlight { NONE, BLINK, STEADY }
+
+data class EventBannerUi(val text: String, val tone: Tone, val ageS: Int, val highlight: EventHighlight = EventHighlight.NONE)
 
 enum class PttPhase { IDLE, RECORDING, CONFIRMING, SENT, PLAYING }
 

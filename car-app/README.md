@@ -59,8 +59,8 @@ AGP 9 로 올리지 않는다(Android Studio 가 권해도 거절). 툴체인 �
 
 | flavor | 어댑터 | Pleos SDK 의존성 | 실행 대상 |
 |---|---|---|---|
-| `pleos` | T11: `PleosVehicleAdapter`(CarInfo 차량 ID + `checkXxxCapabilities`; 나머지 Flow 는 T22 까지 내부에서 Fake 위임) + Navi/Location 은 Fake(T20/T21) + `PleosSdkProbe` | Vehicle 2.3.2, NaviHelper 3.0.5, FusedLocation 1.1.3 (`pleosImplementation`) | Pleos Connect AVD (`Pleos_Connect_v2.1.0`, API 34 automotive) |
-| `fake` | 전부 Fake (`FakeVehicleAdapter`, `FakeNaviAdapter`(GPX 재생 — 역할 `DemoPrefs.gpxRole` lead/follow, T30), `FakeLocationAdapter`) + Android TTS | 없음 | 아무 AVD / 폰 / 태블릿 (시연: `Pleos_B` AVD = 차 B) |
+| `pleos` | T11: `PleosVehicleAdapter`(CarInfo 차량 ID + `checkXxxCapabilities`; 나머지 Flow 는 T22 까지 내부에서 Fake 위임) + Navi/Location 은 Fake(T20/T21) + `PleosSdkProbe` + 음성 체인 Android TTS → `PleosTtsVoiceAdapter` → 화면만(R19) | Vehicle 2.3.2, NaviHelper 3.0.5, FusedLocation 1.1.3, TextToSpeech 3.3.1 (`pleosImplementation`) | Pleos Connect AVD (`Pleos_Connect_v2.1.0`, API 34 automotive) |
+| `fake` | 전부 Fake (`FakeVehicleAdapter`, `FakeNaviAdapter`(GPX 재생 — 역할 `DemoPrefs.gpxRole` lead/follow, T30), `FakeLocationAdapter`) + 음성 체인 Android TTS → 화면만 | 없음 | 아무 AVD / 폰 / 태블릿 (시연: `Pleos_B` AVD = 차 B) |
 
 두 flavor 는 applicationId 가 같다(`app.donghaeng.car`) — 한 기기에 둘을 동시에 설치할 수 없다.
 Pleos 차량 권한(`pleos.car.permission.*`, `android.car.permission.*`)은 `src/pleos/AndroidManifest.xml` 에만 있다.
@@ -98,7 +98,7 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 | `adapter.vehicle` | `VehicleAdapter`, `FakeVehicleAdapter`, `VehicleIdNormalizer`; pleos: `PleosVehicleAdapter`(CarInfo VIN→CRN, 6개 도메인 capability; Flow 는 T22) | T11 → T22 |
 | `adapter.navi` | `NaviAdapter`, `FakeNaviAdapter`; pleos: `PleosNaviAdapter`(골격) | T04 → T20 |
 | `adapter.location` | `LocationAdapter`, `FakeLocationAdapter`(1 Hz 고정점); pleos: `PleosFusedLocationAdapter`(골격) | T04 → T21 |
-| `adapter.voice` | `VoiceAdapter`, `AndroidTtsVoiceAdapter`(TTS 미준비 시 로그 폴백) | T04 → T27 |
+| `adapter.voice` | `VoiceAdapter`·`VoiceRoute`·`UtteranceSignal`, `ChainedVoiceAdapter`(경로 선택 `VoiceChainPolicy`·연속 3회 실패 강등·지연 `VoiceLatencyWindow`), `AndroidTtsVoiceAdapter`(ko_KR 확인), `SerialUtterancePlayer`·`AudioFocusGuard`; pleos: `PleosTtsVoiceAdapter`(ON_DEVICE, ko_KR) — docs/05 §3.5 | T04 → T27 → R19 |
 | `adapter.sdk` | `SdkProbe` — pleos: `PleosSdkProbe`(Class.forName + 서비스 패키지 확인), fake: `NoSdkProbe` | T04 |
 | `di` | flavor 별 `AdapterModule`(어댑터 바인딩, pleos 는 `PleosVehicleAdapter`), main `CoreModule`(TokenStore·VehicleIdFallback), `core.network.NetworkModule` | T04/T11/T12 |
 | `feature.home` | 홈: 연결 상태(`TokenStore` 구독 — 확인 중/연결 안 됨/연결됨 · 별명 + 차량 ID 마스킹), `내 폰과 연결하기`(활성), `같이 가기 시작`(T17 까지 비활성), 설정·진단 버튼, 빌드 정보·SDK 점검 카드 | T04/T12 |
@@ -108,10 +108,10 @@ FusedLocation AAR 이 `uses-feature automotive required=true` 를 끌고 오므�
 | `adapter.uxr` (pleos) | `CarUxDrivingStateMonitor`(CarUxRestrictionsManager → `DrivingStateMonitor.isDriving()`/`status`) · fake 는 `AlwaysParkedDrivingStateMonitor` | T29 |
 | `domain.time` / `domain.latency` | `ClockSync`(GET /v1/time 3회 → 왕복 최소 표본 오프셋, 5분) · `LatencyMeter`(그룹 EVENT/STATE 봉투 ts → 수신 지연, 60 s 창 통계, 오버레이 on/off) | T31 |
 | `domain.routesync` | `RouteSyncEngine`(선두: 내비 목적지/경유지 변경 → ROUTE_CHANGED 발행 · 멤버: ROUTE_FOLLOW_PROPOSAL → 음성·제안 카드 → 수락 시 내비 재요청 + ACK, 30초 자동 거절, 자동 따라가기 · 합류 직후 로컬 제안 "선두차 목적지까지 안내할까요?" ACK 없음) | T28/T30 |
-| `debug` (debug 빌드만, `src/debug`) | `DemoControlReceiver` — adb broadcast 로 시연 조작(route_test/accept/decline/auto_follow/speak/voice/navi_route/gpx/status), `tools/demo/demo.py` 가 사용. `core.common.DemoPrefs`(fake GPX 역할) | T30 |
-| `domain.voice` | `VoiceAnnouncer`(그룹 이벤트 → 음성 큐: 신선도 5s·내 차 생략·우선순위·중복 10s·큐 대기 30s) | T27 |
+| `debug` (debug 빌드만, `src/debug`) | `DemoControlReceiver` — adb broadcast 로 시연 조작(route_test/accept/decline/auto_follow/speak/voice/voice_sample/navi_route/gpx/status), `tools/demo/demo.py` 가 사용. `core.common.DemoPrefs`(fake GPX 역할). pleos debug(`src/pleosDebug`): `PleosTtsProbeReceiver`(Pleos TTS SDK 날것 프로브) | T30/R19 |
+| `domain.voice` | `VoiceAnnouncer`(그룹 이벤트 → 음성 큐: 신선도 5s·내 차 생략·우선순위·중복 10s·큐 대기 30s, 문장에 eventId 꼬리표) · `VoiceCueTracker`(eventId 별 음성 시작 + 경로·평균 지연 → 위험 이벤트 강조) | T27/R19 |
 | T33 안정화 | `domain.pairing.TokenRefresher`(차량 토큰 선제 갱신 만료 2h 전·30분 점검, 거부 후 갱신 single-flight, 선제 갱신 401 은 access 유효 시 보류 → '다시 연결 필요', MQTT 발 회전 1→30분 백오프) · `core.network.VehicleTokenAuthenticator`(REST 401 → 1회 갱신·재시도, 갱신은 `@RefreshClient` 별도 클라이언트) · `TokenStoreState.Unavailable`·`clear(reason)`·`DiagPrefs`(`dh_diag` 삭제 기록) · `SessionClearReason` · `HiveMqttGateway` 인증 거부 감지·재연결 게이트 · 홈 `HomeBanner` · `ui.components.DestructiveConfirmDialog` · `DhLog` 링 버퍼 + `files/dh_log.txt` · `domain.health.HealthLogger`(30초 `health …`, `tools/demo/soak.py`) — docs/05 §8 | T33 |
-| `adapter.voice` | `VoiceAdapter` + `AndroidTtsVoiceAdapter`(오디오 포커스·선행 묵음 200 ms·완료 콜백·엔진 없으면 로그 폴백, `status`) | T04/T27 |
+| `adapter.voice` | 음성 체인 `ChainedVoiceAdapter` = `AndroidTtsVoiceAdapter`(오디오 포커스·선행 묵음 200 ms·완료 콜백·ko_KR 불가면 다음 경로) → pleos `PleosTtsVoiceAdapter` → 화면 표시만, `status`(경로·사유·지연) | T04/T27/R19 |
 | `domain.event` | `EventDetector`(저잔량·급제동·정차/재출발·에어백·도착 판정, 순수 로직) + `VehicleEventEngine`(활성 그룹 동안 1Hz 판정 → `…/event` QoS 1, 진단 상태) | T26 |
 | `feature.events` | `EventsViewModel`(실시간 그룹 이벤트 + 서버 최근 20 합침) · `EventsScreen`(이벤트 피드) | T26 |
 | `feature.presets` | 자리표시자 | T53 |
@@ -247,9 +247,10 @@ mqtt subscribed topic=dh/v1/group/grp_…**/state  /  …/event
 - 진단 화면 **차량 이벤트 (T26)** 카드: 판정 중/샘플 수, 종류별 판정 수, 발행/실패, 마지막 이벤트, 판정기 상태(에너지 경고 %, 정차 n초).
 - Virtual Console 로 만들기(스크립트 `t26_event_check.py`): `PUT /vehicle/ev-battery?field=soc&value=12` → LOW_ENERGY(EV 12%); `gear=Drive`, `speed_kph=60` 4초 → `speed_kph=0&brake_pct=80` → HARD_BRAKE(60 km/h → 0, 16.7 m/s²); 0 km/h 60초 → STOPPED; `speed_kph=30` → RESUMED.
 
-### T27 — 음성 안내 (`adb logcat -s DongHaeng | grep -E "voice:|TTS"`)
-- 앱 시작 시 `TTS 준비 완료 (… ko-KR)` 또는 `TTS 초기화 실패 status=-1 → 로그 폴백 (엔진 없음?)`. Pleos AVD 에는 TTS 엔진이 없어 폴백 모드다(정책 로그로 검증). 그룹 이벤트가 오면 `voice: speak PASSENGER_MESSAGE priority=NORMAL len=32` / `voice: skip own LOW_ENERGY` / `voice: skip stale …` / `voice: skip duplicate …`.
-- 설정 → **음성 안내** 스위치(끄면 큐를 비우고 재생 중지). 진단 → **음성 안내 (T27)** 카드: TTS 엔진 상태, 큐·읽음/생략 수(오래됨·내 차·중복·꺼짐·문구 없음), TTS 호출 수, 마지막 문장(종류·길이만), **테스트 발화**/**음성 끄기** 버튼.
+### T27 + R19 — 음성 안내·음성 체인 (`adb logcat -s DongHaeng | grep -E "voice:|TTS"`)
+- 앱 시작 시 경로 한 줄(docs/05 §3.5): `voice: 경로 = ANDROID_TTS(engine=…) 사유=1순위 준비` / `voice: 경로 = PLEOS_TTS 사유=ANDROID_TTS 불가(초기화 실패 status=-1 (엔진 없음))` / `voice: 경로 = DISPLAY_ONLY 사유=…`. 후보 로그 `TTS 준비 완료 (… ko-KR)`·`TTS 초기화 실패 status=-1 → 다음 경로 (한국어 엔진 없음?)`·`Pleos TTS 준비 완료 (ON_DEVICE, ko_KR, CaaS …) Nms`·`Pleos TTS 시작 지연=Nms`. 엔진을 따로 깔지 않은 Pleos AVD 는 PLEOS_TTS 로 소리가 난다(Supertonic 은 음질 선택 — docs/09 §1.4). 그룹 이벤트가 오면 `voice: speak PASSENGER_MESSAGE priority=NORMAL len=32` / `voice: skip own LOW_ENERGY` / `voice: skip stale …` / `voice: skip duplicate …`, 화면 표시만이면 `TTS 폴백(화면 표시만) [NORMAL] (len=32)`.
+- 설정 → **음성 안내** 스위치(끄면 큐를 비우고 재생 중지). 진단 → **음성 안내 (T27)** 카드(위에서 둘째): 지금 경로·고른 사유·후보별 상태·요청→시작 지연(마지막/평균/최대, 최근 10건), 큐·읽음/생략 수, 소리/화면만/실패 수, 마지막 문장(종류·길이만), **예시 안내 듣기**(정차 중, release 에도 있음 — "아빠 차가 휴게소에 도착했어요." 를 체인으로)/**테스트 발화**/**음성 끄기** 버튼. 디버그 리시버 `status` 에 `tts=… ttsEngine=… ttsPath=… ttsSelecting=…`, `voice_sample` 액션.
+- 위험 이벤트(급제동·에어백)는 음성 시작이 3초를 넘기면 패널 소식 줄·대시보드 띠가 빨간 강조 + 깜빡임(로그 `surface: event highlight BLINK …`, docs/05 §5.2).
 - 시연 트리거: 동승자 메시지 `POST /v1/groups/{gid}/messages`(그룹 소유 계정 토큰) → 그룹 전원에게 읽힘(출처 무관). 다른 차의 저잔량은 해당 차가 아닌 차들에서만, **급제동은 그 차보다 뒤에 있는 차에서만** 읽힌다(서버 `audience`, `EventAudience` — 앞차는 `voice: skip not-for-me`). 스크립트 `t27_voice_check.py`.
 
 ### T28 — 선두 경로 동기화 (`adb logcat -s DongHaeng | grep routesync`)

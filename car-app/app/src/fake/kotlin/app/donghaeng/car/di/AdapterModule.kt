@@ -13,6 +13,7 @@ import app.donghaeng.car.adapter.sdk.SdkProbe
 import app.donghaeng.car.adapter.vehicle.FakeVehicleAdapter
 import app.donghaeng.car.adapter.vehicle.VehicleAdapter
 import app.donghaeng.car.adapter.voice.AndroidTtsVoiceAdapter
+import app.donghaeng.car.adapter.voice.ChainedVoiceAdapter
 import app.donghaeng.car.adapter.voice.VoiceAdapter
 import app.donghaeng.car.core.common.AlwaysParkedDrivingStateMonitor
 import app.donghaeng.car.core.common.DemoPrefs
@@ -27,7 +28,7 @@ import javax.inject.Singleton
 
 /**
  * fake flavor 어댑터 바인딩 — 전부 Fake. 일반 폰·태블릿 AVD 에서도 실행된다.
- * 음성만은 Android TTS 가 어디에나 있으므로 실제 구현을 쓴다(미준비 시 로그 폴백).
+ * 음성만은 Android TTS 가 어디에나 있으므로 실제 구현을 쓴다(체인: Android TTS → 화면 표시만).
  */
 @Module
 @InstallIn(SingletonComponent::class)
@@ -51,9 +52,11 @@ object AdapterModule {
     fun provideLocationAdapter(@ApplicationContext context: Context, naviMonitor: NaviEventMonitor): LocationAdapter =
         CompositeLocationAdapter(listOf(NaviLocationSource(naviMonitor), AndroidLocationSource(context), FakeLocationAdapter()))   // Navi = FakeNaviAdapter GPX 재생
 
+    /** 음성 체인: Android TTS(한국어 엔진·ko_KR) → 화면 표시만 — Pleos SDK 가 없는 flavor 라 2순위 후보가 없다 */
     @Provides
     @Singleton
-    fun provideVoiceAdapter(@ApplicationContext context: Context): VoiceAdapter = AndroidTtsVoiceAdapter(context)
+    fun provideVoiceAdapter(@ApplicationContext context: Context): VoiceAdapter =
+        ChainedVoiceAdapter.create(listOf(AndroidTtsVoiceAdapter(context)))
 
     @Provides
     @Singleton

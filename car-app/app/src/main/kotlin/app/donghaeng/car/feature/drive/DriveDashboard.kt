@@ -545,11 +545,14 @@ fun DrawScope.drawTurn(kind: TurnKind, size: Size, color: Color) {
 fun EventBanner(ui: EventBannerUi, modifier: Modifier = Modifier, big: Boolean = false) {
     val color = DriveTone.color(ui.tone)
     val faded = ui.ageS > 10
-    Surface(modifier.heightIn(min = if (big) 92.dp else 72.dp).alpha(if (faded) 0.55f else 1f), shape = RoundedCornerShape(20.dp), color = color.copy(alpha = 0.16f)) {
+    // 위험 이벤트의 음성이 늦으면 빨간 강조(+ 음성 시작 전까지 깜빡임) — 패널 소식 줄과 같은 규칙(EventHighlightPolicy)
+    val hl = EventHighlightStyle.isOn(ui.highlight)
+    val alpha = (if (faded && !hl) 0.55f else 1f) * highlightAlpha(ui.highlight)
+    Surface(modifier.heightIn(min = if (big) 92.dp else 72.dp).alpha(alpha), shape = RoundedCornerShape(20.dp), color = if (hl) DriveTone.danger else color.copy(alpha = 0.16f)) {
         Row(Modifier.padding(horizontal = 22.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(DriveTone.icon(ui.tone), contentDescription = null, tint = color, modifier = Modifier.size(if (big) 42.dp else 34.dp))
+            Icon(DriveTone.icon(ui.tone), contentDescription = null, tint = if (hl) Color.White else color, modifier = Modifier.size(if (big) 42.dp else 34.dp))
             Spacer(Modifier.width(16.dp))
-            Text(ui.text, fontSize = if (big) 32.sp else 26.sp, lineHeight = if (big) 40.sp else 32.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(ui.text, color = if (hl) Color.White else Color.Unspecified, fontSize = if (big) 32.sp else 26.sp, lineHeight = if (big) 40.sp else 32.sp, fontWeight = if (hl) FontWeight.Bold else FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }

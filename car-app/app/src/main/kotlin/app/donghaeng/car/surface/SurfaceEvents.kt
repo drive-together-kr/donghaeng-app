@@ -1,8 +1,10 @@
 package app.donghaeng.car.surface
 
 import app.donghaeng.car.domain.session.ReceivedGroupEvent
+import app.donghaeng.car.domain.voice.VoiceCue
 import app.donghaeng.car.feature.drive.DriveFormat
 import app.donghaeng.car.feature.drive.EventBannerUi
+import app.donghaeng.car.feature.drive.EventHighlight
 import app.donghaeng.protocol.EventAudience
 
 /**
@@ -40,12 +42,14 @@ object SurfaceEvents {
             .filter { nowMs - it.receivedAtMs <= BANNER_WINDOW_MS && isFresh(it, serverNowMs) }
             .minWithOrNull(newestFirst)
 
-    fun bannerUi(events: List<ReceivedGroupEvent>, myVehicleId: String?, nowMs: Long, serverNowMs: Long): EventBannerUi? =
+    /** [cue] 가 있으면 위험 이벤트 강조([EventHighlightPolicy] — 음성 시작이 3초를 넘기면 빨간 강조 + 깜빡임)를 함께 정한다 */
+    fun bannerUi(events: List<ReceivedGroupEvent>, myVehicleId: String?, nowMs: Long, serverNowMs: Long, cue: VoiceCue? = null): EventBannerUi? =
         banner(events, myVehicleId, nowMs, serverNowMs)?.let { e ->
             EventBannerUi(
                 text = DriveFormat.eventText(e.event.type, e.event.speech),
                 tone = DriveFormat.eventTone(e.event.type),
                 ageS = (ageMs(e, serverNowMs) / 1_000).toInt(),
+                highlight = cue?.let { EventHighlightPolicy.decide(e.event.type, e.event.eventId, e.receivedAtMs, nowMs, it) } ?: EventHighlight.NONE,
             )
         }
 

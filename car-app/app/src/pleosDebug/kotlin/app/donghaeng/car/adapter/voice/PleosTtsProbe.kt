@@ -15,16 +15,17 @@ import app.donghaeng.car.core.common.DhLog
 import java.util.Locale
 
 /*
- * Pleos TextToSpeech SDK 3.3.1 실측 프로브(2026-10-28, pleos debug 빌드만 — 준비 중 SDK, CLAUDE.md 규칙 5).
- * 목적: 에뮬레이터에서 실제로 소리가 나는지, 서버 모드면 registerApp 키 어디서 막히는지.
- * 호출: adb shell am broadcast -n app.donghaeng.car/.adapter.voice.PleosTtsProbeReceiver --es mode ON_DEVICE|SERVER|HYBRID [--es text …] [--es key …] [--ez register true]
+ * Pleos TextToSpeech SDK 3.3.1 날것 프로브(2026-10-28, pleos debug 빌드만). 앱 음성은 체인 2순위 PleosTtsVoiceAdapter(pleos 소스셋)가 쓰고,
+ * 이 프로브는 체인을 거치지 않고 SDK 하나만 따로 띄워 비교할 때 쓴다(모드·오디오 용도·registerApp).
+ * 호출: adb shell am broadcast -n app.donghaeng.car/.adapter.voice.PleosTtsProbeReceiver --es mode ON_DEVICE|SERVER|HYBRID [--es text …] [--es key …] [--ez register true] [--ez attrs true]
+ *   attrs=true 면 앱 어댑터와 같은 내비 안내 용도(USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)로 읽는다 — 앱 경로가 무음인데 프로브는 소리가 나면 용도 문제.
  * 로그: 'pleos tts probe: …' (문장 원문은 남기지 않고 길이만).
  */
 class PleosTtsProbeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val mode = runCatching { Mode.valueOf(intent.getStringExtra("mode") ?: "ON_DEVICE") }.getOrDefault(Mode.ON_DEVICE)
         val text = intent.getStringExtra("text") ?: "아빠 차가 휴게소에 도착했어요."
-        PleosTtsProbe.run(context.applicationContext, mode, text, intent.getBooleanExtra("register", false), intent.getStringExtra("key"))
+        PleosTtsProbe.run(context.applicationContext, mode, text, intent.getBooleanExtra("register", false), intent.getStringExtra("key"), intent.getBooleanExtra("attrs", false))
     }
 }
 
@@ -32,7 +33,7 @@ object PleosTtsProbe {
     private val main = Handler(Looper.getMainLooper())
     private var tts: TextToSpeech? = null
 
-    fun run(context: Context, mode: Mode, text: String, register: Boolean, key: String?) = main.post {
+    fun run(context: Context, mode: Mode, text: String, register: Boolean, key: String?, attrs: Boolean = false) = main.post {
         runCatching { tts?.release() }
         val started = System.currentTimeMillis()
         fun ms() = System.currentTimeMillis() - started
@@ -63,6 +64,9 @@ object PleosTtsProbe {
                 override fun onSuccess() {
                     DhLog.i("pleos tts probe: initialize 성공 mode=$mode ${ms()}ms")
                     runCatching { t.addEventListener(listener) }.onFailure { DhLog.w("pleos tts probe: addEventListener 실패 ${it.javaClass.simpleName} ${it.message?.take(100)}") }
+                    if (attrs) runCatching { t.setAudioAttributes(AudioFocusGuard.NAV_GUIDANCE) }
+                        .onSuccess { DhLog.i("pleos tts probe: setAudioAttributes(내비 안내)") }
+                        .onFailure { DhLog.w("pleos tts probe: setAudioAttributes 실패 ${it.javaClass.simpleName}") }
                     if (register) {
                         // 서버 모드 앱 등록 — 키가 없으면 어디서 막히는지 본다(키 원문은 로그에 남기지 않는다)
                         runCatching {

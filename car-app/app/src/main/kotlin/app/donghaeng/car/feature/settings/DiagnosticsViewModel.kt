@@ -127,8 +127,8 @@ data class T33DiagState(
 /** 진단 화면의 경로 동기화 확인용 동작(T28) */
 enum class RouteSyncDebugAction { PUBLISH_TEST, ACCEPT, DECLINE, TOGGLE_AUTO }
 
-/** 진단 화면의 음성 확인용 동작(T27) */
-enum class VoiceDebugAction { SPEAK_TEST, TOGGLE }
+/** 진단 화면의 음성 확인용 동작(T27). SAMPLE = '예시 안내 듣기'(심사 환경 재현 — 체인으로 [DiagnosticsViewModel.SAMPLE_SENTENCE]) */
+enum class VoiceDebugAction { SPEAK_TEST, TOGGLE, SAMPLE }
 
 /** 진단 화면의 내비 확인용 요청(T20) — 실제 기능 UI 가 아니라 콜백이 오는지 보는 버튼 */
 enum class NaviDebugAction { REQUEST_ROUTE, SHOW_NAVIGATION, QUERY_DESTINATION }
@@ -282,11 +282,24 @@ class DiagnosticsViewModel @Inject constructor(
         when (action) {
             VoiceDebugAction.SPEAK_TEST -> voiceAnnouncer.speakTest()
             VoiceDebugAction.TOGGLE -> voiceAnnouncer.setEnabled(!voiceAnnouncer.state.value.enabled)
+            VoiceDebugAction.SAMPLE -> {
+                // 정차 중에만(화면 버튼도 주행 중 비활성). 체인 경로로 읽는다 — 로그 `voice: speak SAMPLE …` + 경로별 시작 지연
+                if (isDrivingNow()) return
+                DhLog.i("diag: 예시 안내 듣기 path=${voicePath()}")
+                voiceAnnouncer.speakTest(SAMPLE_SENTENCE, type = "SAMPLE")
+            }
         }
     }
 
-    private companion object {
+    private fun isDrivingNow(): Boolean = uiState.value.isDriving
+
+    private fun voicePath(): String = uiState.value.tts.path?.name ?: "-"
+
+    companion object {
+        /** '예시 안내 듣기' 문장 — 심사 환경 재현(docs/09 §1.4): 깨끗한 Pleos AVD 에서도 Pleos TTS 로 소리가 나는지 */
+        const val SAMPLE_SENTENCE = "아빠 차가 휴게소에 도착했어요."
+
         /** 확인용 목적지 — 공공장소, 시연 전용 */
-        val DEBUG_DESTINATION = Place(36.3504, 127.3845, "대전역", address = "대전광역시 동구 중앙로 215")
+        private val DEBUG_DESTINATION = Place(36.3504, 127.3845, "대전역", address = "대전광역시 동구 중앙로 215")
     }
 }

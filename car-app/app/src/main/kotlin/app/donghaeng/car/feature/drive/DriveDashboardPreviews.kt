@@ -25,6 +25,7 @@ import app.donghaeng.car.ui.theme.DongHaengTheme
  * `panel_dark`/`panel_light`/`panel_full`/`panel_worst`: 플로팅 패널 단독(내비 지도 색 바탕의 오른쪽 위, 실제 서비스와 같은 여백 110/190 dp).
  * `panel_worst` = 폭 최악 조합(긴 닉네임·저잔량 아이콘·"뒤 9.9 km"·"앞 990 m"·"뒤 120 km" + 긴 그룹 이름 "아빠 차와 같이 가기" → 그룹 이름만 말줄임).
  * `panel_longdest` = 아주 긴 목적지(기준 문구 상한 180 dp → 목적지 이름만 말줄임, " 도착" 남음) + 긴 그룹 이름.
+ * `panel_danger` / `panel_danger_steady` = 급제동 소식 줄의 빨간 강조 + 깜빡임(음성 시작 전) / 강조 유지(음성 시작 뒤).
  */
 @Composable
 fun DesignPreviewHost(variant: String) {
@@ -33,6 +34,9 @@ fun DesignPreviewHost(variant: String) {
             "panel_full" -> FloatingPanelSamples.full
             "panel_worst" -> FloatingPanelSamples.worst
             "panel_longdest" -> FloatingPanelSamples.longDestination
+            // 위험 이벤트 강조(docs/05 §5.2): 음성 시작 전 깜빡임 / 음성 시작 뒤 강조 유지
+            "panel_danger" -> FloatingPanelSamples.base.copy(event = DriveDashboardSamples.eventDanger.copy(highlight = EventHighlight.BLINK))
+            "panel_danger_steady" -> FloatingPanelSamples.base.copy(event = DriveDashboardSamples.eventDanger.copy(highlight = EventHighlight.STEADY))
             else -> FloatingPanelSamples.base
         }
         PanelPreviewHost(light = variant == "panel_light", ui = ui)

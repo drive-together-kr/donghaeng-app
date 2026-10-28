@@ -102,6 +102,8 @@ fun DiagnosticsScreen(
             }
 
             VehicleCard(state)
+            // 음성 경로 카드는 위쪽에 — 심사 환경 재현('예시 안내 듣기')을 스크롤 없이(R19, docs/09 §1.4)
+            VoiceCard(state, onVoiceAction)
             TokenCard(t33, state)
             RecentLogCard(t33)
             CapabilityCard(state.report?.capabilities)
@@ -112,7 +114,6 @@ fun DiagnosticsScreen(
             VehicleSignalCard(state, onRestartVehicleSignals)
             TelemetryCard(state)
             EventEngineCard(state)
-            VoiceCard(state, onVoiceAction)
             RouteSyncCard(state, onRouteSyncAction)
             DrivingCard(state)
             LatencyCard(state, onResyncClock)
@@ -420,7 +421,10 @@ private fun RouteSyncCard(state: DiagnosticsUiState, onAction: (RouteSyncDebugAc
     }
 }
 
-/** T27 — 음성 안내: TTS 엔진 상태(Pleos AVD 는 엔진 없음 → 로그 폴백), 큐·읽음/생략 수, 마지막 문장(종류·길이만). 테스트 발화·켜기/끄기 */
+/**
+ * T27 + R19 체인 — 음성 안내: 지금 경로(ANDROID_TTS·PLEOS_TTS·DISPLAY_ONLY)·고른 사유·엔진, 후보별 상태, 요청→시작 지연(최근 10건),
+ * 큐·읽음/생략 수, 마지막 문장(종류·길이만). '예시 안내 듣기'(정차 중, release 에도 있음 — 심사 환경 재현)·테스트 발화·켜기/끄기.
+ */
 @Composable
 private fun VoiceCard(state: DiagnosticsUiState, onAction: (VoiceDebugAction) -> Unit) {
     Card {
@@ -429,18 +433,18 @@ private fun VoiceCard(state: DiagnosticsUiState, onAction: (VoiceDebugAction) ->
             HorizontalDivider()
             val v = state.voice
             val t = state.tts
-            val ttsText = when (t.ready) {
-                null -> "초기화 중"
-                true -> "준비 (${t.engine ?: "?"})"
-                false -> "없음 → 로그 폴백"
-            } + (t.detail?.let { d -> "  $d" } ?: "")
-            LabelRow(stringResource(R.string.diag_voice_tts), ttsText)
+            LabelRow(stringResource(R.string.diag_voice_path), "${VoiceDiagFormat.pathCode(t)}  ${VoiceDiagFormat.pathLine(t)}")
+            LabelRow(stringResource(R.string.diag_voice_path_reason), VoiceDiagFormat.reasonLine(t))
+            LabelRow(stringResource(R.string.diag_voice_candidates), VoiceDiagFormat.candidatesText(t))
+            LabelRow(stringResource(R.string.diag_voice_latency), VoiceDiagFormat.latencyLine(t.latency))
             LabelRow(stringResource(R.string.diag_voice_state), (if (v.enabled) "켜짐" else "꺼짐") + (if (v.running) "" else "  (중지)") + "   큐 ${v.queued}")
             LabelRow(stringResource(R.string.diag_voice_counts), "읽음 ${v.spoken}   생략: 오래됨 ${v.skippedStale} · 내 차 ${v.skippedOwn} · 중복 ${v.skippedDuplicate} · 꺼짐 ${v.skippedDisabled} · 문구 없음 ${v.skippedNoSpeech}")
-            LabelRow(stringResource(R.string.diag_voice_tts_counts), "speak ${t.spokenCount} / 폴백 ${t.fallbackCount} / 실패 ${t.failedCount}   포커스 ${if (t.focusGranted) "보유" else "-"}")
+            LabelRow(stringResource(R.string.diag_voice_tts_counts), VoiceDiagFormat.countsLine(t))
             val age = v.lastSpokenAtMs?.let { ts -> "${(System.currentTimeMillis() - ts) / 1000}s 전  " } ?: ""
             LabelRow(stringResource(R.string.diag_voice_last), v.lastSpokenType?.let { ty -> "$age$ty ${v.lastSpokenPriority} (len=${v.lastSpokenLen})" } ?: "-")
+            Text(stringResource(R.string.diag_voice_sample_hint), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = { onAction(VoiceDebugAction.SAMPLE) }, enabled = !state.isDriving, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_voice_action_sample)) }
                 OutlinedButton(onClick = { onAction(VoiceDebugAction.SPEAK_TEST) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_voice_action_test)) }
                 OutlinedButton(onClick = { onAction(VoiceDebugAction.TOGGLE) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(if (v.enabled) stringResource(R.string.diag_voice_action_off) else stringResource(R.string.diag_voice_action_on)) }
             }

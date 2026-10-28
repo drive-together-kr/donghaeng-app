@@ -127,9 +127,9 @@ class VoiceAnnouncer(
         }
     }
 
-    /** 진단 화면 "테스트 발화" */
-    fun speakTest(text: String = TEST_SENTENCE) {
-        scope.launch { say(text, Priority.LOW, "TEST") }
+    /** 진단 화면 "테스트 발화"·"예시 안내 듣기"(type = SAMPLE) */
+    fun speakTest(text: String = TEST_SENTENCE, type: String = "TEST") {
+        scope.launch { say(text, Priority.LOW, type) }
     }
 
     /** 이벤트 한 건을 정책에 따라 큐에 넣는다(테스트에서 직접 부를 수 있다) */
@@ -171,7 +171,7 @@ class VoiceAnnouncer(
             // 큐를 거치지 않고 즉시 — 어댑터가 QUEUE_FLUSH 로 끊는다
             mutex.withLock { queue.clear() }
             _state.update { it.copy(queued = 0) }
-            say(speech, priority, e.event.type)
+            say(speech, priority, e.event.type, tag = e.event.eventId)
             return
         }
         mutex.withLock {
@@ -194,14 +194,15 @@ class VoiceAnnouncer(
                     DhLog.i("voice: skip (queued too long) ${item.event.event.type} wait=${now - item.enqueuedAt}ms")
                     continue
                 }
-                say(item.speech, item.priority, item.event.event.type)
+                say(item.speech, item.priority, item.event.event.type, tag = item.event.event.eventId)
                 delay(estimateMs(item.speech))
             }
         }
     }
 
-    private suspend fun say(text: String, priority: Priority, type: String) {
-        runCatching { voice.speak(text, priority) }
+    /** [tag] = 그룹 이벤트 eventId — 어댑터의 시작 신호(`UtteranceSignal.Started`)로 표면이 위험 이벤트 강조를 푼다(VoiceCueTracker) */
+    private suspend fun say(text: String, priority: Priority, type: String, tag: String? = null) {
+        runCatching { voice.speak(text, priority, tag) }
             .onFailure { DhLog.w("voice: speak 실패 ${it.javaClass.simpleName}") }
         _state.update { it.copy(spoken = it.spoken + 1, lastSpokenType = type, lastSpokenPriority = priority, lastSpokenAtMs = clock(), lastSpokenLen = text.length) }
         DhLog.i("voice: speak $type priority=$priority len=${text.length}")

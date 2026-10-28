@@ -8,7 +8,7 @@
   python tools/demo/demo.py --car-a emulator-5556 --car-b emulator-5558 --vc-port 8089 [--email dev@example.com]
 
 순서
-  0 preflight  : 기기·앱·서버·Virtual Console·차 B GPX 역할(follow)·플로팅 창 권한·차 A 위치 소스(android_first) 확인
+  0 preflight  : 기기·앱·서버·Virtual Console·차 B GPX 역할(follow)·음성 경로(ANDROID_TTS|PLEOS_TTS — 화면만이면 FAIL)·플로팅 창 권한·차 A 위치 소스(android_first) 확인
                  + 시연 닉네임(--email 필요): 차 A "아빠 차"·차 B "둘째 차"·같은 계정의 나머지 차 하나 "삼촌 차"(--nick-a/-b/-c)
   2~3 대기     : 차 A '같이 가기 시작' → 폰(demo-host)으로 QR 합류(또는 api.py join). 차 B 의 합류를 로그로 감지하면 합류 제안을 자동 수락(--no-auto-accept 면 화면에서)
   4 함께 주행  : T0 — 차 A GPS 재생 시작 + Virtual Console 기어 D·속도. 차 B 는 수락 순간부터 스스로 달린다
@@ -98,6 +98,29 @@ class LogWatcher:
         return None
 
 
+def tts_path_row(name: str, st: dict, engine_installed: bool):
+    """preflight '앱 음성 경로' 행 (label, ok) — ok: True = OK, None = WARN, False = FAIL.
+    st = 디버그 status dict(tts=ready|init|off, ttsEngine, ttsPath=ANDROID_TTS|PLEOS_TTS|DISPLAY_ONLY, ttsSelecting).
+    소리 경로가 있으면(Android TTS 든 Pleos TTS 든) OK, 화면 표시만이면 FAIL. Supertonic 이 깔려 있는데 Pleos 로 읽으면 WARN(기본 엔진·적재 확인)"""
+    if not st:
+        return (f"{name} 앱 음성 경로 — 디버그 리시버 응답 없음", False)
+    tts, path, engine = st.get("tts"), st.get("ttsPath"), st.get("ttsEngine", "-")
+    selecting = st.get("ttsSelecting") == "true"
+    if tts == "ready" and path in (None, "-"):
+        return (f"{name} 앱 음성 준비(tts=ready, 옛 앱 — 경로 표시 없음)", True)
+    if tts == "ready" and path == "ANDROID_TTS":
+        return (f"{name} 앱 음성 경로 = ANDROID_TTS(engine={engine})", True)
+    if tts == "ready" and path == "PLEOS_TTS":
+        if selecting:
+            return (f"{name} 앱 음성 경로 = PLEOS_TTS (Android TTS 아직 적재 중 — 시간 초과, 나중에 Android 로 올라갈 수 있음)", None)
+        if engine_installed:
+            return (f"{name} 앱 음성 경로 = PLEOS_TTS (Supertonic 이 있는데 Android TTS 불가 — 기본 엔진·앱 재시작 확인, 진단 '음성 안내' 사유)", None)
+        return (f"{name} 앱 음성 경로 = PLEOS_TTS (Supertonic 없음 — Pleos TTS 로 자동 동작, 음질은 docs/09 §1.4)", True)
+    if tts == "init":
+        return (f"{name} 앱 음성 경로 — 아직 고르는 중(소리 경로 없음, 시간 초과)", False)
+    return (f"{name} 앱 음성 경로 = {path or 'DISPLAY_ONLY'} — 소리 없음(화면 표시만): Supertonic 설치(docs/09 §1.4) 또는 Pleos CaaS 확인", False)
+
+
 def gwa_wa(word: str) -> str:
     """차 앱 GroupNaming 과 같은 조사 규칙(안내 문구용): 한글 받침 → 과, 숫자는 읽는 소리(0·1·3·6·7·8 → 과), 영문·기호 → 와"""
     w = word.rstrip().rstrip(")]}\"'”’」』.!? ")
@@ -170,9 +193,10 @@ class Demo:
         rows.append(("A 최근 2분 내 LOW_ENERGY 발행 없음(서버 중복 억제 120 s)", self.seconds_since_last_event(self.A, "LOW_ENERGY") > 125))
         sa = status(self.A)
         rows.append(("A 리시버 응답", bool(sa)))
-        # 음성 엔진(2026-10-28, docs/09 §1.4·docs/10 R19): Pleos AVD 의 기본 TTS(ai.pleos.playground.caas)는 TTS_SERVICE 필터에
-        # category DEFAULT 가 없어 Android TextToSpeech 가 못 찾는다 → 이벤트 음성이 전부 무음(로그 폴백). 오픈 소스 오프라인 엔진
-        # sherpa-onnx(Supertonic 3, 한국어)를 깔고 기본 엔진으로 지정해야 에뮬레이터 스피커로 나온다
+        # 음성 체인(R19 해결, docs/09 §1.4·docs/10 R19): 앱은 Android TTS(한국어 엔진·ko_KR) → Pleos TTS SDK ON_DEVICE(pleos flavor) → 화면 표시만
+        # 순으로 스스로 고른다. Pleos AVD 시스템 엔진은 Android TextToSpeech 에 안 보이므로 엔진이 없으면 차 A(pleos)는 Pleos TTS 로 읽는다.
+        # 오픈 소스 오프라인 엔진 sherpa-onnx(Supertonic 3, 한국어)는 음질 선택 사항 — 있으면 Android TTS 경로로 더 자연스럽게 읽는다.
+        # 차 B(fake flavor)는 Pleos SDK 가 없어 Supertonic 이 없으면 화면 표시만 → FAIL 로 알린다
         for name, s in (("A", self.A), ("B", self.B)):
             rows.extend(self.ensure_tts_engine(name, s))
         # 주행 중 표면(2026-10-28): 플로팅 창 권한 — 없으면 알림 카드 + 음성 모드로 동작하므로 경고만
@@ -204,37 +228,41 @@ class Demo:
         return sa, sb
 
     def ensure_tts_engine(self, name: str, serial: str):
-        """차 한 대의 TTS 엔진 점검(+ --tts-apk 가 있으면 설치·기본 지정). 표 행 목록을 돌려준다"""
+        """차 한 대의 음성 경로 점검(+ --tts-apk 가 있으면 Supertonic 설치·기본 지정). 표 행 목록을 돌려준다.
+        Supertonic 은 음질 선택 사항(없으면 WARN) — 판정은 앱이 고른 경로(디버그 status ttsPath)로 한다"""
         rows = []
         installed = TTS_ENGINE_PKG in sh(serial, f"pm list packages --user 10 {TTS_ENGINE_PKG}")
         if not installed and self.a.tts_apk and not self.a.dry_run:
             print(f"  {name}: TTS 엔진 설치 중 ({os.path.basename(self.a.tts_apk)}) …", flush=True)
             out = subprocess.run([ADB, "-s", serial, "install", "-r", self.a.tts_apk], capture_output=True, text=True, timeout=600).stdout
             installed = "Success" in out
-        rows.append((f"{name} TTS 엔진 설치({TTS_ENGINE_PKG})" + ("" if installed else " — --tts-apk <APK> 로 설치, docs/09 §1.4"), installed))
-        current = sh(serial, "settings --user 10 get secure tts_default_synth").strip()
+        rows.append((f"{name} Supertonic 엔진({TTS_ENGINE_PKG}, 음질 선택)" + ("" if installed else " 없음 — 있으면 더 자연스럽다: --tts-apk <APK>, docs/09 §1.4"),
+                     True if installed else None))
         changed = False
-        if installed and current != TTS_ENGINE_PKG and not self.a.dry_run:
-            sh(serial, f"settings --user 10 put secure tts_default_synth {TTS_ENGINE_PKG}")
+        if installed:
             current = sh(serial, "settings --user 10 get secure tts_default_synth").strip()
-            changed = True
-        rows.append((f"{name} 기본 TTS 엔진 = {TTS_ENGINE_PKG} (지금 {current or '없음'})", current == TTS_ENGINE_PKG))
+            if current != TTS_ENGINE_PKG and not self.a.dry_run:
+                sh(serial, f"settings --user 10 put secure tts_default_synth {TTS_ENGINE_PKG}")
+                current = sh(serial, "settings --user 10 get secure tts_default_synth").strip()
+                changed = True
+            rows.append((f"{name} 기본 TTS 엔진 = {TTS_ENGINE_PKG} (지금 {current or '없음'})", True if current == TTS_ENGINE_PKG else None))
         if changed:
             # 앱의 TextToSpeech 는 시작할 때 기본 엔진에 붙는다 — 바꿨으면 앱을 다시 띄운다
             sh(serial, f"am force-stop {PKG}; am start -n {PKG}/.MainActivity >/dev/null 2>&1")
-        ready = self.wait_tts_ready(serial, 75 if changed else 20)
-        rows.append((f"{name} 앱 음성 준비(디버그 status tts=ready — 모델 적재가 무거워 부하가 크면 20 s 넘게 걸린다)", ready))
+        st = self.wait_tts_path(serial, 75 if changed else 40)
+        rows.append(tts_path_row(name, st, installed))
         return rows
 
-    def wait_tts_ready(self, serial: str, timeout_s: float) -> bool:
-        """앱의 음성 어댑터 상태(디버그 status 의 tts=ready|init|off)를 기다린다 — 로그가 밀리거나 지워져도 맞는 값. off 면 바로 False"""
+    def wait_tts_path(self, serial: str, timeout_s: float) -> dict:
+        """앱의 음성 체인이 경로를 정할 때까지(디버그 status: tts=ready + ttsSelecting=false, 또는 tts=off) 기다린다 — 마지막 status dict.
+        로그가 밀리거나 지워져도 맞는 값. 위 순위(Android TTS) 적재가 길면 그동안 tts=ready ttsPath=PLEOS_TTS ttsSelecting=true 다(선택 상한 30 s)"""
         end = time.time() + timeout_s
         while True:
             st = status(serial)
-            if st.get("tts") == "ready":
-                return True
+            if st.get("tts") == "ready" and st.get("ttsSelecting") != "true":
+                return st
             if st.get("tts") == "off" or time.time() >= end:
-                return False
+                return st
             time.sleep(3)
 
     def a_location_source(self):

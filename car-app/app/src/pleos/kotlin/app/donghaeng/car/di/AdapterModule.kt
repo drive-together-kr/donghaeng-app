@@ -15,6 +15,8 @@ import app.donghaeng.car.adapter.sdk.SdkProbe
 import app.donghaeng.car.adapter.vehicle.PleosVehicleAdapter
 import app.donghaeng.car.adapter.vehicle.VehicleAdapter
 import app.donghaeng.car.adapter.voice.AndroidTtsVoiceAdapter
+import app.donghaeng.car.adapter.voice.ChainedVoiceAdapter
+import app.donghaeng.car.adapter.voice.PleosTtsVoiceAdapter
 import app.donghaeng.car.adapter.voice.VoiceAdapter
 import app.donghaeng.car.core.common.DrivingStateMonitor
 import app.donghaeng.car.domain.navi.NaviEventMonitor
@@ -32,6 +34,7 @@ import javax.inject.Singleton
  * - T20 `PleosNaviAdapter`: NaviHelper 콜백 → NaviEvent. 초기화 실패 시 이벤트 없음(크래시 없음).
  * - T21 `CompositeLocationAdapter`: Fused(권한+isSupported 일 때만) → Navi → Android → Fake.
  * - T29 `CarUxDrivingStateMonitor`: CarUxRestrictionsManager → 주행 중 입력 제한.
+ * - R19 음성 체인 `ChainedVoiceAdapter`: `AndroidTtsVoiceAdapter` → `PleosTtsVoiceAdapter`(ON_DEVICE, ko_KR) → 화면 표시만.
  */
 @Module
 @InstallIn(SingletonComponent::class)
@@ -60,9 +63,11 @@ object AdapterModule {
         return CompositeLocationAdapter(sources)
     }
 
+    /** 음성 체인(R19 해결): Android TTS(한국어 엔진·ko_KR) → Pleos TTS SDK ON_DEVICE → 화면 표시만 — 둘을 나란히 초기화하고 체인이 고른다 */
     @Provides
     @Singleton
-    fun provideVoiceAdapter(@ApplicationContext context: Context): VoiceAdapter = AndroidTtsVoiceAdapter(context)
+    fun provideVoiceAdapter(@ApplicationContext context: Context): VoiceAdapter =
+        ChainedVoiceAdapter.create(listOf(AndroidTtsVoiceAdapter(context), PleosTtsVoiceAdapter(context)))
 
     @Provides
     @Singleton

@@ -1,0 +1,225 @@
+package app.donghaeng.car.adapter.voice
+
+import app.donghaeng.car.core.common.DhLog
+import app.donghaeng.car.domain.model.Priority
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
+import kotlin.math.roundToLong
+
+/** 요청 → 시작 지연의 최근 [capacity]건 창 — 마지막·평균·최대 */
+class VoiceLatencyWindow(private val capacity: Int = CAPACITY) {
+    private val samples = ArrayDeque<Long>()
+
+    @Synchronized
+    fun add(ms: Long) {
+        samples.addLast(ms.coerceAtLeast(0))
+        while (samples.size > capacity) samples.removeFirst()
+    }
+
+    @Synchronized
+    fun stats(): VoiceLatencyStats =
+        if (samples.isEmpty()) VoiceLatencyStats()
+        else VoiceLatencyStats(lastMs = samples.last(), avgMs = samples.average().roundToLong(), maxMs = samples.max(), count = samples.size)
+
+    companion object {
+        const val CAPACITY = 10
+    }
+}
+
+/**
+ * 체인 경로 선택 — 순수 함수(docs/05 §3.5).
+ *
+ * 우선순위대로 보며 **처음 만나는 준비된(ready=true) 후보**가 지금 경로다. 강등된 후보·불가(ready=false) 후보는 건너뛴다.
+ * 더 높은 순위 후보가 아직 초기화 중(ready=null)이고 선택 상한([selectTimeoutMs], 30 s) 안이면 `selecting=true` — 그동안 온 발화는
+ * 그때 준비된 가장 높은 순위로(없으면 화면만) 나가고, 위 후보가 나중에 준비되면 그쪽으로 올라간다(상한을 넘긴 뒤에 준비돼도 올라간다).
+ * 아무것도 준비되지 않으면 [VoicePath.DISPLAY_ONLY].
+ */
+object VoiceChainPolicy {
+    data class Candidate(val path: VoicePath, val ready: Boolean?, val demoted: Boolean = false, val detail: String? = null)
+    data class Choice(val path: VoicePath, val selecting: Boolean, val reason: String)
+
+    fun choose(candidates: List<Candidate>, elapsedMs: Long, selectTimeoutMs: Long): Choice {
+        val notes = mutableListOf<String>()
+        var pending = false
+        for (c in candidates) {
+            when {
+                c.demoted -> notes += "${c.path} 강등(연속 실패)"
+                c.ready == true -> return Choice(c.path, pending, reason(notes, pending))
+                c.ready == false -> notes += "${c.path} 불가(${c.detail?.takeIf { it.isNotBlank() } ?: "?"})"
+                elapsedMs < selectTimeoutMs -> { pending = true; notes += "${c.path} 초기화 중" }
+                else -> notes += "${c.path} 초기화 ${selectTimeoutMs / 1_000}s 넘음"
+            }
+        }
+        return Choice(VoicePath.DISPLAY_ONLY, pending, if (candidates.isEmpty()) "소리 후보 없음" else reason(notes, pending))
+    }
+
+    private fun reason(notes: List<String>, pending: Boolean): String =
+        (if (notes.isEmpty()) "1순위 준비" else notes.joinToString(" · ")) + if (pending) " (선택 중)" else ""
+}
+
+/**
+ * 음성 체인 (R19 해결, CLAUDE.md 규칙 5 — 준비 중 SDK 는 "가능하면 쓰고, 실패하면 다음 수단으로 자동 전환").
+ *
+ * 후보 [routes] = 우선순위 순(앱: Android TTS → Pleos TTS(pleos flavor 만) — DI 가 주입) + 끝에 암묵적으로 [VoicePath.DISPLAY_ONLY].
+ * - 후보는 생성과 동시에 **나란히** 초기화한다(Android 엔진 적재가 20 s 넘게 걸려도 그동안 Pleos 로 읽게).
+ * - 경로 선택은 [VoiceChainPolicy.choose] — 후보 상태가 바뀔 때·실패 신호가 올 때·선택 상한([selectTimeoutMs])이 될 때 다시 본다.
+ * - 지금 경로가 **연속 [demoteAfter]번 실패**([UtteranceSignal.Failed])하면 그 후보를 강등(프로세스 수명 동안)하고 다음 경로로 내린다. 시작·완료 신호가 오면 0 으로.
+ * - 실패한 그 문장을 다음 경로로 다시 읽지는 않는다(늦게 소리가 나 두 번 들리는 것을 피한다) — 위험 이벤트는 화면 강조가 받친다(docs/05 §5.2).
+ * - 로그: 경로나 '선택 중' 여부가 바뀔 때 한 줄 `voice: 경로 = ANDROID_TTS(engine=…)|PLEOS_TTS|DISPLAY_ONLY 사유=…`.
+ * - 지연: 후보가 보내는 [UtteranceSignal.Started] 의 요청 → 시작을 경로별 최근 10건으로 모은다. [status] 의 `latency` = 지금 경로.
+ * - 문장 원문은 어떤 로그에도 남기지 않는다(길이만, 규칙 8).
+ */
+class ChainedVoiceAdapter(
+    private val routes: List<VoiceRoute>,
+    private val scope: CoroutineScope,
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val selectTimeoutMs: Long = SELECT_TIMEOUT_MS,
+    private val demoteAfter: Int = DEMOTE_AFTER_FAILURES,
+) : VoiceAdapter {
+
+    private val lock = Any()
+    private val startedAtMs = clock()
+    private val demoted = mutableSetOf<VoicePath>()
+    private val failures = mutableMapOf<VoicePath, Int>()
+    private val latency: Map<VoicePath, VoiceLatencyWindow> = VoicePath.entries.associateWith { VoiceLatencyWindow() }
+    private var spoken = 0
+    private var fallback = 0
+    private var failed = 0
+    private var lastUtteranceMs: Long? = null
+    private var choice: VoiceChainPolicy.Choice = VoiceChainPolicy.Choice(VoicePath.DISPLAY_ONLY, selecting = true, reason = "시작 전")
+    private var logged: Pair<VoicePath, Boolean>? = null
+
+    private val _signals = MutableSharedFlow<UtteranceSignal>(extraBufferCapacity = 64)
+    override val signals: SharedFlow<UtteranceSignal> = _signals
+
+    private val _status = MutableStateFlow(VoiceAdapterStatus())
+    override val status: StateFlow<VoiceAdapterStatus> = _status
+
+    /** 지금 경로(테스트·진단) */
+    val currentPath: VoicePath get() = synchronized(lock) { choice.path }
+
+    init {
+        refresh()
+        if (routes.isNotEmpty()) scope.launch { combine(routes.map { it.status }) { it.toList() }.collect { refresh() } }
+        routes.forEach { r -> scope.launch { r.signals.collect { onSignal(it) } } }
+        // 선택 상한: 위 후보가 그때까지 초기화 중이면 지금 준비된 것으로 확정(로그 한 줄)
+        scope.launch { delay(selectTimeoutMs); refresh() }
+    }
+
+    override suspend fun speak(text: String, priority: Priority) = speak(text, priority, null)
+
+    override suspend fun speak(text: String, priority: Priority, tag: String?) {
+        val path = synchronized(lock) { lastUtteranceMs = clock(); choice.path }
+        val route = routes.firstOrNull { it.path == path }
+        if (route == null) {
+            // 화면 표시만 — 소리 경로 없음. 위험 이벤트 강조는 NoAudio 를 보고 바로 켠다
+            synchronized(lock) { fallback++ }
+            DhLog.i("TTS 폴백(화면 표시만) [$priority] (len=${text.length})")
+            _signals.tryEmit(UtteranceSignal.NoAudio(tag, clock()))
+            refresh()
+            return
+        }
+        // 급한 안내(에어백)는 경로가 막 바뀌어 다른 후보가 아직 읽고 있어도 겹치지 않게 그쪽을 먼저 멈춘다
+        if (priority == Priority.CRITICAL) routes.filter { it !== route }.forEach { r -> runCatching { r.stop() } }
+        try {
+            route.speak(text, priority, tag)
+            synchronized(lock) { spoken++ }
+            refresh()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            onSignal(UtteranceSignal.Failed(route.path, tag, clock(), "speak 예외 ${e.javaClass.simpleName}"))
+        }
+    }
+
+    override fun stop() {
+        routes.forEach { r -> runCatching { r.stop() } }
+    }
+
+    private fun onSignal(s: UtteranceSignal) {
+        synchronized(lock) {
+            when (s) {
+                is UtteranceSignal.Started -> { latency.getValue(s.path).add(s.latencyMs); failures[s.path] = 0 }
+                is UtteranceSignal.Done -> failures[s.path] = 0
+                is UtteranceSignal.Failed -> {
+                    failed++
+                    val n = (failures[s.path] ?: 0) + 1
+                    failures[s.path] = n
+                    if (n >= demoteAfter && s.path != VoicePath.DISPLAY_ONLY && demoted.add(s.path)) {
+                        DhLog.w("voice: ${s.path} 연속 실패 ${n}회(마지막 ${s.reason}) → 강등, 다음 경로로")
+                    }
+                }
+                is UtteranceSignal.Dropped, is UtteranceSignal.NoAudio -> Unit
+            }
+        }
+        _signals.tryEmit(s)
+        refresh()
+    }
+
+    /** 경로 다시 고르기 + 상태 갱신 + (바뀌었으면) 로그 한 줄 */
+    private fun refresh() {
+        synchronized(lock) {
+            val statuses = routes.map { it.status.value }
+            val c = VoiceChainPolicy.choose(
+                routes.mapIndexed { i, r -> VoiceChainPolicy.Candidate(r.path, statuses[i].ready, r.path in demoted, statuses[i].detail) },
+                elapsedMs = clock() - startedAtMs,
+                selectTimeoutMs = selectTimeoutMs,
+            )
+            choice = c
+            val activeIndex = routes.indexOfFirst { it.path == c.path }
+            val active = statuses.getOrNull(activeIndex)
+            if (logged != (c.path to c.selecting)) {
+                logged = c.path to c.selecting
+                DhLog.i("voice: 경로 = ${pathLabel(c.path, active?.engine)} 사유=${c.reason}")
+            }
+            _status.value = VoiceAdapterStatus(
+                engine = active?.engine,
+                ready = when {
+                    c.path != VoicePath.DISPLAY_ONLY -> true
+                    c.selecting -> null
+                    else -> false
+                },
+                detail = active?.detail ?: c.reason,
+                spokenCount = spoken,
+                fallbackCount = fallback,
+                failedCount = failed,
+                focusGranted = active?.focusGranted ?: false,
+                lastUtteranceMs = lastUtteranceMs,
+                path = c.path,
+                pathReason = c.reason,
+                selecting = c.selecting,
+                latency = latency.getValue(c.path).stats(),
+                candidates = routes.mapIndexed { i, r ->
+                    VoiceCandidateStatus(
+                        path = r.path, ready = statuses[i].ready, engine = statuses[i].engine, detail = statuses[i].detail,
+                        demoted = r.path in demoted, consecutiveFailures = failures[r.path] ?: 0, latency = latency.getValue(r.path).stats(),
+                    )
+                },
+            )
+        }
+    }
+
+    companion object {
+        /** 위 순위 후보 초기화를 기다리는 상한(그 뒤에 준비돼도 올라간다) */
+        const val SELECT_TIMEOUT_MS = 30_000L
+        /** 지금 경로를 내리는 연속 실패 수 */
+        const val DEMOTE_AFTER_FAILURES = 3
+
+        /** 로그용 경로 표기 — Android 는 엔진 패키지까지(사람 이름·좌표 없음) */
+        fun pathLabel(path: VoicePath, engine: String?): String =
+            if (path == VoicePath.ANDROID_TTS) "ANDROID_TTS(engine=${engine ?: "?"})" else path.name
+
+        /** 앱 체인 — 후보를 생성 순서(=우선순위)대로, 자체 스코프에서 */
+        fun create(routes: List<VoiceRoute>): ChainedVoiceAdapter =
+            ChainedVoiceAdapter(routes, CoroutineScope(SupervisorJob() + Dispatchers.Default))
+    }
+}
