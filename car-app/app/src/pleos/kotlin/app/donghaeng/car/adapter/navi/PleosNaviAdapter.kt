@@ -282,8 +282,8 @@ class PleosNaviAdapter(context: Context) : NaviAdapter {
     /**
      * 다음 회전 안내 — `getTBTInfo()` 를 부르고 `onTBTInfo(List<TBTInfo>)` 를 최대 [timeoutMs] 기다린다(첫 항목 = 다음 회전).
      * 빈 목록 → [NextTurnResult.NoGuidance], 응답 없음·실패·이상한 거리·자리표시 항목(`TURN_UNKNOWN`·0 m 에 문구 없음, [nextTurnOf]) → [NextTurnResult.Unknown].
-     * `TBTInfo.distance`(Double)는 단위가 문서·샘플에 없다 → **미터로 가정**([TBT_DISTANCE_TO_M]). 첫 응답의 원값은 info 로 한 번,
-     * 그 뒤는 debug 로 남겨 기기에서 단위를 확인한다(같은 때의 `onTripInfo distance`(m)·내비 화면 TBT 숫자와 비교).
+     * `TBTInfo.distance`(Double)는 단위가 문서·샘플에 없어 기기로 확인했다 — **미터**(2026-10-28 Pleos AVD: `rawDistance=80.0` = 내비 TBT "80m",
+     * 첫 항목 = 다음 회전, [TBT_DISTANCE_TO_M] = 1.0). 첫 응답의 원값은 info 로 한 번, 그 뒤는 debug 로 남긴다(다른 SDK 판에서 바뀌는지 볼 수 있게).
      */
     override suspend fun nextTurn(timeoutMs: Long): NextTurnResult {
         val h = ensureInitialized() ?: return NextTurnResult.Unknown
