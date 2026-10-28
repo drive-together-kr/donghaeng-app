@@ -9,6 +9,8 @@ _(구현 후 작성)_ 1) `infra/`에서 `docker compose up -d` 2) Pleos Connect 
 - 차량: Android Studio, Pleos Connect Emulator v2.1.0 (API 34), minSdk 28
 - 폰(demo-host): Medium_Phone AVD(API 35) 또는 실기기(Android 9+, 카메라) — 에뮬레이터는 "테스트 QR 붙여넣기"로 대신
 - 서버: Docker Compose (PostgreSQL 16, Redis 7, EMQX 5, Spring Boot 3.3)
+  - 클라우드(차량 앱 release 기본값): **`https://3.24.206.147.sslip.io`** — MQTT `ssl://3.24.206.147.sslip.io:8883`, 8883 이 막힌 망은 `wss://3.24.206.147.sslip.io/mqtt` 로 자동 전환. 배포·운영 [infra/cloud/README.md](infra/cloud/README.md)
+  - 로컬: `infra/` 에서 `docker compose up -d` → 에뮬레이터는 `http://10.0.2.2:8080`(설정 제목 5번 탭 → '서버 주소' 로 바꿀 수 있다)
 - 음성: Pleos TTS 로 자동 동작(설정 없음 — 앱이 Android TTS → Pleos TTS SDK → 화면 표시 순으로 골라 진단 화면 '음성 안내' 카드에 표시, [예시 안내 듣기]로 확인). 더 좋은 음질을 원하면 [docs/09 §1.4](docs/09_테스트_데모계획.md) 의 오픈 소스 한국어 엔진(Supertonic 3)을 설치
 
 ## APK
