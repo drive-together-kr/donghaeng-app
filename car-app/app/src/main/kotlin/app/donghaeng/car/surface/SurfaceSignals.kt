@@ -69,7 +69,7 @@ class OverlayPermissionMonitor(
             return { Settings.canDrawOverlays(app) }
         }
 
-        /** 오버레이 권한 설정 화면 인텐트. 기기에 그 화면이 없으면(Pleos AVD 실측) null — 버튼을 숨긴다 */
+        /** 오버레이 권한 설정 화면 인텐트. 기기에 그 화면이 없으면 null — 버튼을 숨긴다(Pleos AVD 는 설정 화면이 없다, docs/10 R16) */
         fun settingsIntent(context: Context): Intent? {
             val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
             return runCatching { intent.resolveActivity(context.packageManager) }.getOrNull()?.let { intent }
