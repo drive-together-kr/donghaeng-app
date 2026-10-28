@@ -131,6 +131,34 @@ class LatencyMeterTest {
     }
 
     @Test
+    fun `clamped count follows the cumulative samples when old ones are pushed out by HISTORY_CAP`() {
+        clockState.value = ClockSyncState(offsetMs = 0L, rttMs = 5, samples = 1, syncs = 1, lastSyncAtMs = 0)
+        val meter = LatencyMeter(events, states, clockState, clock = { 0L })
+        val ev = ArrayDeque<Pair<Long, Long>>()
+        val st = ArrayDeque<Pair<Long, Long>>()
+        // EVENT 첫 표본이 음수(raw = -7) → 0 으로 잘려 들어간다. STATE 도 하나
+        meter.record(ev, envelopeTsMs = 10_000, receivedAtMs = 10_000 - 7, isEvent = true)
+        meter.record(st, envelopeTsMs = 10_000, receivedAtMs = 10_000 - 3, isEvent = false)
+        // 정상 EVENT 를 상한 - 1 개 더 → 아직 clamped 표본이 누적 표본 안에 있다(n = 상한, min = 0)
+        for (i in 1 until LatencyMeter.HISTORY_CAP) meter.record(ev, envelopeTsMs = 10_000, receivedAtMs = 10_000 + 50, isEvent = true)
+        meter.summary().let { d ->
+            assertEquals(LatencyMeter.HISTORY_CAP, d.event!!.n)
+            assertEquals(0L, d.event!!.min)
+            assertEquals(2, d.clamped)   // EVENT 1 + STATE 1
+        }
+        // 하나 더 → clamped EVENT 표본이 밀려난다. 덤프 clamped 도 같이 줄고 min > 0 (STATE 의 clamped 는 남는다)
+        meter.record(ev, envelopeTsMs = 10_000, receivedAtMs = 10_000 + 50, isEvent = true)
+        meter.summary().let { d ->
+            assertEquals(LatencyMeter.HISTORY_CAP, d.event!!.n)
+            assertEquals(50L, d.event!!.min)
+            assertEquals(1, d.clamped)
+            assertEquals(0L, d.state!!.min)
+        }
+        // 화면·진단 카드 값(앱 시작 이후 누적)은 밀려나도 그대로
+        assertEquals(2, meter.state.value.clamped)
+    }
+
+    @Test
     fun `event label keeps type and the last 6 chars of the id only`() {
         assertEquals("type=PASSENGER_MESSAGE id=…X7K2QZ", LatencyMeter.eventLabel("PASSENGER_MESSAGE", "evt_01JB8Z3M4N5P6Q7R8S9T0X7K2QZ"))
         assertEquals("type=HARD_BRAKE id=*", LatencyMeter.eventLabel("HARD_BRAKE", "evt_1"))

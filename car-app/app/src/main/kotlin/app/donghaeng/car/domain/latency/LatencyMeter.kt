@@ -48,7 +48,8 @@ data class LatencyState(
  * 누적 표본 요약 한 줄 (debug `latency_dump`, docs/05 §3.4). [clamped]·[unsynced] 는 **누적 표본을 비운 뒤(reset) 기준**이다
  * (화면·진단 카드의 [LatencyState.clamped]·[LatencyState.unsynced] 는 앱 시작 이후 누적 — 따로 둔다).
  *
- * @param clamped  0 으로 자른 표본 수 — 누적 표본에 **0 으로 들어 있다**(n 에 포함)
+ * @param clamped  0 으로 자른 표본 수 — 누적 표본에 **0 으로 들어 있다**(n 에 포함). **지금 누적 표본 안에 남아 있는 것만** 센다:
+ *                 [LatencyMeter.HISTORY_CAP] 을 넘겨 오래된 표본이 밀려나면 그 표본의 clamped 도 같이 빠진다(EVENT·STATE 합계)
  * @param unsynced 시계 동기화 전에 와서 재지 못한 메시지 수 — 누적 표본에 **없다**(n 에 미포함)
  */
 data class LatencyDump(
@@ -99,9 +100,14 @@ class LatencyMeter(
     private val stateSamples = ArrayDeque<Pair<Long, Long>>()
     private var logged = 0
 
-    /** 진단용 누적 표본(지연 ms, 0 으로 자른 값 포함) — 각각 최근 [HISTORY_CAP]개 */
-    private val eventHistory = ArrayDeque<Long>()
-    private val stateHistory = ArrayDeque<Long>()
+    /** 진단용 누적 표본 하나 — 지연 ms(0 으로 자른 값이면 [clamped]) */
+    private class HistorySample(val ms: Long, val clamped: Boolean)
+
+    /** 진단용 누적 표본(0 으로 자른 값 포함) — 각각 최근 [HISTORY_CAP]개 */
+    private val eventHistory = ArrayDeque<HistorySample>()
+    private val stateHistory = ArrayDeque<HistorySample>()
+
+    /** 지금 [eventHistory]·[stateHistory] 안에 있는 clamped 표본 수 — 상한으로 밀려나면 같이 줄인다(덤프 `clamped` 가 표본과 어긋나지 않게) */
     private var historyClamped = 0
     private var historyUnsynced = 0
 
@@ -146,9 +152,9 @@ class LatencyMeter(
         samples.addLast(now to latency)
         while (samples.isNotEmpty() && now - samples.first().first > windowMs) samples.removeFirst()
         val history = if (isEvent) eventHistory else stateHistory
-        history.addLast(latency)
-        while (history.size > HISTORY_CAP) history.removeFirst()
+        history.addLast(HistorySample(latency, clamped = raw < 0))
         if (raw < 0) historyClamped++
+        while (history.size > HISTORY_CAP) if (history.removeFirst().clamped) historyClamped--
         val stat = LatencyStat(lastMs = latency, avgMs = samples.sumOf { it.second } / samples.size, maxMs = samples.maxOf { it.second }, count = samples.size)
         _state.update { s -> if (isEvent) s.copy(event = stat, clamped = s.clamped + (if (raw < 0) 1 else 0)) else s.copy(state = stat, clamped = s.clamped + (if (raw < 0) 1 else 0)) }
         if (isEvent || logged % 15 == 0) DhLog.i("latency: ${if (isEvent) "event" else "state"} ${latency}ms (avg ${stat.avgMs} max ${stat.maxMs} n=${stat.count})${if (raw < 0) " clamped(raw=$raw)" else ""}$tail")
@@ -160,8 +166,8 @@ class LatencyMeter(
     fun summary(): LatencyDump {
         val clock = clockState.value
         return LatencyDump(
-            event = LatencyPercentiles.summarize(eventHistory),
-            state = LatencyPercentiles.summarize(stateHistory),
+            event = LatencyPercentiles.summarize(eventHistory.map { it.ms }),
+            state = LatencyPercentiles.summarize(stateHistory.map { it.ms }),
             clockRttMs = clock.rttMs,
             clockOffsetMs = clock.offsetMs,
             clamped = historyClamped,

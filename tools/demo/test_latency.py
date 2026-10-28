@@ -152,6 +152,60 @@ class ClockTest(unittest.TestCase):
         with self.assertRaises(EOFError):
             s.ask("date", "DH2 ")
 
+    class FakeShell:
+        """상주 adb 세션 가짜 — 기기 시계는 호스트보다 1200 ms 늦고, fail_at 번째 date 답에서 시간 초과(queue.Empty)"""
+        made = 0
+        closed = 0
+        fail_at = None
+
+        def __init__(self, serial):
+            ClockTest.FakeShell.made += 1
+            self.dates = 0
+
+        def ask(self, cmd, marker, timeout=5.0):
+            import queue
+            if marker == "DHready":
+                return ""
+            self.dates += 1
+            if ClockTest.FakeShell.fail_at is not None and self.dates >= ClockTest.FakeShell.fail_at:
+                raise queue.Empty()
+            return str(int((latency.CLOCK.now_ms() - 1200.0) * 1_000_000))
+
+        def close(self):
+            ClockTest.FakeShell.closed += 1
+
+    def test_device_clock_keeps_samples_when_resident_shell_breaks(self):
+        """15번 중 14번째에서 시간 초과 → 앞의 13개로 오프셋, adb 매번 실행으로 넘어가지 않는다(리뷰 반영)"""
+        ClockTest.FakeShell.made, ClockTest.FakeShell.closed, ClockTest.FakeShell.fail_at = 0, 0, 14
+        with mock.patch.object(latency, "DeviceShell", ClockTest.FakeShell), \
+                mock.patch.object(latency, "adb", side_effect=AssertionError("fallback 을 쓰면 안 된다")):
+            r = latency.device_clock("emulator-X", samples=15)
+        self.assertEqual(r["samples"], 13)
+        self.assertLess(abs(r["offset_ms"] + 1200.0), 5.0)
+        self.assertTrue(r["method"].startswith("adb shell 상주 세션"))
+        self.assertIn("13/15", r["method"])
+        self.assertEqual(ClockTest.FakeShell.closed, 1)   # 이 스크립트가 띄운 세션은 닫는다
+
+    def test_device_clock_falls_back_only_without_valid_sample(self):
+        """첫 date 부터 시간 초과(유효 표본 0) → adb 매번 실행 7회"""
+        ClockTest.FakeShell.made, ClockTest.FakeShell.closed, ClockTest.FakeShell.fail_at = 0, 0, 1
+        calls = []
+
+        def fake_adb(serial, *args, **kw):
+            calls.append(args)
+            return str(int((latency.CLOCK.now_ms() - 1200.0) * 1_000_000))
+
+        with mock.patch.object(latency, "DeviceShell", ClockTest.FakeShell), mock.patch.object(latency, "adb", side_effect=fake_adb):
+            r = latency.device_clock("emulator-X", samples=15)
+        self.assertEqual(len(calls), 7)
+        self.assertEqual(r["method"], "adb shell 매번 실행 date +%s%N")
+        self.assertEqual(r["samples"], 7)
+        self.assertEqual(ClockTest.FakeShell.closed, 1)
+        # 세션을 띄우지도 못하면(adb 없음 등) 역시 fallback
+        with mock.patch.object(latency, "DeviceShell", side_effect=OSError("no adb")), mock.patch.object(latency, "adb", side_effect=fake_adb):
+            r = latency.device_clock("emulator-X", samples=15)
+        self.assertEqual(r["method"], "adb shell 매번 실행 date +%s%N")
+
     def test_combine_before_after(self):
         b = {"offset_ms": -1200.0, "err_ms": 2.0, "method": "m"}
         a = {"offset_ms": -1196.0, "err_ms": 3.0, "method": "m"}
@@ -198,6 +252,20 @@ class HelperTest(unittest.TestCase):
         self.assertFalse(latency.same_server("-", "http://127.0.0.1:8080"))
         self.assertEqual(latency.default_label("http://127.0.0.1:8080"), "local")
         self.assertEqual(latency.default_label("https://1.2.3.4.sslip.io"), "cloud")
+
+    def test_http_probe_warnings(self):
+        """fresh 는 유휴 연결만 닫는다 — 첫 표본이 reused 이거나 이후 표본이 새 연결이면 경고(리뷰 반영)"""
+        ok = latency.parse_net_line(NET_HTTP)
+        self.assertEqual(latency.http_probe_warnings("A", ok), [])
+        reused = latency.parse_net_line(NET_HTTP.replace("firstConn=new firstDns=3.1ms firstConnect=301.0ms firstTls=150.2ms", "firstConn=reused"))
+        w = latency.http_probe_warnings("A", reused)
+        self.assertEqual(len(w), 1)
+        self.assertIn("firstConn=reused", w[0])
+        later = latency.parse_net_line(NET_HTTP.replace("newConnAfterFirst=0", "newConnAfterFirst=2"))
+        w = latency.http_probe_warnings("B", later)
+        self.assertEqual(len(w), 1)
+        self.assertIn("차 B net_rtt 두 번째 이후 표본 2개가 새 연결", w[0])
+        self.assertEqual(latency.http_probe_warnings("A", None), [])
 
     def test_mask_id_matches_app(self):
         self.assertEqual(latency.mask_id("grp_01JB8Z3M4N5P6Q7R8S9T0X7K2QZ"), "grp_…QZ")
@@ -322,6 +390,7 @@ class RunFlowTest(unittest.TestCase):
         self.assertEqual(res["pc_to_publish"]["summary"]["p50"], 150.0)
         self.assertEqual(res["post"]["summary"]["p50"], 180.0)
         self.assertEqual(res["warnings"], [])
+        r.api.login.assert_called_once_with(force=True)   # ③ 앞에서 토큰을 새로 받는다(캐시 토큰 만료 대비)
         # 토큰은 헤더로만 — 결과 파일에 없다
         self.assertNotIn("tok", json.dumps(res))
         self.assertTrue(all(s[2] == "Bearer tok" for s in RunFlowTest.FakeHttp.sent))
@@ -331,6 +400,80 @@ class RunFlowTest(unittest.TestCase):
         self.assertIn(("emulator-A", "voice", {"on": False}), actions)
         self.assertIn(("emulator-A", "voice", {"on": True}), actions)
         self.assertIn(("emulator-B", "net_rtt", {"n": 5, "gap_ms": 0, "fresh": True}), actions)
+
+
+class SendMessagesTokenTest(unittest.TestCase):
+    """③ 메시지 전송의 토큰 처리 — 캐시 토큰이 ①·② 동안 만료돼도 메시지가 401 로 다 빠지지 않는다(리뷰 반영)"""
+
+    class FakeHttp:
+        rejected = set()
+        sent = []
+
+        def __init__(self, server, timeout=15):
+            pass
+
+        def request(self, method, path, body=None, headers=None):
+            if method == "GET":
+                return 200, b'{"serverTimeMs": 5005.0}', 5000.0, 5010.0, False
+            auth = headers.get("Authorization")
+            SendMessagesTokenTest.FakeHttp.sent.append(auth)
+            if auth.split(" ", 1)[1] in SendMessagesTokenTest.FakeHttp.rejected:
+                return 401, b'{"code": "INVALID_TOKEN"}', 1.0, 2.0, False
+            n = len(SendMessagesTokenTest.FakeHttp.sent)
+            return 201, ('{"eventId": "evt_01JTEST%06d"}' % n).encode(), 10.0 * n, 10.0 * n + 5, False
+
+        def close(self):
+            pass
+
+    def runner(self, tokens):
+        a = mock.Mock(server="https://1.2.3.4.sslip.io", label="cloud", car_a="emulator-A", car_b="emulator-B", messages=2, msg_gap_s=0,
+                      settle_s=0, out="unused")
+        r = latency.Runner(a)
+        r.group_id = "grp_01JTESTQZ"
+        r.pc_samples = []
+        it = iter(tokens)
+        r.api = mock.Mock(token="cached")
+
+        def login(force=False):
+            r.api.token = next(it)
+            return r.api.token
+        r.api.login.side_effect = login
+        return r
+
+    def send(self, r):
+        with mock.patch.object(latency, "KeepAliveHttp", SendMessagesTokenTest.FakeHttp), \
+                mock.patch.object(latency.time, "sleep"), mock.patch("builtins.print"):
+            return r.send_messages()
+
+    def test_fresh_token_before_sending(self):
+        SendMessagesTokenTest.FakeHttp.rejected, SendMessagesTokenTest.FakeHttp.sent = {"cached"}, []
+        r = self.runner(["t1"])
+        msgs = self.send(r)
+        self.assertTrue(all(m["id"] for m in msgs))
+        self.assertEqual(SendMessagesTokenTest.FakeHttp.sent, ["Bearer t1", "Bearer t1"])
+        r.api.login.assert_called_once_with(force=True)
+        self.assertEqual(r.warnings, [])
+
+    def test_401_relogins_once_and_resends(self):
+        # 새로 받은 t1 도 거부(서버 키 교체 등) → 다시 로그인한 t2 로 같은 메시지를 다시 보낸다
+        SendMessagesTokenTest.FakeHttp.rejected, SendMessagesTokenTest.FakeHttp.sent = {"cached", "t1"}, []
+        r = self.runner(["t1", "t2"])
+        msgs = self.send(r)
+        self.assertEqual([m["status"] for m in msgs], [201, 201])
+        self.assertTrue(all(m["id"] for m in msgs))
+        self.assertEqual(SendMessagesTokenTest.FakeHttp.sent, ["Bearer t1", "Bearer t2", "Bearer t2"])
+        self.assertEqual(r.api.login.call_count, 2)
+        self.assertEqual(r.warnings, ["메시지 1 HTTP 401 → 다시 로그인해 한 번 더 보냄"])
+
+    def test_401_does_not_loop(self):
+        # 다시 로그인해도 계속 401 → 메시지마다 한 번만 다시 보내고 끝(무한 반복 없음), 결과는 401·id 없음
+        SendMessagesTokenTest.FakeHttp.rejected, SendMessagesTokenTest.FakeHttp.sent = {"cached", "t1", "t2", "t3"}, []
+        r = self.runner(["t1", "t2", "t3"])
+        msgs = self.send(r)
+        self.assertEqual([m["status"] for m in msgs], [401, 401])
+        self.assertFalse(any(m["id"] for m in msgs))
+        self.assertEqual(len(SendMessagesTokenTest.FakeHttp.sent), 4)
+        self.assertIn("메시지 2 HTTP 401", r.warnings)
 
 
 def json_text(body):

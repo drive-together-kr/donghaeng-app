@@ -19,10 +19,12 @@
 
 시계 보정('PC 송신 → 차 수신'은 호스트 시계와 기기 시계를 잇는다 — 에뮬레이터 시계는 호스트보다 1~2 s 늦게 실측됐다):
   기본 = adb 기기 시계: 상주 `adb shell -T` 세션에서 `date +%s%N` 을 여러 번, 왕복이 가장 짧은 표본으로 오프셋(오차 ±왕복/2), ③ 앞뒤로 재서 평균(오차에 표류/2 더함).
+  세션이 중간에 끊기면 그때까지 받은 표본으로 잡고, 유효 표본이 하나도 없을 때만 adb 를 매번 띄운다(왕복이 길어 오차 ±15~50 ms).
   교차 확인 = 앱 ClockSync 오프셋(latency_dump offset, ±clockRtt/2) + PC → 서버 오프셋(① 최소 왕복 표본, ±왕복/2).
   수신 시각은 앱 로그의 rx=(HiveMQ 수신 콜백의 기기 epoch ms)를 쓰고, 없으면 `logcat -v epoch` 시각을 쓴다.
 
 - dev 로그인: --email(또는 DH_DEMO_EMAIL). 클라우드는 접속 키 DH_DEV_LOGIN_KEY 환경 변수(api.py 와 같은 방식 — 출력·파일에 쓰지 않는다).
+  사용자 토큰 수명이 1시간이라 ③ 앞에서 새로 받고(캐시 토큰을 그대로 쓰지 않는다), 그래도 401 이면 메시지마다 한 번 다시 로그인해 다시 보낸다.
 - 메시지는 음성으로도 읽히므로 ③ 동안 두 차 음성을 잠시 끄고 끝나면 원래대로 돌린다(--keep-voice 면 그대로). 그룹 소식에 '지연 측정 i/K' 가 남는다 — 시험용 그룹에서.
 - 서버의 동승자 메시지에는 빈도 제한이 없다(GroupService.postMessage — 429 는 무전 3 s·페어링 폴링뿐). 기본 간격 1.5 s 는 수신·음성 처리가 겹치지 않게 둔 것.
 - 출력·파일에 토큰·이메일·좌표·닉네임·메시지 원문 이외의 사용자 값은 남기지 않는다(서버 주소는 scheme://host[:port] 만).
@@ -497,23 +499,29 @@ class DeviceShell:
 
 
 def device_clock(serial: str, samples: int = 15):
-    """기기 시계 − 호스트 시계(ms). 상주 세션이 안 되면 adb 를 매번 띄운다(왕복이 길어 오차가 크다). 둘 다 안 되면 None"""
-    res, method = [], "adb shell 상주 세션 date +%s%N"
+    """기기 시계 − 호스트 시계(ms). 상주 세션이 안 되면 adb 를 매번 띄운다(왕복이 길어 오차가 크다). 둘 다 안 되면 None.
+    상주 세션이 중간에 끊기면(시간 초과·EOF) 그때까지 받은 표본은 그대로 쓴다 — 답마다 표지로 짝을 맞추므로 받은 표본은 유효하다.
+    유효 표본이 하나도 없을 때만 '매번 실행' 으로 넘어간다(한 번의 시간 초과로 ±1~3 ms 표본을 버리고 ±15~50 ms 로 떨어지지 않게)"""
+    res, method, broken = [], "adb shell 상주 세션 date +%s%N", None
+    s = None
     try:
         s = DeviceShell(serial)
-        try:
-            s.ask("echo DHready", "DHready", timeout=10)
-            for i in range(samples):
-                tag = f"DH{i} "   # 답마다 표지 — 줄이 밀려도 짝이 맞는다
-                t0 = CLOCK.now_ms()
-                out = s.ask(f'date +"{tag}%s%N"', tag)
-                t1 = CLOCK.now_ms()
-                res.append((t0, device_ms(out), t1))
-        finally:
+        s.ask("echo DHready", "DHready", timeout=10)
+        for i in range(samples):
+            tag = f"DH{i} "   # 답마다 표지 — 줄이 밀려도 짝이 맞는다
+            t0 = CLOCK.now_ms()
+            out = s.ask(f'date +"{tag}%s%N"', tag)
+            t1 = CLOCK.now_ms()
+            res.append((t0, device_ms(out), t1))
+    except Exception as e:
+        broken = type(e).__name__
+    finally:
+        if s is not None:
             s.close()
-    except Exception:
-        res = []
-    if not any(r[1] is not None for r in res):
+    valid = sum(1 for r in res if r[1] is not None)
+    if valid and broken:
+        method += f" ({valid}/{samples} 표본 — {broken} 로 중단)"
+    if not valid:
         method, res = "adb shell 매번 실행 date +%s%N", []
         for _ in range(min(samples, 7)):
             t0 = CLOCK.now_ms()
@@ -532,6 +540,24 @@ class EpochLogWatcher(LogWatcher):
     def new(self):
         out = sh(self.serial, f"logcat -d -v epoch -T '{self.since}' -s DongHaeng", timeout=60)
         return [line for line in out.splitlines() if "DongHaeng" in line]
+
+
+def http_probe_warnings(car: str, http_probe) -> list:
+    """`net_rtt --ez fresh true` 결과의 연결 확인. fresh 는 유휴 연결만 닫는다(OkHttp `evictAll`) — 앱의 다른 요청이 진행 중인
+    연결(HTTP/2 다중화)은 남아 첫 호출이 거기 붙을 수 있다. 그러면 '첫 표본' 은 연결 수립을 빠뜨린 값이고,
+    `newConnAfterFirst>0` 이면 P50·P95 표본 일부에 연결 수립이 섞였다"""
+    if not http_probe:
+        return []
+    extra = http_probe.get("extra") or {}
+    out = []
+    first_conn = extra.get("firstConn")
+    if first_conn != "new":
+        out.append(f"차 {car} net_rtt 첫 표본이 새 연결이 아니다(firstConn={first_conn or '?'}) — 진행 중인 앱 요청의 연결에 붙어 "
+                   f"'첫 표본' 에 연결 수립(DNS·TCP·TLS)이 빠졌다. 다시 재면 보통 new 가 된다")
+    after = extra.get("newConnAfterFirst")
+    if after is not None and after != "0":
+        out.append(f"차 {car} net_rtt 두 번째 이후 표본 {after}개가 새 연결(keep-alive 끊김) — P50·P95 에 연결 수립이 섞였다")
+    return out
 
 
 def car_events(lines):
@@ -641,6 +667,7 @@ class Runner:
         line = self.wait_line(s, "net_rtt", r"net: http_rtt (n=|busy|실패)", timeout, n=self.a.rtt_n, gap_ms=self.a.gap_ms, fresh=True)
         out["http"] = parse_net_line(line or "")
         self.say(f"   차 {car} net_rtt → {(line or '응답 없음').split('DongHaeng', 1)[-1][:160]}")
+        self.warnings.extend(http_probe_warnings(car, out["http"]))
         if out["http"] and not same_server(out["http"].get("base"), self.a.server):
             self.warnings.append(f"차 {car} 가 다른 서버를 본다: base={out['http'].get('base')} (--server {origin(self.a.server)}) — 숨은 메뉴 서버 주소·빌드 기본값 확인")
         if self.a.no_mqtt:
@@ -663,11 +690,25 @@ class Runner:
             elif self.voice_before.get(car) != "false":
                 broadcast(s, "voice", on=True)
 
+    def fresh_token(self) -> bool:
+        """사용자 JWT 를 새로 받는다. preflight 의 login() 은 out/.token 캐시가 아직 통하면 그대로 쓰는데 사용자 토큰 수명은 1시간
+        (서버 JwtIssuer.USER_TOKEN_TTL)이라 ①·② 프로브 동안 만료될 수 있다. 실패하면 경고만 남기고 지금 토큰을 쓴다"""
+        try:
+            self.api.login(force=True)
+            return True
+        except SystemExit as e:
+            self.warnings.append(f"dev 로그인 갱신 실패: {str(e)[:120]}")
+            return False
+
     def send_messages(self):
-        """K 개를 keep-alive 로 보낸다 → (메시지 목록, PC→서버 오프셋 표본)"""
+        """K 개를 keep-alive 로 보낸다 → (메시지 목록, PC→서버 오프셋 표본).
+        보내기 전에 토큰을 새로 받고(fresh_token), 그래도 401 이면 메시지마다 한 번만 다시 로그인해 같은 메시지를 다시 보낸다
+        (송신 시각은 다시 보낸 요청의 것 — 401 왕복은 지연에 들어가지 않는다)"""
         tag = secrets.token_hex(2)
+        self.fresh_token()
         http_ = KeepAliveHttp(self.a.server)
-        headers = {"Content-Type": "application/json; charset=utf-8", "Accept": "application/json", "Authorization": f"Bearer {self.api.token}"}
+        headers = lambda: {"Content-Type": "application/json; charset=utf-8", "Accept": "application/json",  # noqa: E731
+                           "Authorization": f"Bearer {self.api.token}"}
         path = f"/v1/groups/{urllib.parse.quote(self.group_id)}/messages"
         msgs = []
         try:
@@ -677,12 +718,20 @@ class Runner:
             k = self.a.messages
             for i in range(1, k + 1):
                 body = json.dumps({"text": f"지연 측정 {i}/{k} #{tag}"}, ensure_ascii=False).encode("utf-8")
-                try:
-                    st, data, t0, t1, new = http_.request("POST", path, body=body, headers=headers)
-                    eid = json.loads(data).get("eventId") if st == 201 else None
-                except Exception as e:
-                    st, eid, t0, t1, new = 0, None, CLOCK.now_ms(), None, True
-                    self.warnings.append(f"메시지 {i} 전송 실패 {type(e).__name__}")
+                relogged = False
+                while True:
+                    try:
+                        st, data, t0, t1, new = http_.request("POST", path, body=body, headers=headers())
+                        eid = json.loads(data).get("eventId") if st == 201 else None
+                    except Exception as e:
+                        st, eid, t0, t1, new = 0, None, CLOCK.now_ms(), None, True
+                        self.warnings.append(f"메시지 {i} 전송 실패 {type(e).__name__}")
+                    if st == 401 and not relogged:
+                        relogged = True
+                        if self.fresh_token():
+                            self.warnings.append(f"메시지 {i} HTTP 401 → 다시 로그인해 한 번 더 보냄")
+                            continue
+                    break
                 if st not in (0, 201):
                     self.warnings.append(f"메시지 {i} HTTP {st}")
                 msgs.append({"i": i, "status": st, "id": eid[-6:] if eid else None, "send_ms": t0,

@@ -49,7 +49,7 @@ interface DemoNetDeps {
  * ```
  * | action | extras | 동작 · 로그 |
  * |---|---|---|
- * | `net_rtt` | `n`(기본 30, 2~500), `gap_ms`(기본 300), `fresh`(ez, 기본 false — 먼저 유휴 연결을 비워 첫 표본이 연결 수립을 포함하게) | 앱 REST 클라이언트(DI 의 OkHttpClient — 같은 인터셉터·기본 주소·TLS 연결 풀)로 `GET /v1/time` n 번. → `net: http_rtt n=… first=…ms p50=…ms p95=…ms min=…ms max=…ms base=<scheme://host[:port]> firstConn=new\|reused …` |
+ * | `net_rtt` | `n`(기본 30, 2~500), `gap_ms`(기본 300), `fresh`(ez, 기본 false — 먼저 **유휴** 연결을 비운다. 진행 중 요청이 쓰는 연결은 남아 첫 호출이 거기 붙을 수 있으니 수립 포함 여부는 `firstConn=new` 로 확인) | 앱 REST 클라이언트(DI 의 OkHttpClient — 같은 인터셉터·기본 주소·TLS 연결 풀)로 `GET /v1/time` n 번. → `net: http_rtt n=… first=…ms p50=…ms p95=…ms min=…ms max=…ms base=<scheme://host[:port]> firstConn=new\|reused …` |
  * | `net_mqtt_rtt` | `n`, `gap_ms` | 앱 MQTT 클라이언트(HiveMQ)의 QoS 1 PUBLISH → PUBACK n 번(내 presence 토픽에 지금과 같은 `{"online":true}`, retain 없음 — [MqttGateway.probeAckNanos]). **브로커(EMQX)까지 왕복 — 서버 앱은 거치지 않는다.** → `net: mqtt_rtt … base=<브로커 scheme://host:port> transport=tls\|wss… via=broker-puback` |
  * | `latency_dump` | | [LatencyMeter.summary] — `latency: summary event n=… p50=…ms p95=…ms min=…ms max=…ms \| state n=… … \| clockRtt=…ms offset=…ms clamped=… unsynced=…` |
  * | `latency_reset` | | 누적 표본 비움 — `latency: reset event=<비운 수> state=<비운 수>` |
@@ -105,7 +105,8 @@ object DemoNetActions {
     /** `GET /v1/time` n 번 — 앱 클라이언트를 `newBuilder()` 로 늘려 이벤트 리스너만 붙인다(연결 풀·디스패처·인터셉터는 그대로 공유) */
     private suspend fun httpRtt(d: DemoNetDeps, n: Int, gapMs: Long, fresh: Boolean): String {
         val appClient = d.okHttpClient()
-        if (fresh) appClient.connectionPool.evictAll()   // 유휴 연결만 닫는다 — 앱의 다음 요청은 새로 붙는다
+        // 유휴 연결만 닫는다 — 앱의 다른 요청이 진행 중인 연결(h2 다중화)은 남아 첫 호출이 거기 붙을 수 있다(firstConn=reused 로 드러난다)
+        if (fresh) appClient.connectionPool.evictAll()
         var trace: CallTrace? = null
         val client = appClient.newBuilder().eventListenerFactory { CallTrace().also { trace = it } }.build()
         // Retrofit 과 같은 주소: 빌드 기본값 + 경로 → ServerHostInterceptor 가 지금 서버 주소(숨은 메뉴)로 바꾼다
