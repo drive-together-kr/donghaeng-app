@@ -48,6 +48,7 @@ curl localhost:8080/v1/me/vehicles -H "Authorization: Bearer <accessToken>"
 | `DH_CAR_ID_SALT` | `dev-salt-change-me` | CarInfo 차량 ID 해시 salt (`SHA-256(id + salt)`). 운영에서 바꾸고 이후 유지 |
 | `DH_INTERNAL_TOKEN` | (없음 → 검사 안 함) | EMQX ACL 훅 `POST /internal/mqtt/acl` 의 `X-Internal-Token`. compose 의 emqx 서비스가 같은 값을 헤더로 보낸다. 클라우드에서는 필수 |
 | `DH_DEV_LOGIN_KEY` | (없음 → 검사 안 함) | dev 간편 로그인 `POST /v1/auth/login` 의 접속 키. 설정되면 헤더 `X-Dev-Login-Key` 가 같아야 하고 아니면 403 `FORBIDDEN`(docs/03 §1.1). 로컬은 비움, 클라우드(`infra/cloud`)에서는 필수 |
+| `DH_VOICE_PURGE_INTERVAL_MS` | `600000` | F16 만료 무전(업로드 + 24h) 삭제 주기(ms). 그룹 종료 시 삭제는 즉시, 다운로드는 만료 시각을 직접 비교한다 |
 | `DH_MQTT_ENABLED` | `true` | `false` 면 브로커에 붙지 않는다(브로커 없는 로컬 실행). 테스트 기본값은 false(`src/test/resources/application.properties`), `MqttIT` 만 켠다 |
 | `SPRING_PROFILES_ACTIVE` | (없음) | `local`(로컬 compose, DEBUG 로그) / `cloud`(infra/cloud — 프로필 파일 없이 기본 INFO) |
 | `JAVA_TOOL_OPTIONS` | (없음) | JVM 옵션. 클라우드 오버라이드가 4 GB VM 용 힙·메타스페이스 상한을 넣는다(`infra/cloud/README.md` §4) |
@@ -79,6 +80,7 @@ curl localhost:8080/v1/me/vehicles -H "Authorization: Bearer <accessToken>"
 | `event` | 그룹 이벤트 저장·조회(`GroupEventSink`/`GroupEventReader` → `DbGroupEventStore`, 커밋 뒤 `GroupEventRecorded` Spring 이벤트), `SpeechComposer` + `Josa`(조사). **T26:** `VehicleEventHandler`(EVENT 토픽, 봉투 type = 차량 이벤트 종류, 본문 검증) → `VehicleEventService`(소속 그룹 → `EventDedup` Redis `evt:dedup:{vid}:{type}` 120s(정차/재출발 20s) → 문구·심각도(LOW_ENERGY/HARD_BRAKE/HAZARD WARN, AIRBAG ALERT, 도착·정차 INFO) → 수신 대상(HARD_BRAKE 만 `audience` = `PresenceApi.snapshotOf` 기준 출처보다 뒤차, `protocol.EventAudience.behind`; V4 `group_event.audience`) → 저장 → 팬아웃). ROUTE_CHANGED 는 T28, PRESET_MESSAGE 는 T53 | T14·T26 완료 |
 | `presence` | `TelemetryIngestor`(TELEMETRY → Redis `veh:{vid}:state`·`grp:{gid}:geo`), `PresenceIngestor`(봉투 없는 presence 토픽 → `veh:{vid}:online`), `SnapshotBuilder`(명단 + 상태 → `GroupState`, 판정 규칙 docs/03 §5.3: online/OFFLINE 60s/STOPPED 60s/ARRIVED 150 m/선두 거리), `SnapshotPublisher`(`@Scheduled` 2s retained QoS 0, GROUP_ENDED 시 retained 삭제), `PresenceApi.snapshotOf`(`GET /groups/{id}` snapshot). 설정 `dh.presence.*`. 명단은 group 의 `GroupMembershipApi.rosterOf/activeRosters` | T24 완료 |
 | `routesync` | `RouteChangedHandler`(ROUTE_CHANGED) → `RouteSyncService`(선두 확인 → 멤버별 cmd ROUTE_FOLLOW_PROPOSAL + 그룹 이벤트) · `AckHandler` → ACK 집계(`ProposalStore` Redis `rs:prp:{id}` 15분) | T28 완료 |
+| `voice` | F16 무전(녹음형 PTT, docs/03 §2.6): `web/VoiceController`(`POST /v1/groups/{id}/voice` multipart `audio` + `durationMs` → 201 `VoiceUploadResponse`, `GET /v1/groups/{id}/voice/{voiceId}` → 오디오 바이트), `VoiceService`(검사 → 같은 차 3초 빈도 제한 → `VOICE_MESSAGE` 그룹 이벤트 + `voice_message` 저장, 한 트랜잭션 — 팬아웃은 기존 `GroupEventMqttFanout`), `VoiceRules`(512 KB·1~16 000 ms·mime 3종·24 h), `VoiceRetention`(GROUP_ENDED 시 즉시 삭제 + 만료 정리 `dh.voice.purge-interval-ms` 10분), `repo/JdbcVoiceStore`(BYTEA, V6). 그룹 자격은 group 의 `GroupAccessApi`(그룹 행 `FOR SHARE` 로 종료와 직렬화) | F16 서버 완료 |
 | `insight` | 규칙 엔진(휴게소 제안·이탈·오프라인·연속 주행) | — |
 | `poi` | 휴게소 시드·조회 | — |
 | `notify` | FCM 푸시, 음성 문구 템플릿 | — |
@@ -97,7 +99,8 @@ curl localhost:8080/v1/me/vehicles -H "Authorization: Bearer <accessToken>"
 ## 데이터베이스
 
 - Flyway: `src/main/resources/db/migration/V1__init.sql` — `docs/04_데이터모델.md` §1 DDL 그대로. `V2__identity.sql` — provider 주석, 조회 인덱스, 사용자당 대표 차량 1대 부분 유니크 인덱스(docs/04 '## V2'). 스키마를 바꾸면 새 버전 파일을 추가하고 문서도 함께 고친다.
-- ID: 접두사 + ULID (`usr_`, `veh_`, `grp_`, `inv_`, `evt_`, `prp_`) — `common/id/Ids`.
+- `V6__voice_message.sql` — F16 무전 저장(`voice_message`: 오디오 BYTEA `STORAGE EXTERNAL`, 만료·그룹·보낸 차 인덱스, docs/04 '## V6').
+- ID: 접두사 + ULID (`usr_`, `veh_`, `grp_`, `inv_`, `evt_`, `prp_`, `vce_`) — `common/id/Ids`.
 
 ## 테스트
 
@@ -115,6 +118,8 @@ curl localhost:8080/v1/me/vehicles -H "Authorization: Bearer <accessToken>"
 | `mqtt/MqttIT` | `@SpringBootTest`(고정 포트 18089) + Testcontainers(postgres·redis·**emqx 5.8**) | EMQX 가 이 서버의 JWKS 로 인증하고 `/internal/mqtt/acl` 로 인가한다: 서버 자기 토큰 접속·공유 구독, 차량 토큰 접속, 자기 cmd 만 구독(남의 cmd·와일드카드·`$share` 거부), 비멤버의 그룹 토픽 거부 → 합류 뒤 허용, 합류 시 cmd `GROUP_JOINED` 수신, `MEMBER_JOINED`·`PASSENGER_MESSAGE` 팬아웃, 남의 telemetry 토픽 발행·봉투 vid 위조는 핸들러에 닿지 않음, ACL 훅의 내부 토큰 403 |
 | `mqtt/MqttAclServiceTest` | 단위 | docs/03 §4 ACL 표 전체(차량 publish/subscribe, 그룹 소속, 와일드카드·공유 구독 거부, 서버 허용, 모르는 주체 거부) |
 | `group/GroupFlowIT` | `@SpringBootTest` + Testcontainers | docs/03 §2 전체 흐름: 차량 토큰 생성 201(초대 URL·토픽·Redis 소속 키) → 사용자 합류(대표 차량·명시 차량·색·역할) → ALREADY_MEMBER/GROUP_FULL → 조회(멤버·소유자 200, 남 404, 이벤트 최신순) → 내 그룹 → 동승자 메시지 201/400/404 → 방장 위임 → 초대 재발급(이전 토큰 410) → 나가기(차량·사용자, 방장 승계, 마지막 멤버 → 종료) → 종료(Redis 삭제, 이후 409 GROUP_ENDED); 그룹 전환 자동 이탈·재합류; 초대 만료·사용 횟수·형식 오류 410; 생성 검증 400; 해제 차량 403; V3 컬럼·인덱스 |
+| `voice/VoiceFlowIT` | `@SpringBootTest` + Testcontainers | docs/03 §2.6: multipart 업로드 201 → 커밋 뒤 `VOICE_MESSAGE`(그룹 전체·`{닉네임} 무전`·payload) → 멤버 차량·소유자·보낸 차 다운로드(바이트·Content-Type·Cache-Control), 비멤버·나간 멤버·없는 무전 404, 401/403, 512 KB 경계(같으면 201·넘으면 413), 길이·mime·파일 없음·빈 파일·multipart 아님 오류, 3초 빈도 429, 그룹 종료(방장 종료·전원 이탈) 즉시 삭제·409, 종료와 경합(FOR UPDATE 를 쥔 채 업로드 → 409), 만료 숨김·정리, V6 인덱스·STORAGE EXTERNAL. `MqttIT` 는 실제 EMQX 로 팬아웃 → 받은 차 다운로드 |
+| `voice/VoiceRulesTest` · `VoiceServiceTest` | 단위 | 계약 상수·mime 정규화·길이 파싱·ID 형식, 검사 순서(멤버·종료가 먼저, 오디오는 검사 뒤에만 읽음)·빈도 제한(거절은 세지 않음)·이벤트 내용·다운로드 404 규칙 |
 | `event/JosaTest` · `SpeechComposerTest` · `group/InviteTokensTest` · `MemberColorsTest` | 단위 | 받침 판별(한글·숫자·영문·꼬리 기호), docs/06 §4 문구, 초대 토큰 형식·해시, 팔레트 색 배정 |
 
 - Testcontainers 는 Spring Boot BOM 버전(1.19.x) 대신 `testcontainers.version=1.21.4` 로 올려 쓴다. 1.19.x 는 Docker API 1.32 를 고정 요청해 **Docker Engine 29(최소 API 1.40)** 에서 `400 Bad Request` 로 Docker 를 못 찾은 것으로 판단해 IT 를 건너뛴다.

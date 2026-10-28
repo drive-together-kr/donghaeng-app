@@ -61,7 +61,7 @@ class UlidGenerator(private val random: Random = SecureRandom()) {
 }
 
 /**
- * 접두사가 붙은 ID (docs/04 §1): `usr_`, `veh_`, `grp_`, `inv_`, `evt_`, `prp_` + ULID.
+ * 접두사가 붙은 ID (docs/04 §1): `usr_`, `veh_`, `grp_`, `inv_`, `evt_`, `prp_`, `vce_`(F16 무전, docs/04 V6) + ULID.
  */
 object Ids {
     private val generator = UlidGenerator()
@@ -74,4 +74,8 @@ object Ids {
     fun invite(): String = "inv_" + ulid()
     fun event(): String = "evt_" + ulid()
     fun proposal(): String = "prp_" + ulid()
+    fun voice(): String = VOICE_PREFIX + ulid()
+
+    /** 무전 ID 접두사 — 다운로드 경로의 `{voiceId}` 형식 검사에도 쓴다 */
+    const val VOICE_PREFIX = "vce_"
 }

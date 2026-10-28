@@ -90,7 +90,8 @@
 	}
 
 	handle {
-		# REST 본문은 작다(최대 수 KB). EMQX max_packet_size(1 MB)와 맞춘다.
+		# REST 본문은 작다(대부분 수 KB). 가장 큰 것은 F16 무전 업로드(multipart: 오디오 ≤ 512 KB + 폼 필드, docs/03 §2.6) —
+		# 서버 Spring multipart 상한(파일 512KB·요청 1MB, 넘으면 JSON 413 VOICE_TOO_LARGE)이 먼저 걸리도록 넉넉히 둔다. EMQX max_packet_size(1 MB)와도 같다.
 		request_body {
 			max_size 1MB
 		}

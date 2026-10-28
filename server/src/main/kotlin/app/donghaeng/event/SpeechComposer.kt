@@ -6,7 +6,7 @@ import org.springframework.stereotype.Component
 /**
  * 그룹 이벤트의 한국어 음성 문구 (docs/06 §4 템플릿). 차량 앱은 이 문구를 Android TTS 로 그대로 읽는다.
  *
- * T14: 그룹 수명주기 이벤트(합류·나가기·종료)와 동승자 메시지. T26: 차량 이벤트(저잔량·급제동·도착·정차/재출발·에어백·비상등).
+ * T14: 그룹 수명주기 이벤트(합류·나가기·종료)와 동승자 메시지. T26: 차량 이벤트(저잔량·급제동·도착·정차/재출발·에어백·비상등). F16: 무전 알림.
  * 닉네임 조사는 [Josa] 로 고른다. 닉네임·메시지 본문은 호출자가 이미 정리(trim·길이 제한)한 값이다.
  */
 @Component
@@ -26,6 +26,12 @@ class SpeechComposer {
 
     /** `{nickname}에서 온 메시지. {text}` (욕설 필터·60자 제한은 호출자 몫 — P1 T52) */
     fun passengerMessage(nickname: String, text: String): String = "${nickname}에서 온 메시지. $text"
+
+    /**
+     * `{nickname} 무전` (F16, docs/03 §5.4 `VOICE_MESSAGE`) — 받는 차는 이 짧은 알림 뒤 녹음을 재생한다(문구만 읽고 끝내지 않는다).
+     * 녹음 내용은 서버가 해석하지 않으므로 문구에 담지 않는다.
+     */
+    fun voiceMessage(nickname: String): String = "$nickname 무전"
 
     /** 그룹 종료. 방장이 끝냈으면 `방장이 그룹을 종료했어요.`, 그 외 `그룹이 종료됐어요.` */
     fun groupEnded(reason: String): String = when (reason) {

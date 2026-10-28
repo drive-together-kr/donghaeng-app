@@ -58,6 +58,13 @@ class GroupRepository(private val jdbc: NamedParameterJdbcTemplate) {
     fun findByIdForUpdate(groupId: String): GroupRecord? =
         jdbc.query("SELECT $COLUMNS FROM travel_group WHERE group_id = :groupId FOR UPDATE", mapOf("groupId" to groupId), ::mapRow).firstOrNull()
 
+    /**
+     * 공유 잠금 — 그룹에 딸린 자원(F16 무전)을 올리는 트랜잭션이 잡는다. 여러 업로드끼리는 서로 막지 않고,
+     * 종료·나가기·합류의 [findByIdForUpdate] 와는 직렬화된다(업로드가 끝난 그룹에 무전을 남기지 않게 — `GroupAccessApi`).
+     */
+    fun findByIdForShare(groupId: String): GroupRecord? =
+        jdbc.query("SELECT $COLUMNS FROM travel_group WHERE group_id = :groupId FOR SHARE", mapOf("groupId" to groupId), ::mapRow).firstOrNull()
+
     /** 활성 그룹 전부 — presence 2초 스냅샷용(테이블이 작다는 전제, 생성순) */
     fun findActive(): List<GroupRecord> =
         jdbc.query("SELECT $COLUMNS FROM travel_group WHERE status = 'ACTIVE' ORDER BY created_at ASC", ::mapRow)

@@ -1,5 +1,6 @@
 package app.donghaeng.common.api
 
+import app.donghaeng.protocol.rest.ErrorCodes
 import jakarta.validation.ConstraintViolationException
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
@@ -11,6 +12,8 @@ import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
 import org.springframework.web.method.annotation.HandlerMethodValidationException
+import org.springframework.web.multipart.MaxUploadSizeExceededException
+import org.springframework.web.multipart.MultipartException
 import org.springframework.web.servlet.NoHandlerFoundException
 import org.springframework.web.servlet.resource.NoResourceFoundException
 import java.util.concurrent.ThreadLocalRandom
@@ -82,6 +85,20 @@ class GlobalExceptionHandler {
     @ExceptionHandler(HttpMessageNotReadableException::class)
     fun handleNotReadable(e: HttpMessageNotReadableException): ResponseEntity<ApiError> =
         ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiError.of("VALIDATION_FAILED", "요청 본문을 읽을 수 없어요."))
+
+    /**
+     * multipart 본문을 받는 API 는 무전 업로드(`POST /groups/{id}/voice`, docs/03 §2.6)뿐이다. Spring 상한
+     * (`spring.servlet.multipart.max-file-size` 512KB · `max-request-size`)을 넘으면 컨트롤러에 닿기 전에 여기로 온다 → 계약의 413 `VOICE_TOO_LARGE`.
+     * (`MaxUploadSizeExceededException` 은 `ErrorResponse` 라 아래 [handleOther] 로 가면 코드가 `BAD_REQUEST` 가 된다)
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException::class)
+    fun handleUploadTooLarge(e: MaxUploadSizeExceededException): ResponseEntity<ApiError> =
+        ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(ApiError.of(ErrorCodes.VOICE_TOO_LARGE, "무전이 너무 커요. (512 KB 까지)"))
+
+    /** 깨진 multipart(경계 없음·잘린 본문 등) — 그대로 두면 500. 무전 업로드의 400 `INVALID_VOICE` 로 */
+    @ExceptionHandler(MultipartException::class)
+    fun handleMultipart(e: MultipartException): ResponseEntity<ApiError> =
+        ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiError.of(ErrorCodes.INVALID_VOICE, "무전 파일을 읽을 수 없어요."))
 
     private fun validationMessage(detail: String): String =
         if (detail.isEmpty()) "요청 값이 올바르지 않아요." else "요청 값이 올바르지 않아요. ($detail)"
