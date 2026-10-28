@@ -18,7 +18,8 @@ import kotlin.math.roundToInt
  *   간격 경고 = 바로 앞차와 3 km 초과. 다음 정차지 = RouteSyncEngine 이 마지막으로 수락·발행한 경유지 — 막대 위치는 내 위치 + 직선거리(모르면 null → 선두 + 2 km).
  * - 그룹 도착 = 멤버 eta.destTs 최댓값과 그 차, 내 도착 = 내 eta.
  * - 다음 정차 카드는 경유지가 있을 때만(이름·내 위치에서 직선거리, 차별 ETA·주유/충전·도달 가능 여부는 아직 모름 → 생략·"—").
- * - 내 주행 줄: 제한속도 = 내비, 연속 주행 = 그룹 합류부터(2시간 이상 경고), 휴식 추천 = 경유지.
+ * - 내 주행 줄: 제한속도 = 내비, 연속 주행 = [ContinuousDriveTimer](주행 구간 합, 15분 이상 쉬면 0, 2시간 이상 경고), 휴식 추천 = 경유지.
+ * - 그룹 도착의 마지막 차가 나면 "마지막: 내 차".
  * - 이벤트 띠·지난 소식은 플로팅 패널과 같은 규칙([SurfaceEvents]): 내 차 출처 제외, 띠 = 받은 지 10초 안 + 서버 시계로 60초 안에 생긴 가장 최근 이벤트(없으면 숨김 —
  *   재접속 때 브로커가 다시 보낸 옛 이벤트는 빠진다), 지난 소식 = 발생 시각(봉투 ts) 최신 5개, "N초 전" = 서버 시계 − 봉투 ts. 프리셋(F8)·보내지 않은 무전(F16)은 아직 없어 비운다.
  * - 하단 지연 = T31 문구 그대로("이벤트 N ms · 상태 N ms", 표시 꺼짐이면 없음).
@@ -68,7 +69,7 @@ object DriveDashboardMapper {
         val last = s.members.filter { it.etaDestTs != null }.maxByOrNull { it.etaDestTs!! }
         val arrival = ArrivalCardUi(
             groupArrivalText = DriveFormat.clock(last?.etaDestTs, zone),
-            lastCarText = last?.let { "마지막: ${it.nickname}" } ?: "",
+            lastCarText = last?.let { "마지막: " + if (it.isMe) "내 차" else it.nickname } ?: "",
             myArrivalText = DriveFormat.clock(me?.etaDestTs, zone),
             myRemainText = DriveFormat.remain(me?.remainM, me?.remainS),
         )
@@ -85,7 +86,7 @@ object DriveDashboardMapper {
             )
         }
 
-        val drivenS = if (session.joinedAtMs > 0 && now >= session.joinedAtMs) (now - session.joinedAtMs) / 1_000 else null
+        val drivenS = s.continuousDriveMs?.let { it / 1_000 }
         val myDrive = MyDriveLineUi(
             speedLimitKph = s.speedLimitKph,
             nextTurnText = null,

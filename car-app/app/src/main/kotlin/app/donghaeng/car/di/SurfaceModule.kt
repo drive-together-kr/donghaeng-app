@@ -65,6 +65,8 @@ object SurfaceModule {
         positions = positions,
         // 소식 줄·대시보드 띠의 신선도(60 s)·"N초 전"은 서버 시계 기준(T31) — 재접속 때 밀려 온 옛 이벤트가 '방금'으로 보이지 않게
         serverClock = { clockSync.serverNow() },
+        // 연속 주행은 단조 시계로 잰다 — 부팅 뒤 시각 보정으로 벽시계가 뛰어도 주행 시간이 부풀거나 사라지지 않게
+        driveClock = { android.os.SystemClock.elapsedRealtime() },
     )
 
     @Provides

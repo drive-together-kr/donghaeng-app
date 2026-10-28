@@ -31,7 +31,7 @@ data class EventCard(
     val type: String,
     /** 같은 종류는 같은 id → 새 카드가 이전 카드를 교체한다(쌓이지 않게) */
     val notificationId: Int,
-    /** Notification.category — navigation / msg / status (`car_warning` 은 시스템 권한이 필요해 쓰지 않는다, docs/10 R16) */
+    /** Notification.category — navigation / msg (Pleos 알림 표시기는 일반 앱의 이 둘(+call)만 헤드업으로 띄운다. `status`·`car_warning` 은 안 뜬다, docs/10 R16) */
     val category: String,
     val title: String,
     val tone: Tone,
@@ -48,7 +48,9 @@ sealed interface CardDecision {
  * - 대상: 저잔량·급제동·에어백·경유지/목적지 도착·합류·연결 끊김·동승자 메시지(+ 다음 작업 F16 의 `VOICE_MESSAGE` — 문자열 비교라 enum 이 없어도 된다).
  * - 내 차가 출처인 이벤트 제외(내 차 일은 내가 안다).
  * - 신선도: 서버 시계 기준 [FRESHNESS_MS](60초)보다 오래된 이벤트(재연결 뒤 밀려 온 옛 소식)는 카드로 띄우지 않는다.
- * - 카테고리: 도착 → navigation, 메시지 → msg, 그 밖 → status. 카드는 [TIMEOUT_MS](8초) 뒤 저절로 사라진다.
+ * - 카테고리: 메시지 → msg, 그 밖(저잔량·급제동·도착·합류·끊김) → navigation. Pleos 알림 표시기(ai.umos.notification)는 일반 앱 알림 중
+ *   `call`·`msg`·`navigation`(·`connect.system`)만 헤드업 카드로 띄우고 `status` 는 알림 목록에만 넣는다(2026-10-28 실측 — 표시기 로그 `needHeadUpNotification`).
+ *   그룹 주행 소식은 길 안내에 딸린 정보라 navigation 으로 둔다. 카드는 [TIMEOUT_MS](8초) 뒤 저절로 사라진다.
  */
 object EventCardPolicy {
     const val FRESHNESS_MS = 60_000L
@@ -57,7 +59,6 @@ object EventCardPolicy {
 
     const val CATEGORY_NAVIGATION = "navigation"
     const val CATEGORY_MESSAGE = "msg"
-    const val CATEGORY_STATUS = "status"
 
     /** 대상 종류 — 목록 순서가 알림 id 를 정한다 */
     val TARGET_TYPES: List<String> = listOf(
@@ -68,9 +69,8 @@ object EventCardPolicy {
     fun notificationIdOf(type: String): Int = BASE_ID + TARGET_TYPES.indexOf(type).coerceAtLeast(0)
 
     fun categoryOf(type: String): String = when (type) {
-        "WAYPOINT_ARRIVED", "DESTINATION_ARRIVED" -> CATEGORY_NAVIGATION
         "PASSENGER_MESSAGE", "VOICE_MESSAGE" -> CATEGORY_MESSAGE
-        else -> CATEGORY_STATUS
+        else -> CATEGORY_NAVIGATION
     }
 
     fun decide(e: ReceivedGroupEvent, myVehicleId: String?, serverNowMs: Long): CardDecision {

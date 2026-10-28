@@ -5,6 +5,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,19 +20,25 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -43,6 +50,8 @@ import app.donghaeng.car.R
  * 크기: 폭 ≤ 내비 화면 폭의 22%(Pleos 가로 2창 = 1707 dp × 22% ≈ 375 dp), 높이 ≤ 디스플레이 높이 30%(차 4대 + 이벤트 줄 + [무전] 기준 ≈ 375 dp,
  *       5대 이상이면 4대 + "외 N대" 줄 ≈ 410 dp). 실제 폭·배율은 surface.PanelLayout 이 디스플레이에서 계산해 [width]·[scale] 로 준다.
  * 가독성(사용자 지시): 거리·도착 시각 숫자 31sp(시안 24sp의 1.3배), 이름 29sp(1.2배), 행 간격 10 dp 이상. 머리줄·이벤트 줄·무전 줄도 1.2배.
+ *       이름 열(100 dp)에 안 들어가는 긴 닉네임("DemoCarB")은 20sp 까지 줄여 맞추고, 그래도 넘치면 말줄임(2026-10-28 실측 "De…" 개선).
+ *       간격 숫자도 남은 폭에 안 들어가면(저잔량 아이콘 + "뒤 9.9 km" 처럼) 24sp 까지 줄여 단위 "km/m" 가 잘리지 않게 한다.
  * 위치: 오른쪽 위 고정(내비 TBT 왼쪽 위·하단 버튼을 피한다), 정차 중에만 드래그로 4모서리 중 선택(FloatingPanelService).
  * 주간/야간: 시스템 야간이면 짙은 반투명 바탕 + 흰 글씨, 주간이면 밝은 반투명 바탕 + 짙은 글씨. [무전] 라임 버튼은 둘 다 유지.
  */
@@ -80,7 +89,13 @@ object FloatingPanelSpec {
     val WIDTH: Dp = 375.dp
     const val HEADER_SP = 22f
     const val NAME_SP = 29f
+    /** 긴 닉네임을 맞출 때 내려가는 하한 */
+    const val NAME_MIN_SP = 20f
+    /** 이름 열 폭 — 한글 3자(29sp) 또는 영문 8자(20sp) */
+    const val NAME_WIDTH_DP = 100f
     const val NUMBER_SP = 31f
+    /** 간격 숫자가 남은 폭에 안 들어갈 때 내려가는 하한 */
+    const val NUMBER_MIN_SP = 24f
     const val UNIT_SP = 18f
     const val EVENT_SP = 24f
     const val PTT_SP = 31f
@@ -179,30 +194,82 @@ private fun CarRow(c: FloatingCar, p: PanelPalette, s: Scaler) {
     Row(Modifier.fillMaxWidth().heightIn(min = s.dp(40f)), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(s.dp(14f)).clip(CircleShape).background(if (c.offline) p.muted else Color(c.colorArgb)))
         Spacer(Modifier.width(s.dp(8f)))
-        // 이름 열 고정폭(한글 3자) — 넘치면 말줄임
-        Text(
-            c.name, color = if (c.offline) p.muted else p.text, fontSize = s.sp(FloatingPanelSpec.NAME_SP), lineHeight = s.sp(34f), fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.width(s.dp(88f)), maxLines = 1, overflow = TextOverflow.Ellipsis,
-        )
+        // 이름 열 고정폭 — 넘치면 글자를 줄여 맞추고(하한 20sp), 그래도 넘치면 말줄임
+        FitName(c.name, if (c.offline) p.muted else p.text, s)
+        Spacer(Modifier.width(s.dp(6f)))
         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
             if (c.lowEnergy) {
                 Canvas(Modifier.size(s.dp(22f))) { drawFuel(Offset.Zero, size.height, p.caution) }
                 Spacer(Modifier.width(s.dp(4f)))
             }
-            Row {
-                Text(
-                    c.gapText, color = numberColor, fontSize = s.sp(FloatingPanelSpec.NUMBER_SP), lineHeight = s.sp(36f),
-                    fontWeight = if (c.warn) FontWeight.Bold else FontWeight.SemiBold, maxLines = 1, softWrap = false, overflow = TextOverflow.Clip,
-                    modifier = Modifier.alignByBaseline(),
-                )
-                if (c.gapUnit.isNotEmpty()) {
-                    Spacer(Modifier.width(s.dp(3f)))
-                    Text(c.gapUnit, color = if (c.warn) p.caution else p.muted, fontSize = s.sp(FloatingPanelSpec.UNIT_SP), maxLines = 1, softWrap = false, modifier = Modifier.alignByBaseline())
-                }
-            }
+            FitGap(c, numberColor, if (c.warn) p.caution else p.muted, s, Modifier.weight(1f))
         }
         Spacer(Modifier.width(s.dp(6f)))
         Text(c.etaText, color = p.text, fontSize = s.sp(FloatingPanelSpec.NUMBER_SP), lineHeight = s.sp(36f), fontWeight = FontWeight.Bold, textAlign = TextAlign.End, maxLines = 1, softWrap = false)
+    }
+}
+
+/** 이름 열: [FloatingPanelSpec.NAME_SP] 에서 1sp 씩 줄이며 열 폭에 들어가는 가장 큰 크기를 고른다(측정만, 레이아웃 반복 없음) */
+@Composable
+private fun FitName(name: String, color: Color, s: Scaler) {
+    val measurer = rememberTextMeasurer()
+    val base = LocalTextStyle.current
+    val columnPx = with(LocalDensity.current) { s.dp(FloatingPanelSpec.NAME_WIDTH_DP).roundToPx() }
+    val maxSp = FloatingPanelSpec.NAME_SP * s.k
+    val minSp = FloatingPanelSpec.NAME_MIN_SP * s.k
+    // measurer 는 글꼴 배율(fontScale)·밀도가 바뀌면 새로 만들어진다 → 키에 넣어 다시 잰다
+    val fitted = remember(name, columnPx, maxSp, base, measurer) {
+        var sp = maxSp
+        while (sp > minSp) {
+            val w = measurer.measure(name, base.merge(TextStyle(fontSize = sp.sp, fontWeight = FontWeight.SemiBold)), maxLines = 1, softWrap = false).size.width
+            if (w <= columnPx) break
+            sp -= 1f
+        }
+        sp.coerceAtLeast(minSp)
+    }
+    Text(
+        name, color = color, fontSize = fitted.sp, lineHeight = s.sp(34f), fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.width(s.dp(FloatingPanelSpec.NAME_WIDTH_DP)), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
+    )
+}
+
+/**
+ * 간격 "앞 1.2" + 단위 "km": 받은 폭(저잔량 아이콘을 뺀 나머지)에 숫자+단위가 다 들어가는 가장 큰 숫자 크기를
+ * [FloatingPanelSpec.NUMBER_SP] → [FloatingPanelSpec.NUMBER_MIN_SP] 에서 고른다. 단위는 18sp 그대로.
+ */
+@Composable
+private fun FitGap(c: FloatingCar, numberColor: Color, unitColor: Color, s: Scaler, modifier: Modifier) {
+    BoxWithConstraints(modifier) {
+        val measurer = rememberTextMeasurer()
+        val base = LocalTextStyle.current
+        val availPx = constraints.maxWidth
+        val unitGapPx = with(LocalDensity.current) { s.dp(3f).roundToPx() }
+        val weight = if (c.warn) FontWeight.Bold else FontWeight.SemiBold
+        val maxSp = FloatingPanelSpec.NUMBER_SP * s.k
+        val minSp = FloatingPanelSpec.NUMBER_MIN_SP * s.k
+        val unitStyle = base.merge(TextStyle(fontSize = s.sp(FloatingPanelSpec.UNIT_SP)))
+        val fitted = remember(c.gapText, c.gapUnit, availPx, maxSp, base, weight, measurer) {
+            if (availPx == Constraints.Infinity) return@remember maxSp
+            val unitPx = if (c.gapUnit.isEmpty()) 0 else measurer.measure(c.gapUnit, unitStyle, maxLines = 1, softWrap = false).size.width + unitGapPx
+            var sp = maxSp
+            while (sp > minSp) {
+                val w = measurer.measure(c.gapText, base.merge(TextStyle(fontSize = sp.sp, fontWeight = weight)), maxLines = 1, softWrap = false).size.width
+                if (w + unitPx <= availPx) break
+                sp -= 1f
+            }
+            sp.coerceAtLeast(minSp)
+        }
+        Row {
+            Text(
+                c.gapText, color = numberColor, fontSize = fitted.sp, lineHeight = s.sp(36f),
+                fontWeight = weight, maxLines = 1, softWrap = false, overflow = TextOverflow.Clip,
+                modifier = Modifier.alignByBaseline(),
+            )
+            if (c.gapUnit.isNotEmpty()) {
+                Spacer(Modifier.width(s.dp(3f)))
+                Text(c.gapUnit, color = unitColor, fontSize = s.sp(FloatingPanelSpec.UNIT_SP), maxLines = 1, softWrap = false, modifier = Modifier.alignByBaseline())
+            }
+        }
     }
 }
 
@@ -267,12 +334,27 @@ object FloatingPanelSamples {
         moreCount = 1,
     )
 
+    /**
+     * 폭 최악 조합(리뷰 2026-10-28): 긴 닉네임·저잔량 아이콘·경고 굵은 글씨 "뒤 9.9 km"·"앞 990 m"·"뒤 120 km" + "13:48".
+     * 단위가 잘리지 않고 이름·숫자가 줄어드는지 `screen=design&variant=panel_worst` 로 확인한다.
+     */
+    val worst = base.copy(
+        cars = listOf(
+            FloatingCar("DemoCarB", DriveDashboardSamples.BLUE, gapText = "뒤 9.9", gapUnit = "km", etaText = "13:48", lowEnergy = true, warn = true),
+            FloatingCar("아빠", DriveDashboardSamples.PURPLE, gapText = "앞 990", gapUnit = "m", etaText = "13:48", lowEnergy = true),
+            FloatingCar("삼촌네 차", DriveDashboardSamples.GREEN, gapText = "뒤 120", gapUnit = "km", etaText = "23:59", lowEnergy = true, warn = true),
+            FloatingCar("둘째", DriveDashboardSamples.ORANGE, gapText = "—", etaText = "—", offline = true, warn = true),
+        ),
+        event = DriveDashboardSamples.eventDanger,
+    )
+
     fun of(variant: String): FloatingPanelUi = when (variant) {
         "recording" -> base.copy(event = null, ptt = PttUi(PttPhase.RECORDING, seconds = 9, totalSeconds = 15, level = 0.7f))
         "confirm" -> base.copy(event = null, ptt = PttUi(PttPhase.CONFIRMING, seconds = 4, listening = true))
         "playing" -> base.copy(event = DriveDashboardSamples.eventDanger, ptt = PttUi(PttPhase.PLAYING, seconds = 3, fromName = "아빠 차", fromColorArgb = DriveDashboardSamples.BLUE, durationText = "0:07"))
         "noevent" -> base.copy(event = null)
         "full" -> full
+        "worst" -> worst
         else -> base
     }
 }

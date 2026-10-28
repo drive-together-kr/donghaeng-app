@@ -240,7 +240,8 @@ class PairingViewModelTest {
         advanceUntilIdle()
         assertEquals(1, api.codeCalls)
         assertEquals("DHAVD-TESTFALLBACK", api.lastCodeRequest?.vehicleId)
-        assertEquals("FAKE", api.lastCodeRequest?.model)
+        // 모델 = 빌드 어댑터(fake/pleos) — 두 flavor 단위 테스트 모두에서 맞도록 BuildConfig 를 따른다
+        assertEquals(app.donghaeng.car.BuildConfig.ADAPTER.uppercase(), api.lastCodeRequest?.model)
         assertTrue(vm.state.value is PairingState.Connected)
     }
 

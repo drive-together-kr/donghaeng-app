@@ -112,6 +112,8 @@ data class GroupDriveUiState(
     val serverNowMs: Long? = null,
     /** 내 차 id(페어링 자격 증명) — 대시보드도 패널·카드처럼 내 차 출처 이벤트를 뺀다. null = [me] 의 id */
     val myVehicleId: String? = null,
+    /** 연속 주행(ms) — 주행 구간 합, 15분 이상 쉬면 0(ContinuousDriveTimer). null = 모름 */
+    val continuousDriveMs: Long? = null,
 ) {
     val hasSnapshot: Boolean get() = members.isNotEmpty()
     val proposalRemainingS: Long? get() = proposal?.let { ((it.expiresAtMs - nowMs) / 1_000).coerceAtLeast(0) }
@@ -221,6 +223,7 @@ class GroupDriveViewModel @Inject constructor(
             recentEvents = extra.recentEvents,
             serverNowMs = surface.serverNow(),
             myVehicleId = core.myVehicleId,
+            continuousDriveMs = surface.continuousDriveMs(),
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), GroupDriveUiState())
 

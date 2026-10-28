@@ -44,13 +44,16 @@ class EventCardPolicyTest {
     }
 
     @Test
-    fun `category is navigation for arrivals, msg for messages, status otherwise - never car_warning`() {
+    fun `category is msg for messages and navigation otherwise - never status or car_warning (Pleos heads-up only for call, msg, navigation)`() {
         assertEquals("navigation", post(event("WAYPOINT_ARRIVED")).category)
         assertEquals("navigation", post(event("DESTINATION_ARRIVED")).category)
         assertEquals("msg", post(event("PASSENGER_MESSAGE")).category)
         assertEquals("msg", post(event("VOICE_MESSAGE")).category)
-        listOf("LOW_ENERGY", "HARD_BRAKE", "AIRBAG_DEPLOYED", "MEMBER_JOINED", "MEMBER_OFFLINE").forEach { assertEquals(it, "status", post(event(it)).category) }
-        EventCardPolicy.TARGET_TYPES.forEach { assertNotEquals("car_warning", EventCardPolicy.categoryOf(it)) }
+        listOf("LOW_ENERGY", "HARD_BRAKE", "AIRBAG_DEPLOYED", "MEMBER_JOINED", "MEMBER_OFFLINE").forEach { assertEquals(it, "navigation", post(event(it)).category) }
+        EventCardPolicy.TARGET_TYPES.forEach {
+            assertNotEquals("car_warning", EventCardPolicy.categoryOf(it))
+            assertTrue(it, EventCardPolicy.categoryOf(it) in setOf("navigation", "msg"))
+        }
     }
 
     @Test

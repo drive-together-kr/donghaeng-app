@@ -161,6 +161,13 @@ class Demo:
         # 차 A 위치 소스: 순정 내비 위치가 고정된 에뮬레이터에서는 android_first 여야 GPX 재생이 반영된다(docs/09 §1.2)
         order_lines = [l for l in sh(self.A, "logcat -d -s DongHaeng").splitlines() if "location: 소스 순서" in l]
         rows.append(("A 위치 소스 android_first", bool(order_lines) and order_lines[-1].rstrip().endswith("android_first")))
+        # 앱을 막 띄우면 Android GPS 첫 Fix 가 10 s 를 넘겨 체인이 순정 내비(고정 위치, 차 B 와 약 28 km)로 내려갔다가 60 s 재탐색 때 올라온다.
+        # 그 사이 패널 간격이 "앞 28 km" 처럼 튄다(2026-10-28 실측, docs/10 R17). 텔레메트리는 그룹이 있을 때만 나가므로 그룹이 없으면 장면 4 직전에 확인한다
+        if sa.get("group") not in (None, "없음"):
+            src = self.a_location_source()
+            rows.append((f"A 현재 프로세스 텔레메트리 src=ANDROID (지금 {src or '아직 없음 — 1분 뒤 다시'})", src == "ANDROID"))
+        else:
+            print("  (A 그룹 없음 — 위치 소스 src=ANDROID 는 장면 4 직전에 확인)")
         print("\n== preflight ==")
         bad = 0
         for k, ok in rows:
@@ -171,6 +178,25 @@ class Demo:
             if not self.a.dry_run:
                 sys.exit(2)
         return sa, sb
+
+    def a_location_source(self):
+        """차 A **현재 프로세스**의 마지막 텔레메트리 src(ANDROID/NAVI/…) — 이전 프로세스 로그는 보지 않는다. 없으면 None"""
+        pid = sh(self.A, f"pidof {PKG}").strip().split(" ")[0]
+        if not pid:
+            return None
+        tele = [l for l in sh(self.A, f"logcat -d --pid={pid} -s DongHaeng").splitlines() if "telemetry #" in l and "src=" in l]
+        m = re.search(r"src=(\w+)", tele[-1]) if tele else None
+        return m.group(1) if m else None
+
+    def ensure_a_android_source(self, timeout_s: float = 75.0):
+        """장면 4 전: 차 A 위치가 Android(GPX 재생)인지 — 아니면 체인이 올라올 때까지(60 s 재탐색) 기다린다"""
+        end = time.time() + timeout_s
+        src = self.a_location_source()
+        while src != "ANDROID" and time.time() < end:
+            self.say(f"차 A 위치 소스 {src or '없음'} — ANDROID 로 올라오길 기다린다(docs/10 R17)")
+            time.sleep(5)
+            src = self.a_location_source()
+        self.say(f"차 A 위치 소스 = {src}" + ("" if src == "ANDROID" else " — 경고: 간격이 순정 내비 고정 위치 기준으로 보일 수 있다"))
 
     def seconds_since_last_event(self, serial: str, event: str) -> float:
         """기기 로그에서 마지막 `vehicle event <event>` 발행 뒤 지난 초(없으면 큰 값). 기기 시계 기준."""
@@ -223,6 +249,8 @@ class Demo:
 
     # ---- 4 ----
     def start_driving(self):
+        if not self.a.dry_run:
+            self.ensure_a_android_source()
         self.vc.start_session()
         broadcast(self.A, "open", screen="drive"); broadcast(self.B, "open", screen="drive")
         self.t0 = time.time()

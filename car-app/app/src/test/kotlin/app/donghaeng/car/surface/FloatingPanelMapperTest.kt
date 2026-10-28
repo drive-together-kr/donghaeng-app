@@ -134,7 +134,10 @@ class FloatingPanelMapperTest {
     fun `gap and distance formatting`() {
         assertEquals("앞 990" to "m", DriveFormat.gap(-994).let { it.text to it.unit })
         assertEquals("앞 1.0" to "km", DriveFormat.gap(-995).let { it.text to it.unit })
-        assertEquals("뒤 12.4 km", DriveFormat.gap(12_400).full)
+        assertEquals("뒤 9.9 km", DriveFormat.gap(9_940).full)
+        assertEquals("뒤 10 km", DriveFormat.gap(9_960).full)
+        assertEquals("뒤 12 km", DriveFormat.gap(12_400).full)
+        assertEquals("앞 29 km", DriveFormat.gap(-28_500).full)
         assertEquals("0 m", DriveFormat.gap(0).full)
         assertEquals("뒤 120 km", DriveFormat.gap(120_000).full)
         assertEquals("—", DriveFormat.gap(null).full)

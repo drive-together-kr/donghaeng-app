@@ -46,10 +46,10 @@ class DriveDashboardMapperTest {
 
     private fun state(
         nextStop: Place? = null, driving: Boolean = false, events: List<ReceivedGroupEvent> = emptyList(), mode: SurfaceMode = SurfaceMode.PANEL,
-        joined: GroupSession = session,
+        joined: GroupSession = session, drivenMs: Long? = (1 * 3_600 + 42 * 60) * 1_000L,
     ) = GroupDriveUiState(
         session = joined, members = members, me = members[1], leader = members[0], connection = ConnState.CONNECTED, isDriving = driving, nowMs = now,
-        nextStop = nextStop, speedLimitKph = 100, surfaceMode = mode, recentEvents = events, latencyMs = 12,
+        nextStop = nextStop, speedLimitKph = 100, surfaceMode = mode, recentEvents = events, latencyMs = 12, continuousDriveMs = drivenMs,
     )
 
     private fun event(type: String, ageMs: Long, speech: String? = "$type 문구") =
@@ -89,6 +89,11 @@ class DriveDashboardMapperTest {
         assertEquals("마지막: 둘째 차", a.lastCarText)
         assertEquals("14:30", a.myArrivalText)
         assertEquals("9.5 km · 9분", a.myRemainText)
+        // 내가 가장 늦으면 닉네임 대신 "내 차" — 닉네임을 "내 차" 가 아닌 값으로 둬야 isMe 분기가 실제로 검증된다
+        val meLast = members.map { if (it.isMe) it.copy(nickname = "DemoCarA", etaDestTs = at(14, 50)) else it }
+        val b = DriveDashboardMapper.map(state().copy(members = meLast, me = meLast[1]), zone)!!.arrival
+        assertEquals("14:50", b.groupArrivalText)
+        assertEquals("마지막: 내 차", b.lastCarText)
     }
 
     @Test
@@ -112,15 +117,20 @@ class DriveDashboardMapperTest {
     }
 
     @Test
-    fun `my drive line - speed limit, continuous driving since joining with a warning after two hours`() {
+    fun `my drive line - speed limit, continuous driving from the drive timer with a warning after two hours`() {
         val ui = DriveDashboardMapper.map(state(), zone)!!
         assertEquals(100, ui.myDrive.speedLimitKph)
         assertEquals("연속 주행 1시간 42분", ui.myDrive.drivingTimeText)
         assertFalse(ui.myDrive.drivingTimeWarn)
         assertNull(ui.myDrive.nextTurnText)
-        val long = DriveDashboardMapper.map(state(joined = session.copy(joinedAtMs = now - 2 * 3_600_000L)), zone)!!
+        val long = DriveDashboardMapper.map(state(drivenMs = 2 * 3_600_000L), zone)!!
         assertTrue(long.myDrive.drivingTimeWarn)
         assertEquals("연속 주행 2시간 00분", long.myDrive.drivingTimeText)
+        // 합류 시각과 무관: 밤새 이어진 그룹이라도 쉬고 있으면(타이머 0) 경고 없음(2026-10-28 실측 "18시간 27분" 회귀)
+        val rested = DriveDashboardMapper.map(state(joined = session.copy(joinedAtMs = now - 18 * 3_600_000L), drivenMs = 0L), zone)!!
+        assertEquals("연속 주행 0분", rested.myDrive.drivingTimeText)
+        assertFalse(rested.myDrive.drivingTimeWarn)
+        assertEquals("연속 주행 " + DriveFormat.DASH, DriveDashboardMapper.map(state(drivenMs = null), zone)!!.myDrive.drivingTimeText)
     }
 
     @Test

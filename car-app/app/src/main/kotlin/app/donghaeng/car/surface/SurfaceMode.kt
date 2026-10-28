@@ -36,4 +36,7 @@ interface SurfaceFeed {
 
     /** 서버 시계 기준 지금(T31 ClockSync) — 이벤트 신선도·"N초 전"([SurfaceEvents]). 기본 = 로컬 시계 */
     fun serverNow(): Long = System.currentTimeMillis()
+
+    /** 연속 주행(ms, [app.donghaeng.car.feature.drive.ContinuousDriveTimer]) — 주행 구간 합, 15분 이상 쉬면 0. null = 모름 */
+    fun continuousDriveMs(): Long? = null
 }

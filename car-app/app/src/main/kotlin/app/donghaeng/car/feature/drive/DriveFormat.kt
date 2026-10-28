@@ -23,7 +23,7 @@ object DriveFormat {
 
     /**
      * [gapM] = 상대.distanceToLeaderM − 나.distanceToLeaderM. 음수 = 상대가 앞("앞"), 양수 = 뒤("뒤"), 0 = 방향 없음.
-     * 1 km 미만은 10 m 단위 반올림 m, 100 km 미만은 소수 1자리 km, 그 이상은 정수 km.
+     * 1 km 미만은 10 m 단위 반올림 m, 10 km 미만은 소수 1자리 km, 그 이상은 정수 km(패널 폭 22% 안에 "뒤 28 km" 가 잘리지 않게 — 2026-10-28 실측 "뒤 28.5 km" 의 단위가 잘림).
      */
     fun gap(gapM: Int?): Gap {
         if (gapM == null) return Gap(DASH, "")
@@ -33,7 +33,7 @@ object DriveFormat {
             gapM > 0 -> "뒤 "
             else -> ""
         }
-        return if (a < 995) Gap("$dir${(a + 5) / 10 * 10}", "m") else Gap("$dir${km(a, decimalsBelowKm = 100)}", "km")
+        return if (a < 995) Gap("$dir${(a + 5) / 10 * 10}", "m") else Gap("$dir${km(a, decimalsBelowKm = 10)}", "km")
     }
 
     /** 거리 한 덩어리 — "350 m" / "9.5 km" / "144 km" (10 km 이상은 정수) */

@@ -22,12 +22,18 @@ import app.donghaeng.car.ui.theme.DongHaengTheme
 
 /**
  * 시안 호스트 — 변형 이름으로 샘플을 고르고, 세로 변형은 폭 620 dp 로 좁혀 1창(세로) 배치를 보인다.
- * `panel_dark`/`panel_light`/`panel_full`: 플로팅 패널 단독(내비 지도 색 바탕의 오른쪽 위, 실제 서비스와 같은 여백 110/190 dp).
+ * `panel_dark`/`panel_light`/`panel_full`/`panel_worst`: 플로팅 패널 단독(내비 지도 색 바탕의 오른쪽 위, 실제 서비스와 같은 여백 110/190 dp).
+ * `panel_worst` = 폭 최악 조합(긴 닉네임·저잔량 아이콘·"뒤 9.9 km"·"앞 990 m"·"뒤 120 km").
  */
 @Composable
 fun DesignPreviewHost(variant: String) {
     if (variant.startsWith("panel_")) {
-        PanelPreviewHost(light = variant == "panel_light", ui = if (variant == "panel_full") FloatingPanelSamples.full else FloatingPanelSamples.base)
+        val ui = when (variant) {
+            "panel_full" -> FloatingPanelSamples.full
+            "panel_worst" -> FloatingPanelSamples.worst
+            else -> FloatingPanelSamples.base
+        }
+        PanelPreviewHost(light = variant == "panel_light", ui = ui)
         return
     }
     val dark = variant != "drive_light"
