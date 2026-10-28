@@ -1,6 +1,8 @@
 package app.donghaeng.car.adapter.navi
 
 import app.donghaeng.car.domain.model.NaviEvent
+import app.donghaeng.car.domain.model.NextTurn
+import app.donghaeng.car.domain.model.NextTurnResult
 import app.donghaeng.car.domain.model.Place
 import app.donghaeng.car.domain.model.RouteState
 import app.donghaeng.car.domain.model.WaypointIndex
@@ -104,6 +106,39 @@ class FakeNaviAdapterTest {
         val moving = events.filterIsInstance<NaviEvent.CurrentLocation>()
         assertTrue(moving.last().fix.lat > 37.003)
         assertTrue(navi.position >= 4)
+        job.cancel()
+    }
+
+    @Test
+    fun `fake TBT has a virtual turn every 1_2 km, alternating right and left, then the destination, then nothing`() {
+        assertEquals(NextTurnResult.Ahead(NextTurn(1_200, "TURN_RIGHT", "가상 회전 1")), FakeNaviAdapter.fakeTurn(0.0, 5_000.0))
+        assertEquals(NextTurnResult.Ahead(NextTurn(100, "TURN_RIGHT", "가상 회전 1")), FakeNaviAdapter.fakeTurn(1_100.0, 5_000.0))
+        assertEquals("회전을 지나면 다음 회전(문구가 바뀐다)", NextTurnResult.Ahead(NextTurn(1_200, "TURN_LEFT", "가상 회전 2")), FakeNaviAdapter.fakeTurn(1_200.0, 5_000.0))
+        assertEquals(NextTurnResult.Ahead(NextTurn(200, "TURN_ARRIVE", "목적지")), FakeNaviAdapter.fakeTurn(4_800.0, 5_000.0))
+        assertEquals("경로 끝 = 안내 끝", NextTurnResult.NoGuidance, FakeNaviAdapter.fakeTurn(5_000.0, 5_000.0))
+    }
+
+    @Test
+    fun `nextTurn follows playback and is empty without a destination or a route`() = runTest {
+        assertEquals(NextTurnResult.NoGuidance, FakeNaviAdapter(route = emptyList()).nextTurn(500))
+        assertEquals("목적지 전(후속차 대기)", NextTurnResult.NoGuidance, FakeNaviAdapter(route = route, destination = null, holdUntilRouted = true).nextTurn(500))
+
+        // 북쪽으로 약 3 km, 100 m/s
+        val long = listOf(LatLon(37.0, 127.0), LatLon(37.027, 127.0))
+        val navi = FakeNaviAdapter(tickMillis = 1_000, route = long, speedMps = 100.0, destination = dest)
+        val job = navi.events().launchIn(this)
+        runCurrent()
+        val start = navi.nextTurn(500) as NextTurnResult.Ahead
+        assertEquals("TURN_RIGHT", start.turn.kind)
+        assertEquals(1_200.0, start.turn.distanceM.toDouble(), 5.0)
+        advanceTimeBy(10_000); runCurrent() // 약 1.0 km
+        val near = navi.nextTurn(500) as NextTurnResult.Ahead
+        assertEquals("가상 회전 1", near.turn.description)
+        assertEquals(200.0, near.turn.distanceM.toDouble(), 15.0)
+        advanceTimeBy(3_000); runCurrent() // 약 1.3 km — 첫 회전을 지났다
+        val passed = navi.nextTurn(500) as NextTurnResult.Ahead
+        assertEquals("TURN_LEFT", passed.turn.kind)
+        assertEquals(1_100.0, passed.turn.distanceM.toDouble(), 15.0)
         job.cancel()
     }
 

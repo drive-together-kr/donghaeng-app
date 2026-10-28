@@ -13,6 +13,7 @@ import ai.pleos.playground.navi.data.RouteInfo
 import ai.pleos.playground.navi.data.RouteStartInfo
 import ai.pleos.playground.navi.data.RouteStateInfo
 import ai.pleos.playground.navi.data.RouteWithWaypointsRequest
+import ai.pleos.playground.navi.data.TBTInfo
 import ai.pleos.playground.navi.data.TripInfo
 import ai.pleos.playground.navi.data.WaypointArrivedInfo
 import ai.pleos.playground.navi.data.WaypointChangedInfo
@@ -23,9 +24,11 @@ import android.content.Context
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.model.Fix
 import app.donghaeng.car.domain.model.NaviEvent
+import app.donghaeng.car.domain.model.NextTurnResult
 import app.donghaeng.car.domain.model.Place
 import app.donghaeng.car.domain.model.RouteState
 import app.donghaeng.car.domain.model.WaypointIndex
+import app.donghaeng.car.domain.model.nextTurnOf
 import app.donghaeng.car.domain.model.toLogString
 import app.donghaeng.protocol.LocSource
 import kotlinx.coroutines.CompletableDeferred
@@ -34,12 +37,15 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Pleos NaviHelper 3.0.5 어댑터 (T20, docs/05 §3.1). SDK 타입은 이 파일 밖으로 나가지 않는다.
@@ -49,6 +55,7 @@ import java.util.concurrent.atomic.AtomicReference
  *   구독 시작 시 `getRouteStateInfo()`·`getDestinationInfo()` 도 한 번 요청해 현재 상태를 받아 온다.
  * - `onDestinationChanged()` 는 인자가 없다 → `getDestinationInfo()` 를 다시 불러 `onDestinationInfo` 로 받는다.
  * - SDK `DrivingInfo`(목적지·경유지별 남은 시간/거리)와 `TripInfo`(남은 거리·ETA)는 둘 다 도메인 [NaviEvent.TripInfo] 로 보낸다.
+ * - [nextTurn]: `getTBTInfo()` → `onTBTInfo` 한 번(요청마다 리스너를 붙였다 떼는 callbackFlow). 알림 카드 TBT 게이트만 쓴다(docs/05 §5.2).
  * - 모든 콜백은 try/catch 로 감싸 SDK 쪽 예외가 수집기를 죽이지 않게 하고, 좌표는 마스킹해서만 로그에 남긴다.
  * - 실제로 어떤 콜백이 오는지는 내비 앱 상태에 따라 다르다 → 진단: `adb logcat -s DongHaeng | grep navi`.
  */
@@ -66,6 +73,9 @@ class PleosNaviAdapter(context: Context) : NaviAdapter {
 
     /** 마지막 제한속도(중복 억제용). Int.MIN_VALUE = 아직 없음 */
     private val lastSpeedLimit = AtomicInteger(Int.MIN_VALUE)
+
+    /** TBT 원값 첫 응답을 info 로 한 번 남겼는지(거리 단위 확인용) */
+    private val tbtRawLogged = AtomicBoolean(false)
 
     /** `NaviHelper(context).initialize()` — 실패해도 크래시 없이 null (호출 쪽은 이벤트 없음·요청 무시) */
     fun ensureInitialized(): NaviHelper? {
@@ -269,6 +279,55 @@ class PleosNaviAdapter(context: Context) : NaviAdapter {
         Unit
     }
 
+    /**
+     * 다음 회전 안내 — `getTBTInfo()` 를 부르고 `onTBTInfo(List<TBTInfo>)` 를 최대 [timeoutMs] 기다린다(첫 항목 = 다음 회전).
+     * 빈 목록 → [NextTurnResult.NoGuidance], 응답 없음·실패·이상한 거리·자리표시 항목(`TURN_UNKNOWN`·0 m 에 문구 없음, [nextTurnOf]) → [NextTurnResult.Unknown].
+     * `TBTInfo.distance`(Double)는 단위가 문서·샘플에 없다 → **미터로 가정**([TBT_DISTANCE_TO_M]). 첫 응답의 원값은 info 로 한 번,
+     * 그 뒤는 debug 로 남겨 기기에서 단위를 확인한다(같은 때의 `onTripInfo distance`(m)·내비 화면 TBT 숫자와 비교).
+     */
+    override suspend fun nextTurn(timeoutMs: Long): NextTurnResult {
+        val h = ensureInitialized() ?: return NextTurnResult.Unknown
+        val list = try {
+            // getTBTInfo 는 바인더 호출 — 다른 요청처럼 IO 에서
+            withContext(Dispatchers.IO) { withTimeoutOrNull(timeoutMs) { tbtResponses(h).first() } }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            DhLog.d("navi nextTurn 실패 ${e.javaClass.simpleName}")
+            return NextTurnResult.Unknown
+        }
+        if (list == null) {
+            DhLog.d("navi nextTurn 응답 없음(${timeoutMs}ms)")
+            return NextTurnResult.Unknown
+        }
+        val first = list.firstOrNull() ?: return NextTurnResult.NoGuidance
+        val raw = first.distance
+        // 문구 원문은 남기지 않고 길이만(자리표시 항목 확인용)
+        val desc = if (first.description.isBlank()) "blank" else "len=${first.description.length}"
+        if (tbtRawLogged.compareAndSet(false, true)) DhLog.i("navi tbt 첫 응답 n=${list.size} type=${first.type.name} rawDistance=$raw desc=$desc (단위 미터로 가정 — 확인용)")
+        else DhLog.d("navi tbt n=${list.size} type=${first.type.name} rawDistance=$raw desc=$desc")
+        // NaN·음수·자리표시 항목(TURN_UNKNOWN·0 m·문구 없음)은 모름 — nextTurnOf 참고
+        return nextTurnOf(kind = first.type.name, distanceM = raw * TBT_DISTANCE_TO_M, description = first.description)
+    }
+
+    /**
+     * `onTBTInfo` 응답 스트림 — 구독하면 리스너를 붙이고 `getTBTInfo()` 를 요청, 취소되면 `awaitClose` 에서 **같은 리스너로** 뗀다(CLAUDE.md 규칙 3).
+     * NaviHelper 의 리스너 목록은 앱 안의 CopyOnWriteArrayList 라 붙였다 떼는 비용이 작다(바인더 호출은 `getTBTInfo` 한 번).
+     * 앱 전체 구독([events])의 리스너도 같은 응답을 받지만 그쪽은 `onTBTInfo` 를 쓰지 않는다.
+     */
+    private fun tbtResponses(h: NaviHelper): Flow<List<TBTInfo>> = callbackFlow {
+        val listener = object : NaviHelperEventListener {
+            override fun onTBTInfo(tbtInfoList: List<TBTInfo>) = guard("onTBTInfo") { trySend(tbtInfoList.toList()) }
+        }
+        h.addListener(listener)
+        try {
+            h.getTBTInfo()
+        } catch (e: Exception) {
+            close(e)
+        }
+        awaitClose { runCatching { h.removeListener(listener) }.onFailure { DhLog.w("navi: TBT removeListener 실패", it) } }
+    }
+
     // ---------------------------------------------------------------- mapping (SDK ↔ 도메인)
 
     private fun DestinationInfo.toPlace() = Place(lat = latitude, lon = longitude, name = name ?: "", poiId = poiId?.takeIf { it.isNotBlank() }, address = address?.takeIf { it.isNotBlank() })
@@ -317,5 +376,8 @@ class PleosNaviAdapter(context: Context) : NaviAdapter {
     private companion object {
         const val LOCATION_POLL_MS = 1_000L
         const val DESTINATION_TIMEOUT_MS = 2_000L
+
+        /** `TBTInfo.distance` → 미터 배율. 문서에 단위가 없어 미터(1.0)로 가정 — 기기 로그(`navi tbt 첫 응답 … rawDistance=`)로 확인 후 바꾼다 */
+        const val TBT_DISTANCE_TO_M = 1.0
     }
 }

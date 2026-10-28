@@ -2,6 +2,8 @@ package app.donghaeng.car.di
 
 import android.app.Application
 import android.content.Context
+import android.os.SystemClock
+import app.donghaeng.car.adapter.navi.NaviAdapter
 import app.donghaeng.car.core.common.DrivingStateMonitor
 import app.donghaeng.car.core.network.mqtt.MqttGateway
 import app.donghaeng.car.core.network.mqtt.MqttState
@@ -16,6 +18,7 @@ import app.donghaeng.car.surface.PanelPositionStore
 import app.donghaeng.car.surface.SharedPrefsPanelPositionStore
 import app.donghaeng.car.surface.SurfaceFeed
 import app.donghaeng.car.surface.SurfaceState
+import app.donghaeng.car.surface.TurnProbe
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -72,7 +75,12 @@ object SurfaceModule {
     @Provides
     fun provideSurfaceFeed(state: SurfaceState): SurfaceFeed = state
 
-    /** 신선도(60 s)는 서버 시계 기준(T31 ClockSync) */
+    /** 카드 TBT 게이트의 '다음 회전' — NaviHelper getTBTInfo(pleos) / GPX 가상 회전(fake). 디버그 `tbt` 액션이 덮어쓴다 */
+    @Provides
+    @Singleton
+    fun provideTurnProbe(navi: NaviAdapter): TurnProbe = TurnProbe(lookup = { timeoutMs -> navi.nextTurn(timeoutMs) }, clock = SystemClock::elapsedRealtime)
+
+    /** 신선도(60 s)는 서버 시계 기준(T31 ClockSync), 빈도 제한·미룬 시간은 단조 시계 */
     @Provides
     @Singleton
     fun provideEventCardNotifier(
@@ -80,6 +88,7 @@ object SurfaceModule {
         sessionManager: MqttSessionManager,
         clockSync: ClockSync,
         state: SurfaceState,
+        turns: TurnProbe,
     ): EventCardNotifier = EventCardNotifier(
         events = sessionManager.groupEventsReceived,
         myVehicleId = { sessionManager.myVehicleId },
@@ -87,6 +96,8 @@ object SurfaceModule {
         mode = state.mode,
         groupName = { sessionManager.session.value?.name },
         poster = AndroidCardPoster(context),
+        nextTurn = { turns.read() },
+        clock = SystemClock::elapsedRealtime,
     )
 
     @Provides

@@ -6,15 +6,15 @@ import app.donghaeng.protocol.GroupEvent
 import app.donghaeng.protocol.Severity
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** 이벤트 알림 카드 판단 — 대상 종류·내 차 제외·신선도·카테고리·id 교체 */
+/** 이벤트 알림 카드 판단 — 대상 종류·내 차 제외·신선도·카테고리·id 교체·5초 수명, 카드는 CARDS_ONLY 에서만 (TBT 게이트는 `TurnCardGateTest`) */
 class EventCardPolicyTest {
 
     private val serverNow = 1_700_000_000_000L
@@ -67,27 +67,32 @@ class EventCardPolicyTest {
         assertEquals("둘째", b.title)
         assertEquals(Tone.DANGER, c.tone)
         assertEquals("문구 없으면 종류 라벨", "저잔량", post(event("LOW_ENERGY", speech = null)).title)
-        assertEquals(8_000L, EventCardPolicy.TIMEOUT_MS)
+        assertEquals("카드 표시 시간 5초(2026-10-28 사용자 지시, 8초 → 5초)", 5_000L, EventCardPolicy.TIMEOUT_MS)
     }
 
     @Test
-    fun `notifier posts in PANEL and CARDS_ONLY modes but not without a group`() {
+    fun `notifier posts cards only in CARDS_ONLY - PANEL mode relies on the panel event line and voice, no group means nothing`() = runTest {
         val mode = MutableStateFlow(SurfaceMode.OFF)
         val posted = mutableListOf<EventCard>()
+        var lookups = 0
         val notifier = EventCardNotifier(
             events = emptyFlow(), myVehicleId = { "veh_ME" }, serverNow = { serverNow }, mode = mode, groupName = { "강릉 가족 여행" },
             poster = { card, _ -> posted += card; true },
+            nextTurn = { lookups++; app.donghaeng.car.domain.model.NextTurnResult.Unknown },
         )
-        assertFalse(notifier.onEvent(event("HARD_BRAKE")))
+        assertEquals(CardOutcome.SKIPPED, notifier.onEvent(event("HARD_BRAKE")))
         mode.value = SurfaceMode.CARDS_ONLY
-        assertTrue(notifier.onEvent(event("HARD_BRAKE")))
+        assertEquals(CardOutcome.POSTED, notifier.onEvent(event("HARD_BRAKE")))
         mode.value = SurfaceMode.PANEL
-        assertTrue(notifier.onEvent(event("WAYPOINT_ARRIVED")))
-        assertFalse(notifier.onEvent(event("STOPPED")))
-        assertEquals(listOf("HARD_BRAKE", "WAYPOINT_ARRIVED"), posted.map { it.type })
+        assertEquals("패널 모드는 카드 없음", CardOutcome.SKIPPED, notifier.onEvent(event("WAYPOINT_ARRIVED")))
+        assertEquals(CardOutcome.SKIPPED, notifier.onEvent(event("LOW_ENERGY", source = "veh_B")))
+        assertEquals(CardOutcome.SKIPPED, notifier.onEvent(event("STOPPED")))
+        assertEquals(listOf("HARD_BRAKE"), posted.map { it.type })
+        assertEquals("패널 모드에서는 TBT 도 묻지 않는다", 1, lookups)
         val s = notifier.state.value
-        assertEquals(2, s.posted)
+        assertEquals(1, s.posted)
         assertEquals(1, s.skipped["no-group"])
+        assertEquals(2, s.skipped["panel-mode"])
         assertEquals(1, s.skipped["not-target"])
     }
 
@@ -95,7 +100,7 @@ class EventCardPolicyTest {
         ReceivedGroupEvent(GroupEvent(id, type, source, severity, "$type 문구", JsonObject(emptyMap())), envelopeTsMs = serverNow - 1_000, receivedAtMs = 0L)
 
     @Test
-    fun `throttle drops duplicate event ids, repeats of the same type and source within 30 s, and more than two cards in 8 s`() {
+    fun `throttle drops duplicate event ids, repeats of the same type and source within 30 s, and more than two cards in 5 s`() {
         val t = CardThrottle()
         fun admit(e: ReceivedGroupEvent, at: Long): String? = t.check(e, at).also { if (it == null) t.record(e, at) }
 
@@ -104,9 +109,11 @@ class EventCardPolicyTest {
         assertEquals("연결 들락날락", "same-recent", admit(ev("e2", "MEMBER_OFFLINE", "veh_B"), 20_000))
         assertNull("다른 차는 따로", admit(ev("e3", "MEMBER_OFFLINE", "veh_C"), 20_000))
         assertNull(admit(ev("e3b", "HARD_BRAKE", "veh_C"), 20_500))
-        assertEquals("8초 안 세 번째 카드", "burst", admit(ev("e4", "LOW_ENERGY", "veh_D"), 21_000))
+        assertEquals("5초 안 세 번째 카드", "burst", admit(ev("e4", "LOW_ENERGY", "veh_D"), 21_000))
         assertNull("위험(에어백)은 한도와 상관없이", admit(ev("e5", "AIRBAG_DEPLOYED", "veh_D", Severity.ALERT), 21_500))
-        assertNull("8초 지나면 다시", admit(ev("e6", "LOW_ENERGY", "veh_D"), 30_000))
+        assertEquals("창 = 카드 수명 5초 — 20.5 s·21.5 s 카드가 아직 창 안", "burst", t.check(ev("e5b", "LOW_ENERGY", "veh_E"), 25_400))
+        assertNull("5초 지나면 다시(8초를 기다리지 않는다)", t.check(ev("e5c", "LOW_ENERGY", "veh_E"), 26_600))
+        assertNull(admit(ev("e6", "LOW_ENERGY", "veh_D"), 30_000))
         assertNull("30초 지나면 같은 차·같은 종류도 다시", admit(ev("e7", "MEMBER_OFFLINE", "veh_B"), 31_000))
         // 메시지는 내용이 매번 달라 같은 차라도 eventId 만 거른다(전체 한도는 적용)
         assertNull(admit(ev("m1", "PASSENGER_MESSAGE", "veh_B", Severity.INFO), 60_000))
@@ -123,7 +130,7 @@ class EventCardPolicyTest {
     }
 
     @Test
-    fun `notifier applies the throttle and a card that could not be posted does not use up the limit`() {
+    fun `notifier applies the throttle and a card that could not be posted does not use up the limit`() = runTest {
         var now = 0L
         var enabled = false
         val posted = mutableListOf<String>()
@@ -131,14 +138,14 @@ class EventCardPolicyTest {
             events = emptyFlow(), myVehicleId = { "veh_ME" }, serverNow = { serverNow }, mode = MutableStateFlow(SurfaceMode.CARDS_ONLY), groupName = { null },
             poster = { card, _ -> if (enabled) { posted += card.type; true } else false }, clock = { now },
         )
-        assertFalse("알림 꺼짐 → 못 올림", notifier.onEvent(ev("x1", "HARD_BRAKE")))
+        assertEquals("알림 꺼짐 → 못 올림", CardOutcome.SKIPPED, notifier.onEvent(ev("x1", "HARD_BRAKE")))
         enabled = true
-        assertTrue("못 올린 건 기억하지 않아 같은 id 재전달은 올린다", notifier.onEvent(ev("x1", "HARD_BRAKE")))
-        assertFalse(notifier.onEvent(ev("x1", "HARD_BRAKE")))
-        now = 5_000
-        assertFalse(notifier.onEvent(ev("x2", "HARD_BRAKE")))
-        assertTrue(notifier.onEvent(ev("x3", "LOW_ENERGY")))
-        assertFalse(notifier.onEvent(ev("x4", "MEMBER_JOINED", "veh_B")))
+        assertEquals("못 올린 건 기억하지 않아 같은 id 재전달은 올린다", CardOutcome.POSTED, notifier.onEvent(ev("x1", "HARD_BRAKE")))
+        assertEquals(CardOutcome.SKIPPED, notifier.onEvent(ev("x1", "HARD_BRAKE")))
+        now = 4_000
+        assertEquals(CardOutcome.SKIPPED, notifier.onEvent(ev("x2", "HARD_BRAKE")))
+        assertEquals(CardOutcome.POSTED, notifier.onEvent(ev("x3", "LOW_ENERGY")))
+        assertEquals("5초 안 세 번째", CardOutcome.SKIPPED, notifier.onEvent(ev("x4", "MEMBER_JOINED", "veh_B")))
         assertEquals(listOf("HARD_BRAKE", "LOW_ENERGY"), posted)
         val skipped = notifier.state.value.skipped
         assertEquals(1, skipped["not-posted"])

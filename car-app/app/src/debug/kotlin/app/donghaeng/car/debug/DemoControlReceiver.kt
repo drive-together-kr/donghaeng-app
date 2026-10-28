@@ -20,6 +20,7 @@ import app.donghaeng.car.surface.EventCardNotifier
 import app.donghaeng.car.surface.OverlayPermissionMonitor
 import app.donghaeng.car.surface.PanelCorner
 import app.donghaeng.car.surface.SurfaceState
+import app.donghaeng.car.surface.TurnProbe
 import app.donghaeng.protocol.GroupEvent
 import app.donghaeng.protocol.Severity
 import kotlinx.serialization.json.JsonObject
@@ -49,9 +50,10 @@ import kotlinx.coroutines.launch
  * | `gpx` | `role` = `lead`/`follow` | fake flavor GPX 역할 저장 — **앱 재시작 후 적용** |
  * | `status` | | 세션·제안·음성 상태 한 줄 로그 |
  * | `open` | `screen` = home/drive/events/create/settings/diagnostics | 앱을 전면으로 올리고 그 화면으로 이동(MainActivity extra `screen`) |
- * | `surface` | | 주행 중 표면 상태 한 줄 — `demo: surface mode=PANEL panelVisible=true canDraw=true appVisible=false … panelShown=true keeper=starts=1 … cards=…` |
+ * | `surface` | | 주행 중 표면 상태 한 줄 — `demo: surface mode=PANEL panelVisible=true canDraw=true appVisible=false … panelShown=true keeper=starts=1 … cards=posted=… held=<미룬 카드 수> … lastTbt=<마지막 TBT> … tbt=override=… lookups=…` |
  * | `surface_pos` | `corner` = top_end/top_start/bottom_end/bottom_start | 패널 모서리 강제 지정(저장됨) |
- * | `event` | `type`(기본 LOW_ENERGY), `speech`, `source`(기본 veh_DEMO), `age_s`(봉투 나이 — 61 이상이면 소식 줄·띠·카드에서 빠진다), `voice`(`--ez`, 기본 true) | 그룹 이벤트 한 건을 로컬로 흘려 패널 이벤트 줄·알림 카드·음성을 확인. 카드는 같은 종류·출처 30초에 한 장·8초에 2장까지(`source` 를 바꿔 반복) |
+ * | `event` | `type`(기본 LOW_ENERGY), `speech`, `source`(기본 veh_DEMO), `age_s`(봉투 나이 — 61 이상이면 소식 줄·띠·카드에서 빠진다), `voice`(`--ez`, 기본 true) | 그룹 이벤트 한 건을 로컬로 흘려 패널 이벤트 줄·알림 카드·음성을 확인. 카드는 '카드 + 음성' 모드(CARDS_ONLY)에서만(PANEL 이면 `card=SKIPPED`, 로그 `reason=panel-mode`), 같은 종류·출처 30초에 한 장·5초에 2장까지(`source` 를 바꿔 반복), 다음 회전 300 m 이내면 `card=DEFERRED` |
+ * | `tbt` | `m`(`--ei`, 다음 회전까지 m, -1 = 해제), `for_s`(`--ei`, 기본 30) | 카드 TBT 게이트가 읽는 다음 회전 거리를 `for_s` 초 동안 덮어쓴다(AVD 순정 내비는 위치가 고정돼 TBT 가 늘 같다). 예(CARDS_ONLY): `--es action tbt --ei m 120 --ei for_s 60` → `--es action event --es type HARD_BRAKE` → `surface: card deferred type=HARD_BRAKE tbt=120m` → `--es action tbt --ei m 800` → 1초 안에 `surface: card released … reason=far` |
  *
  * 결과는 `logcat -s DongHaeng` 의 `demo:` 줄로 확인한다. 좌표·ID 는 마스킹 규칙(CLAUDE.md 8)을 따른다.
  * 의존성은 Hilt `@EntryPoint` 로 꺼낸다(BroadcastReceiver 의 `onReceive` 가 추상이라 `@AndroidEntryPoint` 의 super 호출을 쓸 수 없다).
@@ -70,6 +72,7 @@ class DemoControlReceiver : BroadcastReceiver() {
         fun surfaceCards(): EventCardNotifier
         fun surfaceOverlay(): OverlayPermissionMonitor
         fun clockSync(): ClockSync
+        fun turnProbe(): TurnProbe
     }
 
     private lateinit var routeSync: RouteSyncEngine
@@ -81,12 +84,13 @@ class DemoControlReceiver : BroadcastReceiver() {
     private lateinit var surfaceCards: EventCardNotifier
     private lateinit var surfaceOverlay: OverlayPermissionMonitor
     private lateinit var clockSync: ClockSync
+    private lateinit var turnProbe: TurnProbe
 
     override fun onReceive(context: Context, intent: Intent) {
         val deps = EntryPointAccessors.fromApplication(context.applicationContext, Deps::class.java)
         routeSync = deps.routeSync(); voice = deps.voice(); navi = deps.navi(); sessionStore = deps.sessionStore()
         surfaceController = deps.surfaceController(); surfaceState = deps.surfaceState(); surfaceCards = deps.surfaceCards()
-        surfaceOverlay = deps.surfaceOverlay(); clockSync = deps.clockSync()
+        surfaceOverlay = deps.surfaceOverlay(); clockSync = deps.clockSync(); turnProbe = deps.turnProbe()
         val action = intent.getStringExtra(EXTRA_ACTION)
         if (action.isNullOrBlank()) {
             DhLog.w("demo: action 없음 (--es action …)")
@@ -176,9 +180,16 @@ class DemoControlReceiver : BroadcastReceiver() {
             "notify" -> ProbeNotifications.post(context, intent.getStringExtra("kind") ?: "status")
             "ongoing" -> if (intent.getBooleanExtra("on", true)) ProbeNotifications.postOngoing(context, intent.getStringExtra("importance") ?: "min") else ProbeNotifications.cancelOngoing(context)
             "surface" -> {
-                // 주행 중 표면 상태 한 줄: 모드(OFF/PANEL/CARDS_ONLY)·패널 표시 여부·권한·모서리·카드 수
+                // 주행 중 표면 상태 한 줄: 모드(OFF/PANEL/CARDS_ONLY)·패널 표시 여부·권한·모서리·카드 수·TBT 게이트(미룬 카드 수·마지막 TBT·덮어쓰기)
                 surfaceOverlay.recheck()
-                DhLog.i("demo: surface ${surfaceController.describe()}")
+                DhLog.i("demo: surface ${surfaceController.describe()} tbt=${turnProbe.describe()}")
+            }
+            "tbt" -> {
+                // 카드 TBT 게이트 확인용: 다음 회전 거리를 잠시 덮어쓴다(m=-1 해제). 미룬 카드는 1초마다 다시 확인해 다음 회전이 300 m 밖이 되면(·안내 끝) 올라간다 — 300 m 안 값으로 바꾸면 계속 미룬다
+                val m = intent.getIntExtra("m", -1)
+                val forS = intent.getIntExtra("for_s", 30)
+                if (m < 0) turnProbe.clearOverride() else turnProbe.setOverride(m, forS * 1_000L)
+                DhLog.i("demo: tbt m=$m for_s=$forS → ${turnProbe.describe()} cards=${surfaceCards.state.value}")
             }
             "surface_pos" -> {
                 val corner = PanelCorner.parse(intent.getStringExtra("corner"))

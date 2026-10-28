@@ -1,6 +1,7 @@
 package app.donghaeng.car.adapter.navi
 
 import app.donghaeng.car.domain.model.NaviEvent
+import app.donghaeng.car.domain.model.NextTurnResult
 import app.donghaeng.car.domain.model.Place
 import app.donghaeng.car.domain.model.WaypointIndex
 import kotlinx.coroutines.flow.Flow
@@ -33,4 +34,11 @@ interface NaviAdapter {
 
     /** 내비 화면 띄우기 (NaviHelper requestNavigationScreen) */
     suspend fun showNavigation()
+
+    /**
+     * 다음 회전 안내(TBT) 한 번 묻기 — NaviHelper `getTBTInfo()` → `onTBTInfo(List<TBTInfo>)` 를 최대 [timeoutMs] 기다린다.
+     * 빈 목록 = [NextTurnResult.NoGuidance](안내 중 아님·안내 끝), 응답 없음·실패 = [NextTurnResult.Unknown].
+     * 알림 카드가 회전 직전 TBT 를 가리지 않게 미룰지 정할 때만 쓴다(docs/05 §5.2 — 평소엔 묻지 않는다).
+     */
+    suspend fun nextTurn(timeoutMs: Long): NextTurnResult
 }

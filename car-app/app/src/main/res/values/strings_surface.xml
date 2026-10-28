@@ -6,9 +6,9 @@
     <string name="surface_fgs_channel_desc">그룹 주행 중 위치 공유가 켜져 있음을 조용히 표시합니다(소리·팝업 없음)</string>
     <string name="surface_fgs_title">동행 그룹 주행 중</string>
 
-    <!-- 이벤트 알림 카드(8초) -->
+    <!-- 이벤트 알림 카드(5초, 플로팅 창 권한이 없을 때의 대체 모드) -->
     <string name="surface_events_channel_name">동행 그룹 소식</string>
-    <string name="surface_events_channel_desc">다른 차의 급제동·저잔량·도착·합류·연결 끊김·메시지를 8초 동안 알림 카드로 보여 줍니다</string>
+    <string name="surface_events_channel_desc">다른 차의 급제동·저잔량·도착·합류·연결 끊김·메시지를 5초 동안 알림 카드로 보여 줍니다(플로팅 창을 쓸 수 없을 때)</string>
 
     <!-- 플로팅 패널 -->
     <string name="surface_panel_more">외 %1$d대</string>
