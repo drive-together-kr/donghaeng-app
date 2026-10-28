@@ -12,6 +12,7 @@ import app.donghaeng.car.domain.model.Priority
 import app.donghaeng.car.domain.model.toLogString
 import app.donghaeng.car.domain.routesync.RouteSyncEngine
 import app.donghaeng.car.domain.session.GroupSessionStore
+import app.donghaeng.car.domain.session.MqttSessionManager
 import app.donghaeng.car.domain.voice.VoiceAnnouncer
 import app.donghaeng.car.domain.session.ReceivedGroupEvent
 import app.donghaeng.car.domain.time.ClockSync
@@ -21,6 +22,7 @@ import app.donghaeng.car.surface.OverlayPermissionMonitor
 import app.donghaeng.car.surface.PanelCorner
 import app.donghaeng.car.surface.SurfaceState
 import app.donghaeng.car.surface.TurnProbe
+import app.donghaeng.protocol.EventAudience
 import app.donghaeng.protocol.GroupEvent
 import app.donghaeng.protocol.Severity
 import kotlinx.serialization.json.JsonObject
@@ -52,7 +54,7 @@ import kotlinx.coroutines.launch
  * | `open` | `screen` = home/drive/events/create/settings/diagnostics | 앱을 전면으로 올리고 그 화면으로 이동(MainActivity extra `screen`) |
  * | `surface` | | 주행 중 표면 상태 한 줄 — `demo: surface mode=PANEL panelVisible=true canDraw=true appVisible=false … panelShown=true keeper=starts=1 … cards=posted=… held=<미룬 카드 수> … lastTbt=<마지막 TBT> … tbt=override=… lookups=…` |
  * | `surface_pos` | `corner` = top_end/top_start/bottom_end/bottom_start | 패널 모서리 강제 지정(저장됨) |
- * | `event` | `type`(기본 LOW_ENERGY), `speech`, `source`(기본 veh_DEMO), `age_s`(봉투 나이 — 61 이상이면 소식 줄·띠·카드에서 빠진다), `voice`(`--ez`, 기본 true) | 그룹 이벤트 한 건을 로컬로 흘려 패널 이벤트 줄·알림 카드·음성을 확인. 카드는 '카드 + 음성' 모드(CARDS_ONLY)에서만(PANEL 이면 `card=SKIPPED`, 로그 `reason=panel-mode`), 같은 종류·출처 30초에 한 장·5초에 2장까지(`source` 를 바꿔 반복), 다음 회전 300 m 이내면 `card=DEFERRED` |
+ * | `event` | `type`(기본 LOW_ENERGY), `speech`, `source`(`ahead`/`behind` = 스냅샷에서 내 바로 앞/뒤 멤버, 또는 vehicleId. 기본: **급제동이고 `audience` 도 안 주면 `ahead`** — 앞 차가 없으면(내가 선두·위치 모름) 경고만 남기고 주입하지 않는다; 그 밖은 `veh_DEMO` = 명단 밖이라 앞뒤를 몰라 '대상'), `audience`(`veh_1,veh_2` · `me` = 내 차 · `none` = 빈 목록; 없으면 audience 없음 → 급제동은 스냅샷 앞뒤 폴백), `age_s`(봉투 나이 — 61 이상이면 소식 줄·띠·카드에서 빠진다), `voice`(`--ez`, 기본 true) | 그룹 이벤트 한 건을 로컬로 흘려 패널 이벤트 줄·알림 카드·음성을 확인. 수신 대상 판정(`EventAudience`)을 실제 수신과 똑같이 거치고 `forMe=true/false basis=…` 를 남긴다(급제동: 뒤차에서 기본 주입 → forMe=true basis=SNAPSHOT, 선두에서는 `앞 차 없음 → 주입 안 함`, `--es source behind` → 앞차인 나는 forMe=false; 선두에 카드를 억지로 띄워 자리만 볼 때는 `--es audience me`). 카드는 같은 종류·출처 30초에 한 장·8초에 2장까지(`source` 를 바꿔 반복) |
  * | `tbt` | `m`(`--ei`, 다음 회전까지 m, -1 = 해제), `for_s`(`--ei`, 기본 30) | 카드 TBT 게이트가 읽는 다음 회전 거리를 `for_s` 초 동안 덮어쓴다(AVD 순정 내비는 위치가 고정돼 TBT 가 늘 같다). 예(CARDS_ONLY): `--es action tbt --ei m 120 --ei for_s 60` → `--es action event --es type HARD_BRAKE` → `surface: card deferred type=HARD_BRAKE tbt=120m` → `--es action tbt --ei m 800` → 1초 안에 `surface: card released … reason=far` |
  *
  * 결과는 `logcat -s DongHaeng` 의 `demo:` 줄로 확인한다. 좌표·ID 는 마스킹 규칙(CLAUDE.md 8)을 따른다.
@@ -73,6 +75,7 @@ class DemoControlReceiver : BroadcastReceiver() {
         fun surfaceOverlay(): OverlayPermissionMonitor
         fun clockSync(): ClockSync
         fun turnProbe(): TurnProbe
+        fun sessionManager(): MqttSessionManager
     }
 
     private lateinit var routeSync: RouteSyncEngine
@@ -85,12 +88,13 @@ class DemoControlReceiver : BroadcastReceiver() {
     private lateinit var surfaceOverlay: OverlayPermissionMonitor
     private lateinit var clockSync: ClockSync
     private lateinit var turnProbe: TurnProbe
+    private lateinit var sessionManager: MqttSessionManager
 
     override fun onReceive(context: Context, intent: Intent) {
         val deps = EntryPointAccessors.fromApplication(context.applicationContext, Deps::class.java)
         routeSync = deps.routeSync(); voice = deps.voice(); navi = deps.navi(); sessionStore = deps.sessionStore()
         surfaceController = deps.surfaceController(); surfaceState = deps.surfaceState(); surfaceCards = deps.surfaceCards()
-        surfaceOverlay = deps.surfaceOverlay(); clockSync = deps.clockSync(); turnProbe = deps.turnProbe()
+        surfaceOverlay = deps.surfaceOverlay(); clockSync = deps.clockSync(); turnProbe = deps.turnProbe(); sessionManager = deps.sessionManager()
         val action = intent.getStringExtra(EXTRA_ACTION)
         if (action.isNullOrBlank()) {
             DhLog.w("demo: action 없음 (--es action …)")
@@ -197,21 +201,44 @@ class DemoControlReceiver : BroadcastReceiver() {
                 else { surfaceState.setCorner(corner); DhLog.i("demo: surface_pos corner=$corner") }
             }
             "event" -> {
-                // 그룹 이벤트 한 건을 로컬로 흘려 표면(패널 이벤트 줄·알림 카드·음성)을 확인한다 — 서버를 거치지 않는다
+                // 그룹 이벤트 한 건을 로컬로 흘려 표면(패널 이벤트 줄·알림 카드·음성)을 확인한다 — 서버를 거치지 않는다.
+                // 표면·카드·음성이 각자 EventAudience 로 대상 여부를 다시 본다(실제 수신과 같은 경로)
                 val type = intent.getStringExtra("type") ?: "LOW_ENERGY"
                 val speech = intent.getStringExtra("speech") ?: demoSpeech(type)
-                val source = intent.getStringExtra("source") ?: "veh_DEMO"
+                val me = sessionManager.myVehicleId
+                val members = sessionManager.groupState.value?.members
+                val audienceRaw = intent.getStringExtra("audience")
+                // 급제동 기본 출처 = 내 바로 앞 차(명단 밖 veh_DEMO 로 넣으면 선두에도 '앞쪽 급제동'이 떠 고치기 전 impl_02 가 재현된다, docs/10 R18)
+                val (source, sourceArg) = when (val pick = DemoEventSource.pick(type, intent.getStringExtra("source"), audienceRaw != null, me, members)) {
+                    is DemoEventSource.Pick.Source -> pick.vehicleId to pick.arg
+                    is DemoEventSource.Pick.NoNeighbour -> {
+                        val side = if (pick.which == DemoEventSource.AHEAD) "앞" else "뒤"
+                        DhLog.w(
+                            "demo: event type=$type source=${pick.which}${if (pick.defaulted) "(기본)" else ""} — 스냅샷에 내 $side 차가 없음(선두이거나 내 차·상대 위치 모름, members=${members?.size ?: 0}) → 주입 안 함" +
+                                if (pick.defaulted) ". 급제동은 출처보다 뒤차만 받는다 — 뒤차에서 주입하거나, 자리만 볼 때는 --es audience me" else "",
+                        )
+                        return
+                    }
+                }
+                val audience = audienceRaw?.let { raw ->
+                    if (raw.trim() == "none") emptyList() else raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.map { if (it == "me") me ?: it else it }
+                }
                 val severity = when (type) { "AIRBAG_DEPLOYED" -> Severity.ALERT; "HARD_BRAKE", "LOW_ENERGY", "MEMBER_OFFLINE", "DEVIATION" -> Severity.WARN; else -> Severity.INFO }
                 val now = System.currentTimeMillis()
                 val e = ReceivedGroupEvent(
-                    GroupEvent(eventId = "demo-$now", type = type, sourceVehicleId = source, severity = severity, speech = speech, payload = JsonObject(emptyMap())),
+                    GroupEvent(eventId = "demo-$now", type = type, sourceVehicleId = source, severity = severity, speech = speech, payload = JsonObject(emptyMap()), audience = audience),
                     envelopeTsMs = clockSync.serverNow() - intent.getIntExtra("age_s", 0) * 1_000L,
                     receivedAtMs = now,
                 )
-                surfaceState.noteEvent(e)
+                val verdict = EventAudience.decide(e.event, me, members)
+                val noted = surfaceState.noteEvent(e)
                 val carded = surfaceCards.onEvent(e)
                 if (intent.getBooleanExtra("voice", true)) voice.onEvent(e)
-                DhLog.i("demo: event type=$type source=${TextMasking.maskVehicleId(source)} card=$carded mode=${surfaceState.mode.value} len=${speech.length}")
+                // 닉네임·좌표 없이: 출처 마스킹, 대상은 수만, 앞뒤 관계는 판정 근거(basis)로만
+                DhLog.i(
+                    "demo: event type=$type source=${TextMasking.maskVehicleId(source)}${if (sourceArg != source) "($sourceArg)" else ""} " +
+                        "audience=${audience?.size ?: "none"} forMe=${verdict.forMe} basis=${verdict.basis} noted=$noted card=$carded mode=${surfaceState.mode.value} len=${speech.length}",
+                )
             }
             "navi_screen" -> {
                 // 지도 렌더링 확인용: 순정 내비의 경로 옵션 화면(전체 경로가 보이게 축소) 요청

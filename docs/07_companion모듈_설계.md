@@ -114,7 +114,7 @@ QR 문자열은 서버가 `{DH_PUBLIC_BASE_URL}` + 경로로 만든다(docs/03 �
 | **C** 동행 메인 | 홈 서비스 바로가기 그리드의 "동행" 아이콘(첫 칸, NEW) | 진행 중 그룹 / 지난 그룹 / 사용법 탭 | `observeGroup` | `donghaeng/DongHaengMainScreen.kt` |
 | **D** 지도 그룹 주행 | 지도 카테고리 칩 **맨 앞** "동행" 칩 | 켜면 그룹 차량 마커(멤버 색 원 + 이름표, 선두 라임 테두리) 실시간 표시, 바텀시트가 "그룹 주행" 목록(ETA·선두와 거리·잔량)으로 전환 | `observeGroup` | `donghaeng/GroupDriveSheet.kt`, `ActiveGroupCard.kt#groupMarkers`, `ui/components/OsmMap.kt` |
 | **E** 설정 | 마이카 > Kia Connect subscription > 연동 서비스 **첫 행** "동행 그룹 주행" | 공유 항목(위치·연료·급제동 on/off), 차량별 참여 설정, 지난 그룹 기록 | `listMyVehicles` (설정값은 호스트 메모리) | `donghaeng/DongHaengSettingsScreen.kt` |
-| **F** 알림 | 상단바 알림 벨(빨간 점 = 안 읽음) | 동행 그룹 이벤트 목록(합류·휴게소 도착·저잔량·목적지 도착·동승자 메시지). 앱이 백그라운드면 시스템 알림(채널 `donghaeng_group`, API 33+ `POST_NOTIFICATIONS`) | `observeGroup` 의 이벤트 | `donghaeng/NotificationsScreen.kt`(+`DongHaengNotifier`) |
+| **F** 알림 | 상단바 알림 벨(빨간 점 = 안 읽음) | 동행 그룹 이벤트 목록(합류·휴게소 도착·저잔량·목적지 도착·동승자 메시지). 내 차가 대상이 아닌 이벤트(내 차보다 뒤에 있는 차의 급제동 — docs/03 §5.4 `audience`)는 차량 앱과 같은 `protocol.EventAudience.isForMe(event, myVehicleId, snapshot.members)` 로 거른다. 앱이 백그라운드면 시스템 알림(채널 `donghaeng_group`, API 33+ `POST_NOTIFICATIONS`) | `observeGroup` 의 이벤트 | `donghaeng/NotificationsScreen.kt`(+`DongHaengNotifier`) |
 | **G** 동승자 메시지 | B 카드·D 시트의 [메시지 보내기] | 프리셋 칩 4개(앞에 휴게소 들르자 / 천천히 와 / 먼저 가 있을게 / 배고파요) + 60자 입력 → 전송(차에서 음성으로 읽힘) | `sendPassengerMessage` | `donghaeng/PassengerMessageSheet.kt` |
 
 제어·스토어 탭에는 동행 기능을 넣지 않는다(차량 제어와 섞지 않음). 상태는 `donghaeng/DongHaengStore.kt` 하나가 들고(활성 그룹·스냅샷·알림·설정), 모든 서버/SDK 호출은 `donghaeng/DongHaengGateway.kt` 로만 나간다 — 공식 앱 팀은 이 두 파일과 A~G 화면만 가져가면 된다.

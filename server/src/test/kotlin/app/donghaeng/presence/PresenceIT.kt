@@ -1,10 +1,12 @@
 package app.donghaeng.presence
 
+import app.donghaeng.event.VehicleEventService
 import app.donghaeng.group.GroupMembershipApi
 import app.donghaeng.mqtt.MqttPublisher
 import app.donghaeng.protocol.DhJson
 import app.donghaeng.protocol.Energy
 import app.donghaeng.protocol.Envelope
+import app.donghaeng.protocol.GroupEventType
 import app.donghaeng.protocol.GroupState
 import app.donghaeng.protocol.LocSource
 import app.donghaeng.protocol.MemberStatus
@@ -12,6 +14,7 @@ import app.donghaeng.protocol.MessageTypes
 import app.donghaeng.protocol.Place
 import app.donghaeng.protocol.Telemetry
 import app.donghaeng.protocol.Topics
+import app.donghaeng.protocol.VehicleEventType
 import app.donghaeng.protocol.rest.ApiPaths
 import app.donghaeng.protocol.rest.DeviceApproveRequest
 import app.donghaeng.protocol.rest.DeviceCodeRequest
@@ -27,19 +30,25 @@ import app.donghaeng.protocol.rest.TokenResponse
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.put
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
+import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.boot.test.web.client.TestRestTemplate
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Primary
 import org.springframework.http.HttpEntity
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpMethod
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.http.client.JdkClientHttpRequestFactory
+import org.springframework.jdbc.core.JdbcTemplate
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.PostgreSQLContainer
 import org.testcontainers.junit.jupiter.Container
@@ -49,6 +58,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -67,6 +77,21 @@ class RecordingPublisher : MqttPublisher {
         return true
     }
     override fun clearRetained(topic: String): Boolean { cleared += topic; return true }
+}
+
+/**
+ * 스냅샷 읽기를 한 번 **SQL 오류**로 실패시키는 [PresenceApi] (평소엔 [DefaultPresenceApi] 그대로).
+ * 실패는 실제 JDBC 문장(`select 1/0`)으로 낸다 — 같은 트랜잭션 안이었다면 PostgreSQL 이 그 트랜잭션의 나머지 문장(이벤트 INSERT)을 거부한다.
+ */
+class FlakyPresenceApi(private val delegate: PresenceApi, private val jdbc: JdbcTemplate) : PresenceApi {
+    @Volatile var failNext = false
+    override fun snapshotOf(groupId: String): GroupState? {
+        if (failNext) {
+            failNext = false
+            jdbc.queryForObject("select 1/0", Int::class.java)
+        }
+        return delegate.snapshotOf(groupId)
+    }
 }
 
 /**
@@ -98,6 +123,16 @@ class PresenceIT {
     @Autowired lateinit var presenceIngestor: PresenceIngestor
     @Autowired lateinit var membership: GroupMembershipApi
     @Autowired lateinit var builder: SnapshotBuilder
+    @Autowired lateinit var vehicleEvents: VehicleEventService
+    @Autowired lateinit var flakyPresence: FlakyPresenceApi
+
+    /** 이 테스트 컨텍스트에서만 [PresenceApi] 를 [FlakyPresenceApi] 로 감싼다 */
+    @TestConfiguration
+    class FlakyPresenceConfig {
+        @Bean
+        @Primary
+        fun flakyPresenceApi(delegate: DefaultPresenceApi, jdbc: JdbcTemplate) = FlakyPresenceApi(delegate, jdbc)
+    }
 
     private val json = DhJson.json
 
@@ -215,5 +250,67 @@ class PresenceIT {
         recorder.sent.clear()
         publisher.publishAll()
         assertTrue(recorder.sent.none { it.topic == Topics.groupState(gid) })
+    }
+
+    @Test
+    fun `hard brake audience is chosen from the live snapshot, stored with the event and returned by GET group`() {
+        val a = driver("a2", "아빠 차")
+        val b = driver("b2", "둘째 차")
+        val c = driver("c2", "삼촌 차")
+        val created = create(a)
+        listOf(b, c).forEach { call(HttpMethod.POST, ApiPaths.GROUPS_JOIN, json.encodeToString(GroupJoinRequest(created.invite.token, null)), it.userToken).assertOk() }
+        val gid = created.groupId
+
+        // 선두 A, B 약 1 km 뒤, C 약 2 km 뒤 (위도 0.009° ≈ 1 km)
+        val now = System.currentTimeMillis()
+        ingest(a.vehicleId, Telemetry(lat = 37.5000, lon = 127.0, heading = 0f, speedKph = 80f, locSource = LocSource.NAVI), now)
+        ingest(b.vehicleId, Telemetry(lat = 37.4910, lon = 127.0, heading = 0f, speedKph = 80f, locSource = LocSource.NAVI), now)
+        ingest(c.vehicleId, Telemetry(lat = 37.4820, lon = 127.0, heading = 0f, speedKph = 80f, locSource = LocSource.NAVI), now)
+        val brake = buildJsonObject { put("decelMps2", 5.6); put("speedBeforeKph", 72.0) }
+
+        // 가운데 B 급제동 → 뒤차 C 만
+        val fromB = assertNotNull(vehicleEvents.handle(b.vehicleId, VehicleEventType.HARD_BRAKE, brake))
+        assertEquals(listOf(c.vehicleId), fromB.audience)
+        // 맨 뒤 C 급제동 → 아무도 아님(기록은 남음)
+        val fromC = assertNotNull(vehicleEvents.handle(c.vehicleId, VehicleEventType.HARD_BRAKE, brake))
+        assertEquals(emptyList(), fromC.audience)
+        // 그 밖 종류는 그룹 전체(audience 없음)
+        val low = assertNotNull(vehicleEvents.handle(c.vehicleId, VehicleEventType.LOW_ENERGY, buildJsonObject { put("kind", "FUEL"); put("pct", 12) }))
+        assertNull(low.audience)
+
+        // REST recentEvents 가 MQTT 와 같은 audience 를 돌려준다 — null(전체)과 [](아무도 아님)을 구분해 저장
+        val raw = call(HttpMethod.GET, ApiPaths.group(gid), bearer = a.userToken).assertOk().body!!
+        val recent = json.decodeFromString<GroupDetailResponse>(raw).recentEvents
+        val byId = recent.associateBy { it.eventId }
+        assertEquals(listOf(c.vehicleId), byId.getValue(fromB.eventId).audience)
+        assertEquals(emptyList(), byId.getValue(fromC.eventId).audience)
+        assertNull(byId.getValue(low.eventId).audience)
+        assertEquals(GroupEventType.HARD_BRAKE.name, byId.getValue(fromB.eventId).type)
+        assertTrue(raw.contains("\"audience\":[]"), "빈 목록은 [] 로 나간다")
+    }
+
+    @Test
+    fun `a SQL error while reading the audience snapshot does not lose the hard brake - it goes to the whole group`() {
+        // 리뷰 지적: 스냅샷 읽기가 저장 트랜잭션 안에 있으면 catch 해도 PostgreSQL 이 같은 트랜잭션의 INSERT 를 거부해 급제동이 통째로 사라졌다
+        val a = driver("a3", "아빠 차")
+        val b = driver("b3", "둘째 차")
+        val created = create(a)
+        call(HttpMethod.POST, ApiPaths.GROUPS_JOIN, json.encodeToString(GroupJoinRequest(created.invite.token, null)), b.userToken).assertOk()
+        val gid = created.groupId
+        val now = System.currentTimeMillis()
+        ingest(a.vehicleId, Telemetry(lat = 37.5000, lon = 127.0, heading = 0f, speedKph = 80f, locSource = LocSource.NAVI), now)
+        ingest(b.vehicleId, Telemetry(lat = 37.4910, lon = 127.0, heading = 0f, speedKph = 80f, locSource = LocSource.NAVI), now)
+
+        flakyPresence.failNext = true
+        val e = assertNotNull(vehicleEvents.handle(a.vehicleId, VehicleEventType.HARD_BRAKE, buildJsonObject { put("decelMps2", 5.6); put("speedBeforeKph", 72.0) }))
+        assertFalse(flakyPresence.failNext, "스냅샷 읽기가 실제로 실패했다")
+        assertNull(e.audience, "스냅샷을 못 읽으면 audience 없이(그룹 전체) — 차량이 자기 스냅샷으로 다시 판정")
+        val recent = detailOk(gid, a.userToken).recentEvents
+        assertEquals(GroupEventType.HARD_BRAKE.name, recent.single { it.eventId == e.eventId }.type, "저장돼 REST 에도 나온다")
+        assertNull(recent.single { it.eventId == e.eventId }.audience)
+
+        // 다음 급제동(맨 뒤 B)은 평소대로 스냅샷으로 고른다 — 뒤차가 없어 []
+        val fromB = assertNotNull(vehicleEvents.handle(b.vehicleId, VehicleEventType.HARD_BRAKE, buildJsonObject { put("decelMps2", 5.0); put("speedBeforeKph", 60.0) }))
+        assertEquals(emptyList(), fromB.audience)
     }
 }

@@ -23,6 +23,7 @@ interface GroupEventSink {
      *
      * @param speech 음성 문구. 음성 생략(중복 억제)이면 null
      * @param payload docs/03 §5.4 `payload` — 차량 이벤트면 §5.2 의 data 그대로
+     * @param audience docs/03 §5.4 `audience` — null = 그룹 전체, 목록 = 그 차량만(빈 목록 = 아무도 알리지 않음). 저장·REST·MQTT 모두 같은 값
      */
     fun record(
         groupId: String,
@@ -31,6 +32,7 @@ interface GroupEventSink {
         severity: Severity,
         speech: String?,
         payload: JsonObject,
+        audience: List<String>? = null,
     ): GroupEvent
 }
 
@@ -58,6 +60,7 @@ class DbGroupEventStore(
         severity: Severity,
         speech: String?,
         payload: JsonObject,
+        audience: List<String>?,
     ): GroupEvent {
         val event = GroupEvent(
             eventId = Ids.event(),
@@ -66,10 +69,11 @@ class DbGroupEventStore(
             severity = severity,
             speech = speech,
             payload = payload,
+            audience = audience,
         )
         repo.insert(groupId, event, clock.instant())
-        // 문구·본문은 개인정보(닉네임·메시지)를 담으므로 로그에는 종류와 ID 만 남긴다 (CLAUDE.md 규칙 8)
-        log.info("group event recorded groupId={} type={} eventId={} severity={}", groupId, type, event.eventId, severity)
+        // 문구·본문은 개인정보(닉네임·메시지)를 담으므로 로그에는 종류와 ID 만 남긴다 (CLAUDE.md 규칙 8). 대상은 수만(all = 그룹 전체)
+        log.info("group event recorded groupId={} type={} eventId={} severity={} audience={}", groupId, type, event.eventId, severity, audience?.size ?: "all")
         afterCommit { publisher.publishEvent(GroupEventRecorded(groupId, event)) }
         return event
     }

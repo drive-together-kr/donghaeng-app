@@ -53,9 +53,9 @@ class RouteSyncServiceTest {
 
     private class RecordingSink : GroupEventSink {
         val recorded = mutableListOf<Triple<String, GroupEventType, JsonObject>>()
-        override fun record(groupId: String, type: GroupEventType, sourceVehicleId: String?, severity: Severity, speech: String?, payload: JsonObject): GroupEvent {
+        override fun record(groupId: String, type: GroupEventType, sourceVehicleId: String?, severity: Severity, speech: String?, payload: JsonObject, audience: List<String>?): GroupEvent {
             recorded += Triple(groupId, type, payload)
-            return GroupEvent("evt_${recorded.size}", type.name, sourceVehicleId, severity, speech, payload)
+            return GroupEvent("evt_${recorded.size}", type.name, sourceVehicleId, severity, speech, payload, audience)
         }
     }
 

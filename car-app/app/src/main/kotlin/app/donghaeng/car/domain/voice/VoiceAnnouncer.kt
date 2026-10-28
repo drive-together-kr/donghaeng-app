@@ -4,7 +4,9 @@ import app.donghaeng.car.adapter.voice.VoiceAdapter
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.model.Priority
 import app.donghaeng.car.domain.session.ReceivedGroupEvent
+import app.donghaeng.protocol.EventAudience
 import app.donghaeng.protocol.GroupEventType
+import app.donghaeng.protocol.GroupState
 import app.donghaeng.protocol.Severity
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -29,6 +31,8 @@ data class VoiceAnnouncerState(
     val spoken: Int = 0,
     val skippedStale: Int = 0,
     val skippedOwn: Int = 0,
+    /** 대상이 아닌 이벤트(급제동인데 내 차가 출처보다 앞 — [EventAudience]) */
+    val skippedNotAudience: Int = 0,
     val skippedDuplicate: Int = 0,
     val skippedDisabled: Int = 0,
     val skippedNoSpeech: Int = 0,
@@ -44,6 +48,8 @@ data class VoiceAnnouncerState(
  *
  * - **신선도**: 봉투 ts 기준 [freshnessMs](5초)보다 오래된 이벤트는 읽지 않는다(재연결 뒤 밀려 들어온 옛 이벤트 생략). 큐에서 [maxQueueWaitMs](30초) 넘게 밀린 문장도 버린다.
  * - **내 이벤트 생략**: 내 차에서 난 차량 이벤트(급제동·저잔량·정차…)는 내가 들을 필요가 없다. 동승자 메시지·휴게소 제안·그룹 종료 같은 "그룹 전체" 이벤트는 출처와 무관하게 읽는다.
+ * - **대상 아님 생략**: [EventAudience.isForMe] — 서버가 정한 `audience`(급제동 = 출처보다 뒤에 있는 차)에 내 차가 없으면 읽지 않는다.
+ *   audience 가 없는 급제동(옛 서버·디버그 주입)은 [groupState] 최신 스냅샷으로 앞뒤를 보고, 모르면 읽는다. "앞쪽 ○○ 차가 급제동"을 앞차가 듣지 않게.
  * - **우선순위**: 에어백 CRITICAL(재생 중 안내를 끊고 즉시) > 급제동·이탈·연결 끊김 HIGH > 저잔량·제안·동승자 메시지 NORMAL > 합류·정차·도착 LOW. 큐는 우선순위 → 도착순.
  * - **중복**: 같은 문장은 [dupWindowMs] 안에 한 번만.
  * - 한 문장을 읽는 동안은 길이로 추정한 시간([msPerChar] × 글자 수 + [baseMs]) 만큼 다음 문장을 기다린다(TTS 완료 콜백이 없는 폴백 모드에서도 순서가 지켜지도록).
@@ -53,6 +59,8 @@ class VoiceAnnouncer(
     private val events: Flow<ReceivedGroupEvent>,
     private val myVehicleId: () -> String?,
     private val voice: VoiceAdapter,
+    /** 최신 그룹 스냅샷(MqttSessionManager.groupState) — audience 없는 급제동의 앞뒤 판정용. 모르면 null */
+    private val groupState: () -> GroupState? = { null },
     private val freshnessMs: Long = FRESHNESS_MS,
     private val dupWindowMs: Long = DUP_WINDOW_MS,
     private val maxQueueWaitMs: Long = MAX_QUEUE_WAIT_MS,
@@ -139,6 +147,12 @@ class VoiceAnnouncer(
         if (isOwnVehicleEvent(type, e.event.sourceVehicleId)) {
             _state.update { it.copy(skippedOwn = it.skippedOwn + 1) }
             DhLog.d("voice: skip own ${e.event.type}")
+            return
+        }
+        val audience = EventAudience.decide(e.event, myVehicleId(), groupState()?.members)
+        if (!audience.forMe) {
+            _state.update { it.copy(skippedNotAudience = it.skippedNotAudience + 1) }
+            DhLog.i("voice: skip not-for-me ${e.event.type} basis=${audience.basis}")
             return
         }
         val now = clock()

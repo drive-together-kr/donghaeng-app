@@ -11,6 +11,7 @@ import app.donghaeng.car.core.network.ApiResult
 import app.donghaeng.car.domain.group.GroupRepository
 import app.donghaeng.car.domain.session.GroupSession
 import app.donghaeng.car.domain.session.MqttSessionManager
+import app.donghaeng.protocol.EventAudience
 import app.donghaeng.protocol.GroupEventType
 import app.donghaeng.protocol.Place
 import app.donghaeng.protocol.rest.MemberDto
@@ -224,7 +225,9 @@ class CreateGroupViewModel @Inject constructor(
 
     private suspend fun collectEvents() {
         sessionManager.groupEvents.collect { event ->
-            val speech = event.speech
+            // 내 차가 대상이 아닌 이벤트(뒤차의 급제동 — "앞쪽 ○○ 차가 급제동")의 문구는 최근 소식에 넣지 않는다(EventAudience, docs/03 §5.4)
+            val forMe = EventAudience.isForMe(event, sessionManager.myVehicleId, sessionManager.groupState.value?.members)
+            val speech = event.speech?.takeIf { forMe }
             update<CreateGroupState.Active> { it.copy(recentSpeech = (listOfNotNull(speech) + it.recentSpeech).take(5)) }
             if (event.eventType == GroupEventType.MEMBER_JOINED || event.eventType == GroupEventType.MEMBER_LEFT || event.eventType == GroupEventType.LEADER_CHANGED) {
                 (_state.value as? CreateGroupState.Active)?.let { fetchMembers(it.session.groupId) }

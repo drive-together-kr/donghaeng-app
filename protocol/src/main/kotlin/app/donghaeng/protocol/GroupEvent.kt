@@ -12,6 +12,8 @@ import kotlinx.serialization.json.JsonObject
  * @param sourceVehicleId 이벤트를 일으킨 차량. 서버 생성 이벤트(투표 결과 등)는 null
  * @param speech          서버가 만든 한국어 음성 문구. 음성 생략(중복 억제) 시 null
  * @param payload         원본 이벤트 본문(차량 이벤트면 §5.2 의 data 그대로). [DhJson.payloadAs] 로 해석
+ * @param audience        알릴 차량(vehicleId) 목록. **null(필드 없음) = 그룹 전체**, 값이 있으면 그 차량만, 빈 목록 = 아무도 알리지 않음(서버 기록·REST 원문에만 — 어느 화면에도 안 나온다).
+ *                        지금은 `HARD_BRAKE` 만 채운다(출처보다 경로상 뒤에 있는 차 — [EventAudience]). 옛 클라이언트는 모르는 키라 무시한다
  */
 @Serializable
 data class GroupEvent(
@@ -21,6 +23,7 @@ data class GroupEvent(
     val severity: Severity,
     val speech: String?,
     val payload: JsonObject,
+    val audience: List<String>? = null,
 ) {
     /** [type] 을 enum 으로 해석. 모르는 종류면 null (호출 쪽에서 무시하거나 로그만 남긴다) */
     val eventType: GroupEventType?

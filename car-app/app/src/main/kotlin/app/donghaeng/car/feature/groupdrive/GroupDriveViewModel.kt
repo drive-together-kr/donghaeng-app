@@ -23,6 +23,7 @@ import app.donghaeng.car.domain.navi.NaviEventMonitor
 import app.donghaeng.car.surface.SurfaceFeed
 import app.donghaeng.car.surface.SurfaceMode
 import kotlinx.coroutines.flow.distinctUntilChanged
+import app.donghaeng.protocol.EventAudience
 import app.donghaeng.protocol.GroupEvent
 import app.donghaeng.protocol.GroupState
 import app.donghaeng.protocol.MemberState
@@ -155,7 +156,12 @@ class GroupDriveViewModel @Inject constructor(
     init {
         viewModelScope.launch { tokenStore.load() }
         viewModelScope.launch {
-            sessionManager.groupEvents.collect { e -> events.update { (listOf(e.toUi(clock())) + it).distinctBy { it.eventId }.take(MAX_EVENTS) } }
+            sessionManager.groupEvents.collect { e ->
+                // 내 차가 대상이 아닌 이벤트(뒤차의 급제동 등 — EventAudience)는 이벤트 스트립에도 넣지 않는다.
+                // 판정은 이 ViewModel 이 받는 시점의 스냅샷 — groupEvents 는 replay 20 이라 화면을 다시 열면 그때 스냅샷으로 다시 판정한다(docs/05)
+                if (!EventAudience.isForMe(e, sessionManager.myVehicleId, sessionManager.groupState.value?.members)) return@collect
+                events.update { (listOf(e.toUi(clock())) + it).distinctBy { it.eventId }.take(MAX_EVENTS) }
+            }
         }
     }
 

@@ -98,6 +98,7 @@ object SurfaceModule {
         poster = AndroidCardPoster(context),
         nextTurn = { turns.read() },
         clock = SystemClock::elapsedRealtime,
+        groupState = { sessionManager.groupState.value },
     )
 
     @Provides

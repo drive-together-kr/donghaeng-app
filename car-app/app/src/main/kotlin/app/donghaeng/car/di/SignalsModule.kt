@@ -90,12 +90,16 @@ object SignalsModule {
         )
     }
 
-    /** T27: 그룹 이벤트 → 음성 큐(우선순위·신선도 5s·내 이벤트 생략) */
+    /** T27: 그룹 이벤트 → 음성 큐(우선순위·신선도 5s·내 이벤트 생략·대상 아님 생략) */
     @Provides
     @Singleton
     fun provideVoiceAnnouncer(sessionManager: MqttSessionManager, voice: VoiceAdapter, clockSync: ClockSync): VoiceAnnouncer =
-        // 신선도(5s) 판정은 서버 시계 기준(T31 ClockSync) — 차량 시계가 틀려도 옛 이벤트만 생략한다
-        VoiceAnnouncer(events = sessionManager.groupEventsReceived, myVehicleId = { sessionManager.myVehicleId }, voice = voice, clock = { clockSync.serverNow() })
+        // 신선도(5s) 판정은 서버 시계 기준(T31 ClockSync) — 차량 시계가 틀려도 옛 이벤트만 생략한다.
+        // 급제동 대상(audience)이 없으면 최신 스냅샷으로 앞뒤를 본다(EventAudience)
+        VoiceAnnouncer(
+            events = sessionManager.groupEventsReceived, myVehicleId = { sessionManager.myVehicleId }, voice = voice,
+            groupState = { sessionManager.groupState.value }, clock = { clockSync.serverNow() },
+        )
 
     /** T31: 서버 시각 동기화 — 시작 직후·5분마다 `GET /v1/time` 3회, 왕복 최소 표본 */
     @Provides
