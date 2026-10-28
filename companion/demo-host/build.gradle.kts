@@ -14,6 +14,14 @@ val dhPublicBaseUrl: String = providers.gradleProperty("dhPublicBaseUrl")
     .get()
     .trimEnd('/')
 
+// dev 로그인 접속 키: 클라우드 서버(T32)는 DH_DEV_LOGIN_KEY 를 요구한다 → -PdhDevLoginKey=... 또는 ~/.gradle/gradle.properties 의 dhDevLoginKey.
+// 값은 VM 의 infra/.env 에만 있다 — 저장소의 gradle.properties 에 적지 않는다(CLAUDE.md 규칙 9). 기본 빈 값 = 헤더 안 보냄(로컬 서버는 검사하지 않음).
+val dhDevLoginKey: String = providers.gradleProperty("dhDevLoginKey")
+    .orElse("")
+    .get()
+    .trim()
+require(dhDevLoginKey.matches(Regex("[A-Za-z0-9._~-]*"))) { "dhDevLoginKey 는 영문·숫자·._~- 만 쓸 수 있어요(remote-env.sh 가 만든 hex 값)" }
+
 android {
     namespace = "app.donghaeng.companion.demo"
     compileSdk = 35
@@ -26,6 +34,7 @@ android {
         versionName = "0.1.0"
 
         buildConfigField("String", "DH_PUBLIC_BASE_URL", "\"$dhPublicBaseUrl\"")
+        buildConfigField("String", "DH_DEV_LOGIN_KEY", "\"$dhDevLoginKey\"")
 
         // 평문 HTTP 허용 여부를 서버 주소 스킴에 묶는다(car-app 과 같은 규칙): http://(로컬 개발) → true, https://(클라우드) → false
         //   AndroidManifest.xml 의 android:usesCleartextTraffic="${usesCleartext}" 로 들어간다

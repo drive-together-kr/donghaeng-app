@@ -29,7 +29,7 @@ object DemoSession {
     @Volatile
     private var devTokens: TokenResponse? = null
 
-    private val devAuth: DevAuthClient by lazy { DevAuthClient(BuildConfig.DH_PUBLIC_BASE_URL) }
+    private val devAuth: DevAuthClient by lazy { DevAuthClient(BuildConfig.DH_PUBLIC_BASE_URL, BuildConfig.DH_DEV_LOGIN_KEY) }
 
     /** 홈 상단에 보일 대표 차량 이름(시연용 더미) */
     const val VEHICLE_NAME = "쏘렌토 HEV(시연)"

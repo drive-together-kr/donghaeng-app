@@ -13,6 +13,9 @@ internal object IdentityErrors {
     fun invalidToken() =
         ApiException(HttpStatus.UNAUTHORIZED, ErrorCodes.INVALID_TOKEN, "토큰이 유효하지 않아요. 다시 로그인해 주세요.")
 
+    fun devLoginKeyRejected() =
+        ApiException(HttpStatus.FORBIDDEN, ErrorCodes.FORBIDDEN, "이 서버의 dev 로그인에는 접속 키가 필요해요. 이 서버용 접속 키로 만든 시연 앱으로 로그인해 주세요.")
+
     fun providerNotSupported(provider: String) =
         ApiException(HttpStatus.NOT_IMPLEMENTED, ErrorCodes.PROVIDER_NOT_SUPPORTED, "아직 지원하지 않는 계정 제공자예요. ($provider)")
 

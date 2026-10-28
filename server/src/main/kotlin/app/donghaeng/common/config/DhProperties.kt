@@ -13,6 +13,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties
  * - `dh.car-id-salt` (`DH_CAR_ID_SALT`): CarInfo 차량 ID 를 해시할 때 섞는 salt (docs/04 vehicle.car_info_id_hash). 운영에서는 반드시 바꾼다.
  * - `dh.internal-token` (`DH_INTERNAL_TOKEN`): EMQX 가 ACL 훅(`POST /internal/mqtt/acl`)을 부를 때 `X-Internal-Token` 헤더로 보내는 공유 비밀.
  *   비어 있으면 검사하지 않는다(로컬 개발). 클라우드에서는 반드시 설정한다.
+ * - `dh.auth.dev-login-key` (`DH_DEV_LOGIN_KEY`): dev 간편 로그인(`POST /v1/auth/login`) 공유 키. 설정되면 요청 헤더 `X-Dev-Login-Key` 가 같아야 한다(아니면 403).
+ *   비어 있으면 검사하지 않는다(로컬 개발·테스트). 공개 VM 에서 이메일만으로 아무 계정이나 로그인되지 않게 클라우드에서는 반드시 설정한다(T32).
  * - `dh.mqtt.enabled` (`DH_MQTT_ENABLED`): 서버의 브로커 접속을 끌 수 있다(테스트·브로커 없는 로컬 실행). 기본 true.
  * - `dh.presence.*`: 스냅샷 주기(2s)·오프라인/정차 판정(60s)·도착 반경(150 m)·Redis 상태 TTL(600s) — presence(T24).
  */
@@ -22,6 +24,7 @@ class DhProperties(
     val mqtt: Mqtt,
     val jwt: Jwt = Jwt(),
     val presence: Presence = Presence(),
+    val auth: Auth = Auth(),
     carIdSalt: String? = null,
     internalToken: String? = null,
 ) {
@@ -43,6 +46,12 @@ class DhProperties(
     data class Jwt(
         val privateKeyPem: String = "",
     )
+
+    /** dev 간편 로그인 보호 (T32) */
+    class Auth(devLoginKey: String? = null) {
+        /** 비어 있으면 null — `POST /v1/auth/login` 이 키를 검사하지 않는다 */
+        val devLoginKey: String? = devLoginKey?.trim()?.takeIf { it.isNotEmpty() }
+    }
 
     /** presence(T24): 스냅샷 주기·멤버 상태 판정 기준 (docs/03 §5.3) */
     data class Presence(

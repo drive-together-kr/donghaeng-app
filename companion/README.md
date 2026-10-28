@@ -113,6 +113,8 @@ QR 은 서버가 `{DH_PUBLIC_BASE_URL}` + 경로로 만든다. 모듈은 **호�
 | 동행 삽입 지점 | `donghaeng/` 패키지 하나에 모아 둔다 — **A** 상단 QR 스캔(`ScanScreen` + `JoinGroupSheet`: 초대 미리보기 → 차 선택 → `joinGroup`), **B** 홈 "동행 중" 카드(`ActiveGroupCard`), **C** 동행 메인(`DongHaengMainScreen`), **D** 지도 "동행" 칩 → 그룹 마커 + `GroupDriveSheet`, **E** 마이카 > 연동 서비스 > 동행 그룹 주행(`DongHaengSettingsScreen`), **F** 알림 벨(`NotificationsScreen`, 백그라운드면 시스템 알림), **G** 메시지 시트(`PassengerMessageSheet`, 프리셋 4 + 60자). 상태는 `DongHaengStore`, 서버/SDK 호출은 `DongHaengGateway` 로만 |
 
 - 서버 주소는 `BuildConfig.DH_PUBLIC_BASE_URL` — Gradle 속성 `dhPublicBaseUrl`(기본 `http://10.0.2.2:8080`). 클라우드: `-PdhPublicBaseUrl=https://<VM-IP>.sslip.io`
+- dev 로그인 접속 키는 `BuildConfig.DH_DEV_LOGIN_KEY` — Gradle 속성 `dhDevLoginKey`(기본 빈 값 = 헤더 안 보냄, 로컬 서버). 클라우드 서버는 필수: `-PdhDevLoginKey=<VM .env 의 DH_DEV_LOGIN_KEY>`
+  (또는 `~/.gradle/gradle.properties`). 저장소의 `gradle.properties` 에 적지 않는다. 키 없이 클라우드에 로그인하면 403 과 함께 다시 빌드하라는 안내가 뜬다(`infra/cloud/README.md` §3)
 - 평문 HTTP: `android:usesCleartextTraffic="${usesCleartext}"` — `dhPublicBaseUrl` 이 `http://` 일 때만 true (car-app 과 같은 규칙)
 - 초대 미리보기: QR 의 URL(`{base}/j/{token}`) 자체를 `Accept: application/json` 으로 읽는다(인증 없음, docs/03 §2.2). 모듈 공개 API 는 그대로 6개
 - 권한: `CAMERA`(스캔 진입 시), `POST_NOTIFICATIONS`(API 33+, 알림 화면 진입 시). 에뮬레이터: `adb shell pm grant app.donghaeng.companion.demo android.permission.CAMERA`

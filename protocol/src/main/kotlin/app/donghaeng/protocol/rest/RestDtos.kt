@@ -44,6 +44,15 @@ object ApiPaths {
     fun joinUrl(publicBaseUrl: String, inviteToken: String): String = "${publicBaseUrl.trimEnd('/')}/j/$inviteToken"
 }
 
+/** REST 요청 헤더 이름 (docs/03 §1.1). */
+object ApiHeaders {
+    /**
+     * dev 간편 로그인 공유 키 — 서버가 `DH_DEV_LOGIN_KEY` 를 설정했을 때(클라우드) `POST /auth/login` 에 같은 값을 보내야 한다(아니면 403 `FORBIDDEN`).
+     * 로컬 서버는 검사하지 않는다. 값은 저장소·로그에 남기지 않는다.
+     */
+    const val DEV_LOGIN_KEY = "X-Dev-Login-Key"
+}
+
 /** 오류 코드 상수 — docs/03 오류 형식 `{ "error": { "code", "message", "traceId" } }` 의 `code` 값. */
 object ErrorCodes {
     // 공통
