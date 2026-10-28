@@ -21,6 +21,13 @@ class MainActivity : ComponentActivity() {
     @javax.inject.Inject
     lateinit var voiceTrigger: app.donghaeng.car.adapter.trigger.VoiceTriggerAdapter
 
+    /** F16: 화면이 앞에 올 때 포그라운드 서비스 타입(microphone·location)을 권한에 맞춘다 */
+    @javax.inject.Inject
+    lateinit var driveSession: app.donghaeng.car.service.DriveSessionController
+
+    @javax.inject.Inject
+    lateinit var sessionManager: app.donghaeng.car.domain.session.MqttSessionManager
+
     private val requestedRoute = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -32,6 +39,15 @@ class MainActivity : ComponentActivity() {
                 DhNavHost(requestedRoute = requestedRoute, onRouteConsumed = { requestedRoute.value = null })
             }
         }
+    }
+
+    /**
+     * F16: 백그라운드에서 시작·재시작된 그룹 서비스(폰 합류·START_STICKY)는 microphone·location 이 빠져 있을 수 있다 — 화면이 앞인 지금 다시 맞춘다.
+     * 권한이 '새로 생긴' 순간만 보면 이미 권한이 있던 차는 끝까지 microphone 없이 남는다(순정 내비가 앞일 때 무전 녹음·듣기가 무음).
+     */
+    override fun onResume() {
+        super.onResume()
+        driveSession.ensureType(sessionManager.session.value)
     }
 
     override fun onNewIntent(intent: android.content.Intent) {

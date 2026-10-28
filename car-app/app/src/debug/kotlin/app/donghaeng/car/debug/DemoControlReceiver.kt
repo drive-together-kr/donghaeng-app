@@ -63,7 +63,7 @@ import java.util.Base64
  * | `ptt_press` | | F16 무전 버튼 한 번 — 핸들 키·패널 탭과 같은 경로(트리거 DEBUG → 재생 중이면 끊고 → PttController). 녹음 중이면 끝내기, 확인 중이면 취소 |
  * | `ptt_inject_record` | `file`(앱 files 기준 상대 경로 또는 절대 경로, `.wav`·`.m4a`·`.aac`) | 다음 녹음 한 번을 이 파일로 대신(마이크를 열지 않음, 길이 = 파일 길이). `demo: ptt_inject_record armed …` |
  * | `ptt_answer` | `answer` = `yes`/`no`/`none` 또는 `file`(16 kHz 모노 16 bit WAV) | '보낼까요?' 답 주입 — 듣는 중이면 바로 끝내고 카운트다운 중에도 받는다(네 = 보냄, 아니 = 취소, none = 보내지 않은 무전). `file` 은 마이크 대신 그 WAV 를 인식기(Vosk 모델이 있어야)에 흘린다 → `ptt: recognizer=VOSK answer=…` |
- * | `ptt_status` | | 무전 한 줄 — 단계·남은 초·인식기 상태(`recognizers=[PLEOS_STT=… ANDROID_STT=… VOSK=…]`)·누적 수 + 트리거(그룹·설정·다른 앱 미디어·세션·누름 수) + 재생(재생 중·대기·지난 무전 상태별 수) + 설정·마이크·Vosk 모델 |
+ * | `ptt_status` | | 무전 한 줄 — 단계·남은 초·인식기 상태(`recognizers=[PLEOS_STT=… ANDROID_STT=… VOSK=…]`)·누적 수 + 트리거(그룹·설정·다른 앱 미디어·세션·누름 수) + 재생(재생 중·대기·지난 무전 상태별 수) + 설정·마이크·Vosk 모델 + `fgs=`(그룹 서비스에 붙은 포그라운드 타입 `location+microphone` 등 — 백그라운드에서는 바꾸지 않는다, 동행 화면이 앞에 오면 맞춘다) |
  * | `ptt_unsent` | `op` = `resend`/`delete`(선택), `id`(기본 `first`) | '보내지 않은 무전' 목록 한 줄, 선택하면 다시 보내기·지우기(정차 중에만 — 주행 중이면 false) |
  * | `ptt_handle` | `on`(ez) | 설정 '핸들 버튼으로 무전' — 끄면 MediaSession 을 내리고 화면 키도 흘려보낸다 |
  * | `ptt_countdown` | `on`(ez, 기본 true) | 인식기를 모두 건너뛰어 카운트다운 모드("5초 뒤 보낼게요")를 강제(Vosk 모델이 있어도 장면을 찍게). 주입 답은 그대로 받는다 |

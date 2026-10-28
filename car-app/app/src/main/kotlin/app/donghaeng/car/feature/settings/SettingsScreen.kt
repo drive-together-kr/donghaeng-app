@@ -232,7 +232,7 @@ fun SettingsScreen(
                 }
             }
 
-            // F16 무전 — 핸들 버튼(통화·재생/정지) 매핑. 정차 중에만 바꾼다(주행 중 입력 UI 비활성, CLAUDE.md 규칙 6)
+            // F16 무전 — 핸들 재생/정지(미디어) 버튼 매핑(HEADSETHOOK·MEDIA_PLAY_PAUSE·MEDIA_PLAY — 통화 KEYCODE_CALL 은 쓰지 않는다). 정차 중에만 바꾼다(주행 중 입력 UI 비활성, CLAUDE.md 규칙 6)
             Card(modifier = Modifier.widthIn(max = 720.dp).fillMaxWidth()) {
                 Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(stringResource(R.string.settings_section_ptt), style = MaterialTheme.typography.titleMedium)

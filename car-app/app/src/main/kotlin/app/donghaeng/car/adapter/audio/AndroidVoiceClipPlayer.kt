@@ -22,6 +22,7 @@ import java.io.File
  * 음성 안내(TTS, `AndroidTtsVoiceAdapter`)와 같은 용도라 같은 규칙(음악은 덕킹, 순정 내비 안내와는 차례)으로 섞이고,
  * 미디어 용도가 아니어서 핸들 미디어 키 라우팅(MediaSession, `MediaSessionVoiceTrigger`)을 빼앗지 않는다.
  * 포커스는 `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK` — 못 받아도 재생한다(로그만).
+ * [stop]·취소는 `prepare` 중에 와도 받는다 — 완료 신호를 prepare 전에 걸어 두고, prepare 뒤 시작하기 전에 한 번 더 본다(받은 무전 전체가 그대로 재생되지 않게).
  */
 class AndroidVoiceClipPlayer(context: Context) : VoiceClipPlayer {
 
@@ -42,6 +43,8 @@ class AndroidVoiceClipPlayer(context: Context) : VoiceClipPlayer {
     override suspend fun play(file: File, onProgress: (positionMs: Long) -> Unit): PlayOutcome = withContext(Dispatchers.Main) {
         stopCurrent(PlayOutcome.Stopped)
         val done = CompletableDeferred<PlayOutcome>()
+        // prepare(메인 스레드에서 동기) 중에 다른 스레드가 stop() 을 부르면 이 신호가 풀린다 — prepare 뒤에 확인한다
+        currentDone = done
         val player = MediaPlayer()
         try {
             player.setAudioAttributes(attributes)
@@ -51,13 +54,20 @@ class AndroidVoiceClipPlayer(context: Context) : VoiceClipPlayer {
             player.prepare()   // 로컬 캐시 파일(≤ 512 KB) — 짧다
         } catch (e: Exception) {
             runCatching { player.release() }
+            if (currentDone === done) currentDone = null
             DhLog.w("ptt: playback prepare 실패 ${e.javaClass.simpleName}")
             return@withContext PlayOutcome.Failed("prepare-${e.javaClass.simpleName}")
+        }
+        if (done.isCompleted || !isActive) {
+            // 준비하는 사이 멈춤 요청(무전 버튼·그룹 종료) 또는 취소 — 시작하지 않는다
+            runCatching { player.release() }
+            if (currentDone === done) currentDone = null
+            DhLog.i("ptt: playback stopped before start")
+            return@withContext PlayOutcome.Stopped
         }
         val focus = runCatching { audioManager?.requestAudioFocus(focusRequest) }.getOrNull()
         if (focus != null && focus != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) DhLog.w("ptt: 재생 오디오 포커스 거부 result=$focus (재생은 계속)")
         current = player
-        currentDone = done
         try {
             player.start()
             coroutineScope {
@@ -73,10 +83,8 @@ class AndroidVoiceClipPlayer(context: Context) : VoiceClipPlayer {
             }
         } finally {
             // 끝·실패·취소 어느 경우든 메인 스레드에서 정리(취소돼도 이 블록은 NonCancellable 없이 동기 코드만 쓴다)
-            if (current === player) {
-                current = null
-                currentDone = null
-            }
+            if (current === player) current = null
+            if (currentDone === done) currentDone = null
             runCatching { player.stop() }
             runCatching { player.release() }
             runCatching { audioManager?.abandonAudioFocusRequest(focusRequest) }

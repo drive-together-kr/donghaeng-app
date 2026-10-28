@@ -28,6 +28,8 @@ import java.util.concurrent.atomic.AtomicReference
  *   문장 앞에 **선행 묵음 200 ms**(Pleos 가이드) — 블루투스/앰프가 깨어나며 첫 음절이 잘리는 것을 막는다.
  * - [Priority.CRITICAL] 은 `QUEUE_FLUSH` 로 재생 중인 안내를 끊는다. 큐 순서·신선도는 `VoiceAnnouncer` 가 결정한다.
  * - F16: [speakAndWait] 는 같은 큐에 넣고 그 utterance 의 onDone/onError 를 기다린다(엔진 없음 → 즉시 [SpeakResult.FALLBACK], [stop] → 실패로 풀림).
+ *   CRITICAL(`QUEUE_FLUSH`)이 큐를 비우면 지워진 문장에는 onDone·onError 가 오지 않고 **onStop** 만 온다 → 그때도 실패로 풀어 준다
+ *   ("보낼까요?" 가 지워져도 상한 6초를 기다리지 않고 바로 마이크를 연다).
  *
  * 문장 원문은 **어떤 빌드에서도** 로그에 남기지 않는다(닉네임 포함, CLAUDE.md 규칙 8) — 길이와 utteranceId 만 남긴다.
  */
@@ -81,14 +83,16 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceAdapter {
             @Deprecated("API 21 미만 호환용")
             override fun onError(utteranceId: String?) = onUtteranceFinished(utteranceId, ok = false)
             override fun onError(utteranceId: String?, errorCode: Int) = onUtteranceFinished(utteranceId, ok = false)
+            // QUEUE_FLUSH(CRITICAL)·stop() 으로 지워졌다 — 기다리던 쪽만 풀고 outstanding 은 건드리지 않는다(둘 다 이미 0 으로 맞춘다)
+            override fun onStop(utteranceId: String?, interrupted: Boolean) = onUtteranceStopped(utteranceId)
         })
         state.set(State.READY)
         _status.update { it.copy(ready = true, detail = "ko-KR 준비", engine = engine?.defaultEngine ?: it.engine) }
         DhLog.i("TTS 준비 완료 (Android TextToSpeech ${engine?.defaultEngine ?: ""}, ko-KR)")
     }
 
-    /** F16: [speakAndWait] 가 기다리는 utterance → 완료 신호(onDone = true, onError = false) */
-    private val waiters = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
+    /** F16: [speakAndWait] 가 기다리는 utterance → 완료 신호(onDone = true, onError·onStop = false) */
+    private val waiters = UtteranceWaiters()
 
     override suspend fun speak(text: String, priority: Priority) {
         enqueue(text, priority, waiter = null)
@@ -117,7 +121,7 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceAdapter {
             _status.update { it.copy(fallbackCount = it.fallbackCount + 1, lastUtteranceMs = System.currentTimeMillis()) }
             return Enqueued.FALLBACK
         }
-        if (waiter != null) waiters[utteranceId] = waiter
+        if (waiter != null) waiters.register(utteranceId, waiter)
         requestFocus()
         val queueMode = if (priority == Priority.CRITICAL) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
         if (priority == Priority.CRITICAL) outstanding.set(0)
@@ -128,7 +132,7 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceAdapter {
         val result = engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
         return if (result != TextToSpeech.SUCCESS) {
             outstanding.decrementAndGet()
-            waiters.remove(utteranceId)
+            waiters.forget(utteranceId)
             DhLog.w("TTS speak 실패 result=$result [$priority] ${describe(text, utteranceId)}")
             _status.update { it.copy(failedCount = it.failedCount + 1) }
             releaseFocusIfIdle()
@@ -144,14 +148,17 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceAdapter {
         runCatching { tts?.stop() }
         outstanding.set(0)
         // 멈춘 문장을 기다리던 쪽(무전 확인·수신 알림)은 실패로 풀어 준다 — onDone 이 오지 않을 수 있다
-        waiters.values.forEach { it.complete(false) }
-        waiters.clear()
+        waiters.failAll()
         releaseFocusIfIdle()
+    }
+
+    private fun onUtteranceStopped(utteranceId: String?) {
+        if (waiters.finish(utteranceId, ok = false)) DhLog.i("TTS utterance 지워짐(onStop) id=$utteranceId → 기다리던 쪽 풀기")
     }
 
     private fun onUtteranceFinished(utteranceId: String?, ok: Boolean) {
         if (!ok) DhLog.w("TTS utterance 오류 id=$utteranceId")
-        if (utteranceId != null) waiters.remove(utteranceId)?.complete(ok)
+        waiters.finish(utteranceId, ok)
         if (outstanding.decrementAndGet() <= 0) {
             outstanding.set(0)
             releaseFocusIfIdle()
@@ -202,4 +209,33 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceAdapter {
         /** 로그용 요약 — 문장 원문 대신 길이와 utteranceId 만 (규칙 8). 빌드 타입과 무관하게 항상 동일. */
         internal fun describe(text: String, utteranceId: String): String = "(len=${text.length} id=$utteranceId)"
     }
+}
+
+/**
+ * [AndroidTtsVoiceAdapter.speakAndWait] 가 기다리는 utterance 표(순수 — 단위 테스트). 엔진 콜백 스레드와 호출 스레드가 같이 쓴다.
+ * onDone → 성공, onError·onStop(QUEUE_FLUSH·stop 으로 지워짐) → 실패. 모르는 id(묵음 utterance `…-s`, 기다리지 않는 문장)는 무시.
+ */
+internal class UtteranceWaiters {
+    private val map = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
+
+    fun register(utteranceId: String, waiter: CompletableDeferred<Boolean>) {
+        map[utteranceId] = waiter
+    }
+
+    fun forget(utteranceId: String) {
+        map.remove(utteranceId)
+    }
+
+    /** 기다리던 쪽이 있었으면 풀고 true */
+    fun finish(utteranceId: String?, ok: Boolean): Boolean {
+        if (utteranceId == null) return false
+        return map.remove(utteranceId)?.complete(ok) ?: false
+    }
+
+    fun failAll() {
+        map.values.forEach { it.complete(false) }
+        map.clear()
+    }
+
+    val size: Int get() = map.size
 }

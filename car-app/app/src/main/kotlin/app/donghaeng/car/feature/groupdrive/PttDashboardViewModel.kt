@@ -89,15 +89,14 @@ class PttDashboardViewModel @Inject constructor(
     }
 
     /**
-     * 화면 복귀·권한 결과 뒤 마이크 권한을 다시 읽는다. 없다가 생겼으면(다이얼로그·앱 정보 화면·adb pm grant) 포그라운드 서비스에
-     * microphone 타입을 붙인다 — 그래야 순정 내비가 앞일 때도 녹음이 무음이 되지 않는다(DriveSessionService)
+     * 화면 복귀·권한 결과 뒤 마이크 권한을 다시 읽는다. 포그라운드 서비스 타입이 권한보다 모자라면(권한이 새로 생겼거나 — 다이얼로그·앱 정보 화면·adb pm grant —
+     * 서비스가 백그라운드에서 시작돼 microphone 이 빠졌다) 다시 시작해 붙인다 — 그래야 순정 내비가 앞일 때도 녹음이 무음이 되지 않는다(DriveSessionService).
+     * 판단은 '없다가 생김'이 아니라 지금 붙은 타입([DriveSessionController.ensureType]) — MainActivity.onResume 도 같은 것을 부른다.
      */
     fun refreshMic() {
         val before = mic.granted.value
         controller.refreshPermissions()   // PttController 의 micGranted = MicPermission.refresh()
-        if (!before && mic.granted.value) {
-            DhLog.i("ptt: mic permission granted → FGS 타입 갱신")
-            driveSession.refreshType(sessionManager.session.value)
-        }
+        val r = driveSession.ensureType(sessionManager.session.value)
+        if (!before && mic.granted.value) DhLog.i("ptt: mic permission granted → FGS 타입 $r")
     }
 }

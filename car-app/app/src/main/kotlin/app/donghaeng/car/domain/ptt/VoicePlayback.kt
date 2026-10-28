@@ -16,13 +16,17 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -111,8 +115,10 @@ fun interface VoiceFetcher {
  * 4. 재생 전 짧은 알림 — 서버 speech "{닉네임} 무전"(없으면 [PttPrompts.incoming])을 TTS 로 끝까지 읽고(엔진이 없으면 즉시) →
  *    [VoiceClipPlayer](MediaPlayer + `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`). VoiceAnnouncer 는 같은 문구를 읽지 않는다.
  * 5. 재생 중 [state].playing(보낸 차·위치/길이) → 끝나면 큐가 비었을 때 [lingerMs](3초) 머문 뒤 사라진다.
- * 6. 재생 중 무전 버튼을 누르면 [interrupt] — 멈추고 INTERRUPTED 로 '지난 무전'에 둔다(탭 다시 듣기).
- * 7. 그룹이 바뀌거나 끝나면 큐·목록·캐시 파일을 지운다(서버도 그룹 종료 때 지운다).
+ * 6. 재생 중 무전 버튼을 누르면 [interrupt] — 멈추고 INTERRUPTED 로 '지난 무전'에 둔다(탭 다시 듣기). "○○ 무전" 알림을 읽는 중·재생 준비 중이어도 멈춘다
+ *    (알림+재생 한 덩어리를 코루틴 하나로 돌려 취소한다. 알림을 읽다 끊기면 TTS 큐를 비운다 — Android TTS 는 문장 하나만 지울 수 없다).
+ * 7. 그룹이 바뀌거나 끝나면 큐·목록·캐시 파일을 지우고 재생 중(알림 포함)인 것도 멈춘다(서버도 그룹 종료 때 지운다).
+ *    내려받는 중이던 항목은 버리고 워커는 계속 돈다 — 새 그룹의 무전은 그대로 재생된다.
  *
  * 로그: `ptt: voice received voiceId=… age=…s dur=…ms`, `ptt: playing from=<vehicleId 끝 4자리> voiceId=… dur=…`, `ptt: voice stale …`, `ptt: voice skip own|not-for-me`.
  * 닉네임·오디오 내용은 남기지 않는다(규칙 8).
@@ -147,6 +153,8 @@ class VoicePlayback(
     private val held = MutableStateFlow(false)
     @Volatile private var playingNow: Item? = null
     @Volatile private var interruptedBy: String? = null
+    /** 지금 무전 한 개의 알림+재생 코루틴 — [interrupt]·그룹 변경이 취소한다 */
+    @Volatile private var currentPlay: Job? = null
 
     private val _state = MutableStateFlow(VoicePlaybackState())
     val state: StateFlow<VoicePlaybackState> = _state.asStateFlow()
@@ -178,10 +186,16 @@ class VoicePlayback(
     /** 실제로 소리를 내는 중인가(머무는 3초 제외) */
     val isPlaying: Boolean get() = playingNow != null && _state.value.playing?.ended == false
 
-    /** 재생 중인 무전을 끊는다(무전 버튼을 눌러 녹음을 시작할 때) — '지난 무전'에 INTERRUPTED 로 남는다 */
+    /** 재생 중인 무전을 끊는다(무전 버튼을 눌러 녹음을 시작할 때) — 알림을 읽는 중·재생 준비 중이어도. '지난 무전'에 INTERRUPTED 로 남는다 */
     fun interrupt(why: String) {
         if (playingNow == null) return
+        stopCurrent(why)
+    }
+
+    /** 알림+재생 코루틴을 취소한다 — 순서: 사유 먼저(playOne 이 코루틴을 세운 뒤 사유를 다시 본다), 그다음 취소 */
+    private fun stopCurrent(why: String) {
         interruptedBy = why
+        currentPlay?.cancel()
         player.stop()
     }
 
@@ -262,10 +276,27 @@ class VoicePlayback(
                 // 무전 보내기 중이면 끝날 때까지 기다린다
                 held.first { !it }
                 val item = mutex.withLock { queue.firstOrNull() } ?: break
-                val file = item.file.await()
+                val file = try {
+                    item.file.await()
+                } catch (e: CancellationException) {
+                    // 그룹이 바뀌어 이 항목의 내려받기가 취소됐다(onGroupChanged). 워커 자신이 멈춘 게 아니면 버리고 다음으로 — 워커가 끝나면 이후 무전이 하나도 재생되지 않는다
+                    currentCoroutineContext().ensureActive()
+                    mutex.withLock {
+                        queue.remove(item)
+                        _state.update { it.copy(queued = queue.size) }
+                    }
+                    DhLog.i("ptt: voice dropped (download cancelled) voiceId=${item.voice.voiceId}")
+                    continue
+                }
                 mutex.withLock {
                     queue.remove(item)
                     _state.update { it.copy(queued = queue.size) }
+                }
+                if (item.voice.groupId != session.value?.groupId) {
+                    // 내려받기가 끝나는 사이 그룹이 바뀌었다 — 끝난 그룹의 무전은 재생하지 않는다
+                    file?.delete()
+                    DhLog.i("ptt: voice dropped (group changed) voiceId=${item.voice.voiceId}")
+                    continue
                 }
                 if (file == null) {
                     DhLog.w("ptt: voice download failed voiceId=${item.voice.voiceId}")
@@ -301,25 +332,48 @@ class VoicePlayback(
 
     private suspend fun playOne(item: Item, file: File) {
         val v = item.voice
-        playingNow = item
         interruptedBy = null
+        playingNow = item
         _state.update { it.copy(playing = PlayingVoice(v, 0, ended = false)) }
-        try {
-            if (announceEnabled()) {
-                val text = v.speech?.trim()?.takeIf { it.isNotEmpty() } ?: PttPrompts.incoming(v.nickname)
-                runCatching { voice.speakAndWait(text, Priority.NORMAL, announceTimeoutMs) }
+        val outcome = try {
+            coroutineScope {
+                // LAZY: 코루틴을 [currentPlay] 에 걸어 둔 뒤 시작한다 — 그 사이 온 interrupt 는 아래 사유 확인이 받는다
+                val play = async(start = CoroutineStart.LAZY) { announceAndPlay(item, file) }
+                currentPlay = play
+                if (interruptedBy != null) play.cancel()
+                play.await()
             }
-            if (interruptedBy != null) {
-                finishPlay(v, file, PlayOutcome.Stopped)
-                return
-            }
-            DhLog.i("ptt: playing from=${tail(v.fromVehicleId)} voiceId=${v.voiceId} dur=${v.durationMs}ms manual=${item.manual}")
-            val outcome = player.play(file) { pos ->
-                _state.update { s -> if (s.playing?.voice?.voiceId == v.voiceId) s.copy(playing = s.playing.copy(positionMs = pos)) else s }
-            }
-            finishPlay(v, file, outcome)
+        } catch (e: CancellationException) {
+            // 끊김(interrupt·그룹 변경)은 Stopped. 워커 자신이 멈춘 것(stop())이면 그대로 끝낸다
+            currentCoroutineContext().ensureActive()
+            PlayOutcome.Stopped
         } finally {
+            currentPlay = null
             playingNow = null
+        }
+        finishPlay(v, file, outcome)
+    }
+
+    /** "○○ 무전" 알림(엔진이 없으면 즉시) → 재생. 취소되면 알림 TTS 도 멈춘다 */
+    private suspend fun announceAndPlay(item: Item, file: File): PlayOutcome {
+        val v = item.voice
+        if (announceEnabled()) {
+            val text = v.speech?.trim()?.takeIf { it.isNotEmpty() } ?: PttPrompts.incoming(v.nickname)
+            currentCoroutineContext().ensureActive()
+            try {
+                voice.speakAndWait(text, Priority.NORMAL, announceTimeoutMs)
+            } catch (e: CancellationException) {
+                // 큐에 넣은 알림이 계속 나오지 않게(녹음에 섞이거나 끝난 그룹의 알림이 나온다) — Android TTS 는 문장 하나만 지울 수 없어 큐를 비운다
+                runCatching { voice.stop() }
+                throw e
+            } catch (e: Exception) {
+                DhLog.w("ptt: voice announce 실패 ${e.javaClass.simpleName}")
+            }
+        }
+        if (interruptedBy != null) return PlayOutcome.Stopped
+        DhLog.i("ptt: playing from=${tail(v.fromVehicleId)} voiceId=${v.voiceId} dur=${v.durationMs}ms manual=${item.manual}")
+        return player.play(file) { pos ->
+            _state.update { s -> if (s.playing?.voice?.voiceId == v.voiceId) s.copy(playing = s.playing.copy(positionMs = pos)) else s }
         }
     }
 
@@ -368,7 +422,8 @@ class VoicePlayback(
             q to p
         }
         dropped.forEach { it.file.cancel() }
-        player.stop()
+        // 재생 중(알림을 읽는 중 포함)이면 멈춘다 — finishPlay 가 그룹이 다른 것을 보고 목록에 남기지 않고 파일을 지운다
+        if (playingNow != null) stopCurrent("group-changed") else player.stop()
         past.forEach { it.file?.delete() }
         cacheDir?.listFiles()?.forEach { it.delete() }
         if (dropped.isNotEmpty() || past.isNotEmpty()) DhLog.i("ptt: group changed → voice queue=${dropped.size} past=${past.size} cleared")

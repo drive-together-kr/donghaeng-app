@@ -100,16 +100,20 @@ object DemoPttActions {
             }
             "ptt_status" -> {
                 val c = d.pttController()
-                // 마이크 권한을 다시 읽어 무전 줄("마이크 권한 필요")에 반영 — adb pm grant 뒤라면 포그라운드 서비스에 microphone 타입도 붙인다
+                // 마이크 권한을 다시 읽어 무전 줄("마이크 권한 필요")에 반영. 포그라운드 서비스 타입은 동행 화면이 앞일 때만 바꾼다 —
+                // 이 브로드캐스트는 보통 백그라운드(순정 내비 전면)라 다시 시작하면 location·microphone 이 빠져 dataSync 로 떨어진다 → 결과만 남긴다
                 val micBefore = d.micPermission().granted.value
                 c.refreshPermissions()
+                val fgs = d.driveSession().ensureType(d.sessionManager().session.value)
                 if (!micBefore && d.micPermission().granted.value) {
-                    d.driveSession().refreshType(d.sessionManager().session.value)
-                    DhLog.i("demo: ptt_status mic 권한이 새로 생겼다 → FGS 타입 갱신(microphone)")
+                    DhLog.i("demo: ptt_status mic 권한이 새로 생겼다 → FGS 타입 $fgs (DEFERRED_BACKGROUND 면 동행 화면을 한 번 열면 붙는다)")
                 }
+                // ptt.py 가 key=value 로 읽게 '|' 대신 '+'(location+microphone)
+                val fgsType = app.donghaeng.car.service.DriveSessionService.attachedType.value
+                    ?.let { app.donghaeng.car.service.DriveSessionService.typeName(it).replace('|', '+') } ?: "none"
                 DhLog.i(
                     "demo: ptt_status ${c.describe()} | trigger ${d.voiceTrigger().status.value} | playback ${playbackLine(d.voicePlayback().state.value)} | " +
-                        "handleButton=${d.pttSettings().handleButton.value} mic=${d.micPermission().granted.value} vosk=${voskState(context)}",
+                        "handleButton=${d.pttSettings().handleButton.value} mic=${d.micPermission().granted.value} vosk=${voskState(context)} fgs=$fgsType",
                 )
             }
             "ptt_unsent" -> unsent(d, intent)

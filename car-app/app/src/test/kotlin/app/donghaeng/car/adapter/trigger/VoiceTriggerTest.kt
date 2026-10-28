@@ -35,6 +35,15 @@ class VoiceTriggerTest {
     }
 
     @Test
+    fun `다른 앱 미디어 판정 — 우리 무음 창 안의 MEDIA 는 모름(창이 끝나면 다시 읽는다), MEDIA 없으면 창 안이어도 false`() {
+        val until = 10_000L
+        assertEquals(null, TriggerPolicy.otherMediaFrom(mediaPlaying = true, now = 9_000, ownSilenceUntil = until))
+        assertEquals(false, TriggerPolicy.otherMediaFrom(mediaPlaying = false, now = 9_000, ownSilenceUntil = until))
+        assertEquals("창이 끝난 뒤 다시 읽었을 때 남은 MEDIA = 다른 앱", true, TriggerPolicy.otherMediaFrom(mediaPlaying = true, now = 10_100, ownSilenceUntil = until))
+        assertEquals(false, TriggerPolicy.otherMediaFrom(mediaPlaying = false, now = 10_100, ownSilenceUntil = until))
+    }
+
+    @Test
     fun `세션 정책 — 그룹·설정·다른 앱 미디어·되찾기 지연`() {
         assertFalse(TriggerPolicy.sessionActive(groupActive = false, handleButton = true, otherMediaActive = false, otherMediaStoppedAgoMs = null))
         assertFalse(TriggerPolicy.sessionActive(groupActive = true, handleButton = false, otherMediaActive = false, otherMediaStoppedAgoMs = null))

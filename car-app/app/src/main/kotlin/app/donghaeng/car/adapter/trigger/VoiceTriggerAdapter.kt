@@ -133,6 +133,17 @@ object TriggerPolicy {
     fun keysEnabled(groupActive: Boolean, handleButton: Boolean): Boolean = groupActive && handleButton
 
     /**
+     * 재생 구성 하나 → 다른 앱 미디어가 재생 중인가. 우리 무음(USAGE_MEDIA, 세션을 켤 때 400 ms)이 도는 창([ownSilenceUntil]) 안에서는
+     * MEDIA 구성이 우리 것인지 남의 것인지 구별할 수 없다(구성의 앱·세션 정보는 공개 API 가 아니다) → null = '모름, 창이 끝나면 다시 읽어 판단'.
+     * MEDIA 가 하나도 없으면 창 안이어도 확실히 false.
+     */
+    fun otherMediaFrom(mediaPlaying: Boolean, now: Long, ownSilenceUntil: Long): Boolean? = when {
+        !mediaPlaying -> false
+        now >= ownSilenceUntil -> true
+        else -> null
+    }
+
+    /**
      * 동행 화면이 앞일 때 키를 가로챌까(사용자 지시 2026-10-28 — 그룹 주행 중 + 설정 켬일 때만, 음악과 충돌 금지):
      * 그룹·설정 중 하나라도 아니면 통과(super 로 — 원래 동작), SEARCH 는 가로챔, 재생/정지 키는 다른 앱 미디어에 양보 중이면 통과.
      * @param yieldingMedia 다른 앱이 미디어를 재생 중이거나 멈춘 지 [RECLAIM_DELAY_MS] 가 안 됐다(MediaSession 을 내려 둔 것과 같은 판단)

@@ -17,6 +17,8 @@
 - 기기 파일 넣기: debug 빌드 `run-as --user <현재 사용자> app.donghaeng.car` 로 앱 files 아래에 tar 를 흘려 넣는다(Pleos AVD 는 사용자 10).
   run-as 가 안 되면 /data/local/tmp/dh_ptt 로 push 하고 앱이 그 경로를 읽게 한다(모델은 디버그 `vosk_install --es dir`).
 - 앱 디버그 리시버 액션: ptt_press·ptt_inject_record·ptt_answer·ptt_status·ptt_unsent·ptt_handle·ptt_countdown·vosk_install (DemoControlReceiver KDoc 표).
+- `setup --grant-mic`: 마이크 권한을 준 뒤 동행 화면을 한 번 앞으로 연다 — 그룹 서비스의 포그라운드 타입(microphone)은 앱이 앞일 때만 붙는다
+  (`ptt_status` 의 `fgs=`). 시나리오는 순정 내비 전면에서 돌리므로 그 뒤 내비를 다시 앞으로 둔다.
 - 로그에는 판정·근거만 남는다(인식 원문·녹음 내용·닉네임 없음 — 규칙 8).
 """
 import argparse
@@ -33,7 +35,7 @@ from dataclasses import dataclass, field
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from demo import ADB, PKG, LogWatcher, adb, broadcast, sh  # noqa: E402
+from demo import ADB, PKG, LogWatcher, adb, adb_devices, broadcast, device_connected, sh  # noqa: E402
 
 # 테스트 음성 — 이름은 F16 명세 §1 과 같다(통합 담당이 만든 원본과 같은 이름이면 --audio-dir 로 그대로 쓸 수 있다)
 PHRASES = [
@@ -198,6 +200,14 @@ def parse_status(line: str) -> dict:
         out["session"] = trig.get("session")
         out["otherMedia"] = trig.get("otherMedia")
     return out
+
+
+def fgs_has_mic(status: dict) -> bool | None:
+    """`fgs=location+microphone` → True, microphone 없음 → False, 앱이 이 값을 안 내보내면(옛 빌드) None"""
+    fgs = status.get("fgs")
+    if fgs is None:
+        return None
+    return "microphone" in fgs.split("+")
 
 
 def recognizer_ready(status: dict) -> bool:
@@ -371,7 +381,11 @@ class DeviceFiles:
         entries = list(entries)
         if self.mode == "run-as":
             cmd = run_as(self.user, install_cmd(dest_rel))
-            proc = subprocess.Popen([ADB, "-s", self.serial, "exec-in", cmd], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                proc = subprocess.Popen([ADB, "-s", self.serial, "exec-in", cmd], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except OSError as e:
+                print(f"  adb 실행 실패({ADB}): {type(e).__name__}: {e}")
+                return False
             try:
                 write_tar(proc.stdin, entries)
                 proc.stdin.close()
@@ -531,8 +545,16 @@ def cmd_setup(a) -> int:
             rows.append((f"{name} Vosk 모델 → files/{MODEL_DIR}", push_model(df, serial, a)))
         if a.grant_mic:
             sh(serial, f"pm grant --user {df.user} {PKG} android.permission.RECORD_AUDIO")
+            # 포그라운드 서비스 타입(microphone)은 앱이 앞일 때만 붙는다 — 한 번 열어 MainActivity.onResume 이 맞추게 한다
+            sh(serial, f"am start --user {df.user} -n {PKG}/.MainActivity")
+            time.sleep(3)
         _, st = ptt_status(serial)
-        rows.append((f"{name} 상태 vosk={st.get('vosk', '?')} mic={st.get('mic', '?')}", bool(st)))
+        rows.append((f"{name} 상태 vosk={st.get('vosk', '?')} mic={st.get('mic', '?')} fgs={st.get('fgs', '?')}", bool(st)))
+        if a.grant_mic and st and fgs_has_mic(st) is False:
+            # 실패로 치지 않는다 — 그룹이 아직 없으면 서비스도 없다(none). 그룹이 있는데도 없으면 동행 화면을 다시 열어 본다
+            print(f"  참고: 차 {name} 그룹 서비스에 microphone 타입이 없다(fgs={st.get('fgs')}) — 그룹이 있으면 동행 화면을 한 번 더 연다")
+    if a.grant_mic:
+        print("  (동행 화면을 앞으로 열었다 — 시나리오 전에 순정 내비를 다시 앞으로 둔다)")
     print("\n== setup ==")
     for k, ok in rows:
         print(f"  {'OK  ' if ok else 'FAIL'} {k}")
@@ -577,9 +599,11 @@ class Runner:
 
     def preflight(self) -> DeviceFiles | None:
         rows = []
-        devices = subprocess.run([ADB, "devices"], capture_output=True, text=True).stdout
+        devices = adb_devices()
+        if devices is None:
+            rows.append((f"adb 실행 파일 없음({ADB}) — Android SDK platform-tools 를 깔거나 환경 변수 ADB 로 경로를 준다", False))
         for name, s in self.cars.items():
-            rows.append((f"{name} {s} 연결", "device" in [l.split("\t")[-1] for l in devices.splitlines() if l.startswith(s)]))
+            rows.append((f"{name} {s} 연결", device_connected(devices, s)))
             rows.append((f"{name} 앱 설치", "package:" in sh(s, f"pm path {PKG}")))
         st = {}
         for name, s in self.cars.items():
@@ -600,6 +624,8 @@ class Runner:
             if self.a.trigger == "key":
                 rows.append((f"A MediaSession 활성(session={sa.get('session')}, otherMedia={sa.get('otherMedia')}) — 아니면 내비가 앞일 때 키가 안 온다", True if sa.get("session") == "true" else None))
             rows.append((f"A 마이크 권한(mic={sa.get('mic')}) — 주입 녹음은 없어도 된다", True if sa.get("mic") == "true" else None))
+            if sa.get("mic") == "true" and fgs_has_mic(sa) is False:
+                rows.append((f"A 그룹 서비스에 microphone 타입 없음(fgs={sa.get('fgs')}) — 내비가 앞일 때 실마이크 녹음·듣기가 무음. 동행 화면을 한 번 열면 붙는다(주입 녹음·답은 상관없다)", None))
             if self.a.answer_wav:
                 rows.append((f"A Vosk 모델(vosk={sa.get('vosk')}) — --answer-wav 에 필요(setup --model-zip)", str(sa.get("vosk", "")).startswith("present")))
             rows.append((f"A 인식기 {sa.get('recognizers')} — 하나도 ready 가 아니면 확인은 카운트다운 모드(답 주입은 그대로 받는다)", None if not recognizer_ready(sa) else True))
@@ -637,8 +663,12 @@ class Runner:
     def shot(self, car, label, sc):
         os.makedirs(self.out, exist_ok=True)
         path = os.path.join(self.out, f"{sc}_{car}_{label}.png")
-        with open(path, "wb") as f:
+        try:
             r = subprocess.run([ADB, "-s", self.cars[car], "exec-out", "screencap", "-p"], capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as e:
+            self.say(f"  캡처 실패 {type(e).__name__}: {e}")
+            return
+        with open(path, "wb") as f:
             f.write(r.stdout)
         self.say(f"  캡처 {os.path.basename(path)}")
 

@@ -7,6 +7,8 @@
 WAV 헤더·모델 폴더 찾기·기기 명령 조립(run-as·tar 바꿔치기)·ptt_status 해석·시나리오 단계·패턴 채우기·tar 스트림을 본다.
 기기에 실제로 넣고 두 대로 돌리는 부분은 통합 담당이 `ptt.py run` 으로 확인한다.
 """
+import argparse
+import contextlib
 import io
 import os
 import struct
@@ -15,6 +17,7 @@ import tarfile
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -165,6 +168,32 @@ class StatusTest(unittest.TestCase):
         st = ptt.parse_status(STATUS.replace("VOSK=ready", "VOSK=unavailable(no-model)").replace("vosk=present(am,conf,graph,ivector)", "vosk=absent"))
         self.assertFalse(ptt.recognizer_ready(st))
         self.assertEqual("absent", st["vosk"])
+
+    def test_fgs_microphone_type(self):
+        st = ptt.parse_status(STATUS + " fgs=location+microphone")
+        self.assertEqual("location+microphone", st["fgs"])
+        self.assertTrue(ptt.fgs_has_mic(st))
+        self.assertFalse(ptt.fgs_has_mic(ptt.parse_status(STATUS + " fgs=dataSync")))
+        self.assertFalse(ptt.fgs_has_mic(ptt.parse_status(STATUS + " fgs=none")))
+        self.assertIsNone(ptt.fgs_has_mic(ptt.parse_status(STATUS)), "옛 빌드는 fgs 를 안 낸다")
+
+
+class PreflightWithoutAdbTest(unittest.TestCase):
+    """adb 가 없는 PC 에서 `run --dry-run` 이 FileNotFoundError 트레이스백 대신 FAIL 행으로 끝난다"""
+
+    def test_missing_adb_is_a_fail_row(self):
+        a = argparse.Namespace(car_a="emulator-A", car_b="emulator-B", out=os.path.join(HERE, "out"), dry_run=True, trigger="key",
+                               key="HEADSETHOOK", answer_wav=False, repush=False, skip_preflight=False, audio_dir=ptt.DEFAULT_AUDIO_DIR)
+        buf = io.StringIO()
+        with mock.patch.object(ptt, "adb_devices", return_value=None), \
+                mock.patch.object(ptt, "sh", return_value="ERR FileNotFoundError"), \
+                mock.patch.object(ptt, "ptt_status", return_value=(None, {})), \
+                contextlib.redirect_stdout(buf):
+            df = ptt.Runner(a).preflight()
+        self.assertIsNone(df)
+        out = buf.getvalue()
+        self.assertIn("FAIL adb 실행 파일 없음", out)
+        self.assertIn("FAIL A emulator-A 연결", out)
 
 
 class ScenarioTest(unittest.TestCase):

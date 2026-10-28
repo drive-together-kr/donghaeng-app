@@ -1,7 +1,11 @@
 package app.donghaeng.car.domain.ptt
 
+import app.donghaeng.car.adapter.audio.AudioMime
 import app.donghaeng.car.adapter.audio.FakeVoiceRecorder
+import app.donghaeng.car.adapter.audio.RecordStart
+import app.donghaeng.car.adapter.audio.RecordStop
 import app.donghaeng.car.adapter.audio.RecordedClip
+import app.donghaeng.car.adapter.audio.VoiceRecorder
 import app.donghaeng.car.adapter.speech.ChainOutcome
 import app.donghaeng.car.adapter.speech.RecognizerKind
 import app.donghaeng.car.adapter.speech.YesNoListener
@@ -10,6 +14,7 @@ import app.donghaeng.car.adapter.voice.VoiceAdapter
 import app.donghaeng.car.adapter.voice.VoiceAdapterStatus
 import app.donghaeng.car.domain.model.Priority
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,6 +31,10 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /** F16 보내기 상태 기계 전 경로 — 가상 시간(녹음 15 s·최소 0.7 s·확인 5 s·카운트다운 5 s·보냄/안내 3 s) */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -479,6 +488,123 @@ class PttControllerTest {
         r.press()
         assertEquals(PttNotice.RECORD_FAILED, r.state.notice)
         assertTrue(r.voice.spoken.contains(PttPrompts.RECORD_FAILED))
+        r.controller.stop()
+    }
+
+    /**
+     * 기기 녹음기 흉내 — MediaRecorder 하나를 같이 쓰고 start 는 동기(@Synchronized). 첫 start 는 [gate] 가 열릴 때까지 막힌다(실기기 prepare·포커스 수백 ms).
+     * 옛 사이클이 [cancel] 하면 새 사이클의 녹음이 풀린다 → stop 이 "not-recording".
+     */
+    private class SlowStartRecorder(private val dir: File) : VoiceRecorder {
+        val entered = CountDownLatch(1)
+        val gate = CountDownLatch(1)
+        /** start 안에 있는 동안 본 컨트롤러 단계 */
+        @Volatile var stageDuringStart: PttStage? = null
+        var stageProbe: () -> PttStage? = { null }
+        @Volatile var starts = 0
+        @Volatile var cancels = 0
+        private var active: Int? = null
+        private var startedAt = 0L
+        override val hasPendingInjection: Boolean = false
+
+        @Synchronized
+        override fun start(): RecordStart {
+            starts++
+            if (starts == 1) {
+                stageDuringStart = stageProbe()
+                entered.countDown()
+                gate.await(5, TimeUnit.SECONDS)
+            }
+            active = starts
+            startedAt = System.currentTimeMillis()
+            return RecordStart.Started
+        }
+
+        override fun currentLevel(): Float = 0.5f
+
+        override suspend fun stop(): RecordStop = stopLocked()
+
+        @Synchronized
+        private fun stopLocked(): RecordStop {
+            val elapsed = System.currentTimeMillis() - startedAt
+            if (active == null) return RecordStop.Failed("not-recording", elapsed)
+            active = null
+            val f = File(dir, "slow_$starts.m4a").apply { writeBytes(ByteArray(100)) }
+            return RecordStop.Clip(RecordedClip(f, AudioMime.MP4, elapsed, f.length()))
+        }
+
+        @Synchronized
+        override fun cancel() {
+            if (active != null) cancels++
+            active = null
+        }
+
+        override fun injectNext(file: File) = Unit
+    }
+
+    private fun waitUntil(timeoutMs: Long, cond: () -> Boolean): Boolean {
+        val end = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < end) {
+            if (cond()) return true
+            Thread.sleep(10)
+        }
+        return cond()
+    }
+
+    @Test
+    fun `빠른 두 번 누름 — 녹음기를 여는 동안 온 누름이 새 사이클을 세워 녹음을 풀지 않는다(실제 스레드)`() {
+        val pool = Executors.newFixedThreadPool(4)
+        val dispatcher = pool.asCoroutineDispatcher()
+        try {
+            val rec = SlowStartRecorder(tmp.newFolder())
+            val listener = ScriptedListener().apply { candidate = false }   // 카운트다운 모드 → 짧은 카운트다운 뒤 자동 전송
+            val sent = CopyOnWriteArrayList<RecordedClip>()
+            val c = PttController(
+                recorder = rec, listener = listener, voice = RecordingVoice(),
+                sender = { _, clip -> sent += clip; SendOutcome.Sent("vm_1") },
+                groupId = { "grp_1" }, recipients = { 1 },
+                timings = PttTimings(minRecordMs = 50, countdownMs = 300, sentLingerMs = 100, noticeMs = 100, tickMs = 20, promptTimeoutMs = 100),
+                dispatcher = dispatcher,
+            )
+            rec.stageProbe = { c.state.value.stage }
+            c.start()
+            c.onGroupChanged("grp_1")
+            c.press("TEST")
+            assertTrue("첫 녹음기 start 에 들어갔다", rec.entered.await(5, TimeUnit.SECONDS))
+            c.press("TEST")   // 빠른 두 번째 탭 — start 가 아직 안 끝났다
+            Thread.sleep(200)
+            rec.gate.countDown()
+            Thread.sleep(400)   // 녹음 중
+            assertEquals(PttStage.RECORDING, c.state.value.stage)
+            c.press("TEST")   // 끝내기
+            assertTrue("보냈다", waitUntil(5_000) { sent.size == 1 })
+            assertEquals("녹음기는 한 번만 열었다", 1, rec.starts)
+            assertEquals("옛 사이클이 녹음을 풀지 않았다", 0, rec.cancels)
+            assertTrue(sent.single().durationMs >= 300)
+            assertEquals(0, c.state.value.stats.tooShort)
+            assertEquals("녹음기를 여는 동안에도 단계는 RECORDING(그 사이 누름은 새 사이클이 아니다)", PttStage.RECORDING, rec.stageDuringStart)
+            c.stop()
+        } finally {
+            dispatcher.close()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `안내 중 누름으로 시작한 새 녹음 — 옛 사이클이 끝난 뒤 시작한다`() = runTest {
+        val r = Rig(this)
+        r.begin()
+        r.record(500)   // 너무 짧아요 → NOTICE 3초
+        assertEquals(PttNotice.TOO_SHORT, r.state.notice)
+        r.press()   // 안내 중 누름 = 새 녹음
+        assertEquals(PttStage.RECORDING, r.state.stage)
+        assertEquals(2, r.recorder.starts)
+        assertEquals("새 녹음을 옛 사이클이 풀지 않았다", 0, r.recorder.cancels)
+        r.listener.answer(100, YesNo.YES)
+        advanceTimeBy(2_000); runCurrent()
+        r.press()
+        advanceTimeBy(100 + SEND_MS); runCurrent()
+        assertEquals(1, r.sent.size)
         r.controller.stop()
     }
 

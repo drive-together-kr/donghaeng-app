@@ -32,7 +32,8 @@ import kotlinx.coroutines.withContext
  * 우리 세션이 Media button session 이 되고, 순정 내비가 앞에 있어도 HEADSETHOOK·MEDIA_PLAY_PAUSE·MEDIA_PLAY 가 [onMediaButtonEvent] 로 온다.
  *
  * - 켜는 조건은 [TriggerPolicy.sessionActive]: 그룹 있음 + '핸들 버튼으로 무전' + 다른 앱 미디어 재생 없음(+ 멈춘 뒤 15초).
- * - 다른 앱 미디어 감지: `AudioManager.AudioPlaybackCallback` 의 활성 재생 구성 중 용도가 MEDIA·GAME 인 것. 우리 무음 재생(직후 1.5초)은 뺀다.
+ * - 다른 앱 미디어 감지: `AudioManager.AudioPlaybackCallback` 의 활성 재생 구성 중 용도가 MEDIA·GAME 인 것. 우리 무음 재생 창(직후 1.5초) 안의 MEDIA 는
+ *   우리 것과 구별할 수 없어 판단을 미루고([TriggerPolicy.otherMediaFrom] = null), **창이 끝나면 활성 구성을 다시 읽어** 판단한다 — 그 사이 시작된 음악을 놓치지 않게.
  *   우리 무전 재생·TTS 는 USAGE_ASSISTANCE_NAVIGATION_GUIDANCE 라 셈에 들지 않는다.
  * - 세션·콜백은 메인 스레드. 무음 재생은 IO 스레드. 실패해도 예외를 밖으로 던지지 않는다(로그만 — 패널·대시보드 탭은 그대로 된다).
  */
@@ -49,6 +50,7 @@ class MediaSessionVoiceTrigger(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var job: Job? = null
     private var reclaimJob: Job? = null
+    private var silenceRecheckJob: Job? = null
 
     /** 메인 스레드에서만 */
     private var session: MediaSession? = null
@@ -80,6 +82,7 @@ class MediaSessionVoiceTrigger(
     override fun stop() {
         job?.cancel(); job = null
         reclaimJob?.cancel(); reclaimJob = null
+        silenceRecheckJob?.cancel(); silenceRecheckJob = null
         runCatching { audioManager?.unregisterAudioPlaybackCallback(playbackCallback) }
         main.post { deactivate("stop") }
     }
@@ -90,8 +93,8 @@ class MediaSessionVoiceTrigger(
             val usage = runCatching { c.audioAttributes.usage }.getOrDefault(AudioAttributes.USAGE_UNKNOWN)
             usage == AudioAttributes.USAGE_MEDIA || usage == AudioAttributes.USAGE_GAME
         }
-        // 방금 우리가 낸 무음(USAGE_MEDIA)은 다른 앱 미디어가 아니다
-        val other = media && now >= ownSilenceUntil
+        // 방금 우리가 낸 무음(USAGE_MEDIA) 창 안이면 판단을 미룬다 — 창이 끝날 때 playSilence 가 건 재확인이 다시 읽는다
+        val other = TriggerPolicy.otherMediaFrom(media, now, ownSilenceUntil) ?: return
         if (other == otherMediaActive) return
         otherMediaActive = other
         if (!other) otherMediaStoppedAt = now
@@ -170,6 +173,12 @@ class MediaSessionVoiceTrigger(
     /** 미디어 버튼 라우팅을 우리 쪽으로 — 400 ms 무음(USAGE_MEDIA, 포커스 요청 없음 → 음악을 멈추지 않는다) */
     private fun playSilence() {
         ownSilenceUntil = clock() + SILENCE_MS + SILENCE_GRACE_MS
+        // 창이 끝난 직후 활성 재생 구성을 다시 읽는다 — 창 안에서 시작된 음악(판단을 미룬 것)과 우리 무음이 끝난 뒤의 실제 상태를 놓치지 않게
+        silenceRecheckJob?.cancel()
+        silenceRecheckJob = scope.launch {
+            delay(SILENCE_MS + SILENCE_GRACE_MS + RECHECK_MARGIN_MS)
+            runCatching { audioManager?.activePlaybackConfigurations }.getOrNull()?.let { onPlaybackConfigs(it) }
+        }
         scope.launch {
             withContext(Dispatchers.IO) {
                 runCatching {
@@ -203,5 +212,7 @@ class MediaSessionVoiceTrigger(
         const val SESSION_TAG = "dh-ptt"
         const val SILENCE_MS = 400
         const val SILENCE_GRACE_MS = 1_100L
+        /** 창이 끝나고 다시 읽기까지 여유 */
+        const val RECHECK_MARGIN_MS = 100L
     }
 }

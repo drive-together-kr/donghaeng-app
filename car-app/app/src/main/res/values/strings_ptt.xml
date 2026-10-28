@@ -36,6 +36,6 @@
     <!-- 설정 -->
     <string name="settings_section_ptt">무전</string>
     <string name="settings_ptt_handle_switch">핸들 버튼으로 무전</string>
-    <string name="settings_ptt_handle_hint">그룹 주행 중 핸들의 통화·재생/정지 버튼을 누르면 무전을 시작해요(순정 내비가 앞에 있어도). 음악 앱이 재생 중이면 그 앱에 버튼을 양보하고, 끄면 버튼은 원래 동작으로 돌아가요. 화면의 [무전] 버튼은 늘 쓸 수 있어요.</string>
+    <string name="settings_ptt_handle_hint">그룹 주행 중 핸들의 재생/정지(미디어) 버튼을 누르면 무전을 시작해요(순정 내비가 앞에 있어도). 음악 앱이 재생 중이면 그 앱에 버튼을 양보하고, 끄면 버튼은 원래 동작으로 돌아가요. 화면의 [무전] 버튼은 늘 쓸 수 있어요.</string>
     <string name="settings_ptt_driving_locked">주행 중에는 바꿀 수 없어요</string>
 </resources>

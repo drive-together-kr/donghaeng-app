@@ -7,6 +7,7 @@ import app.donghaeng.car.domain.ptt.YesNoParser
 import app.donghaeng.protocol.DhJson
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -34,6 +35,9 @@ import java.io.RandomAccessFile
  * - 모델 적재는 수 초 걸려 [prepare](녹음 중)에 한 번 하고 앱이 사는 동안 들고 있는다.
  * - 마이크: `SpeechService`(AudioRecord 16 kHz). 결과 JSON `{"text": "…", "result": [{"conf":…}]}` 의 text 를 [YesNoParser] 로 판정, 낱말 신뢰도 평균을 conf 로.
  * - [listenWav]: 마이크 대신 WAV PCM 을 직접 `acceptWaveForm` 에 흘린다(디버그 주입 — 16 kHz·모노·16 bit 만).
+ * - **취소돼도 마이크를 닫는다**: 확인 중 누름·주입 답(`RecognizerChain` 의 first())·컨트롤러 시간 초과·그룹 변경으로 듣기가 취소되는 일이 흔하다.
+ *   정리(`stop`·`shutdown`·`close`)는 `NonCancellable` 로 돌린다 — 취소된 코루틴에서 그냥 `withContext` 를 부르면 블록을 돌기 전에 CancellationException 이 나
+ *   AudioRecord·녹음 스레드가 프로세스가 끝날 때까지 남는다(다음 듣기 'mic-busy'·다음 무전 녹음과 마이크 다툼).
  * - JNI(JNA) 라이브러리라 JVM 단위 테스트에서는 이 클래스를 쓰지 않는다(체인은 [FakeYesNoRecognizer] 로 시험).
  */
 class VoskYesNoRecognizer(
@@ -93,10 +97,11 @@ class VoskYesNoRecognizer(
             return ListenResult.Failed("recognizer-${e.javaClass.simpleName}", permanent = false)
         }
         val done = CompletableDeferred<ListenResult>()
+        // SpeechService 생성자가 AudioRecord 를 연다 — 여기서부터 끝(취소 포함)까지 finally 가 닫는다
         val service = try {
             SpeechService(recognizer, SAMPLE_RATE)
         } catch (e: Exception) {
-            recognizer.close()
+            runCatching { recognizer.close() }
             return ListenResult.Failed("mic-${e.javaClass.simpleName}", permanent = false)
         }
         return try {
@@ -124,7 +129,8 @@ class VoskYesNoRecognizer(
                 withTimeoutOrNull(STOP_GRACE_MS) { done.await() } ?: ListenResult.Heard(YesNo.NONE)
             }
         } finally {
-            withContext(Dispatchers.Main) {
+            // 취소된 뒤에도 반드시 돈다(NonCancellable) — stop() 은 녹음 스레드를 멈추고 join, shutdown() 은 AudioRecord 해제
+            withContext(NonCancellable + Dispatchers.Main) {
                 runCatching { service.stop() }
                 runCatching { service.shutdown() }
             }

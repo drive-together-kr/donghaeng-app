@@ -47,6 +47,8 @@ class VoicePlaybackTest {
     private class RecordingVoice : VoiceAdapter {
         val waited = mutableListOf<String>()
         var announceMs = 0L
+        /** stop() 호출 수 — 알림을 읽다 끊기면 TTS 큐를 비운다 */
+        var stops = 0
         override val status: StateFlow<VoiceAdapterStatus> = MutableStateFlow(VoiceAdapterStatus(ready = true))
         override suspend fun speak(text: String, priority: Priority) = Unit
         override suspend fun speakAndWait(text: String, priority: Priority, timeoutMs: Long): SpeakResult {
@@ -54,7 +56,9 @@ class VoicePlaybackTest {
             delay(announceMs)
             return SpeakResult.SPOKEN
         }
-        override fun stop() = Unit
+        override fun stop() {
+            stops++
+        }
     }
 
     private fun member(vid: String, nick: String, color: String) =
@@ -265,6 +269,67 @@ class VoicePlaybackTest {
         runCurrent()
         assertTrue(r.state.past.isEmpty())
         assertEquals(0, r.state.queued)
+        assertFalse(file.exists())
+        r.playback.stop()
+    }
+
+    @Test
+    fun `내려받는 중 그룹이 바뀌어도 워커는 살아 있다 — 새 그룹 무전은 재생`() = runTest {
+        val r = Rig(this)
+        r.playback.start(); runCurrent()
+        r.fetchDelayMs = 2_000
+        r.emit(r.voiceEvent("vm_old"))
+        advanceTimeBy(500); runCurrent()
+        assertEquals(listOf("vm_old"), r.fetched)
+        // 내려받는 사이 그룹이 바뀐다 → 그 내려받기는 취소(워커가 await 중)
+        r.session.value = GroupSession("grp_2", "새 그룹", "veh_A", Place(37.0, 127.0, "집"), GroupTopics("s2", "e2"), 0L)
+        runCurrent()
+        advanceTimeBy(5_000); runCurrent()
+        assertTrue("끝난 그룹 무전은 재생하지 않는다", r.player.played.isEmpty())
+        assertTrue(r.state.past.isEmpty())
+
+        r.fetchDelayMs = 0
+        r.emit(r.voiceEvent("vm_new"))
+        advanceTimeBy(100); runCurrent()
+        assertEquals("새 그룹 무전은 재생된다(워커가 끝나지 않았다)", listOf("vm_new.m4a"), r.player.played)
+        assertEquals("grp_2", r.state.playing!!.voice.groupId)
+        r.playback.stop()
+    }
+
+    @Test
+    fun `알림을 읽는 중 끊으면 TTS 를 멈추고 재생하지 않는다 — INTERRUPTED`() = runTest {
+        val r = Rig(this)
+        r.playback.start(); runCurrent()
+        r.voice.announceMs = 2_000
+        r.emit(r.voiceEvent("vm_1"))
+        advanceTimeBy(500); runCurrent()
+        assertEquals(listOf("아빠 차 무전"), r.voice.waited)
+        assertFalse("알림 중(아직 소리 재생 전)", r.player.playing)
+        r.playback.interrupt("ptt-press")
+        runCurrent()
+        assertEquals("알림 TTS 를 멈췄다", 1, r.voice.stops)
+        advanceTimeBy(5_000); runCurrent()
+        assertTrue("받은 무전을 재생하지 않는다", r.player.played.isEmpty())
+        assertEquals(PastStatus.INTERRUPTED, r.state.past.single().status)
+        r.playback.stop()
+    }
+
+    @Test
+    fun `알림을 읽는 중 그룹이 끝나면 멈추고 재생·목록 없이 파일을 지운다`() = runTest {
+        val r = Rig(this)
+        r.playback.start(); runCurrent()
+        r.voice.announceMs = 2_000
+        r.emit(r.voiceEvent("vm_1"))
+        advanceTimeBy(500); runCurrent()
+        val file = File(r.dir, "vm_1.m4a")
+        assertTrue(file.exists())
+        r.session.value = null
+        runCurrent()
+        assertEquals(1, r.voice.stops)
+        advanceTimeBy(5_000); runCurrent()
+        assertTrue(r.player.played.isEmpty())
+        assertTrue(r.state.past.isEmpty())
+        assertNull(r.state.playing)
         assertFalse(file.exists())
         r.playback.stop()
     }

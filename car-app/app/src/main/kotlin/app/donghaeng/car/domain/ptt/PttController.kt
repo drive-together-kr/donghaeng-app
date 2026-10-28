@@ -17,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -44,6 +45,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  *        확인 중(질문을 읽는 동안 포함) 누르면 = 취소
  * SENT·NOTICE 중 누르면 새 녹음. SENDING 중 누름은 무시.
  * ```
+ * 사이클은 한 번에 하나만 돈다: 새 사이클은 옛 사이클이 **끝난 뒤**(cancelAndJoin) 시작하고, 녹음기를 여는 동안에도 단계는 RECORDING 이다 —
+ * 녹음기는 하나라 옛 사이클의 정리(`recorder.cancel()`)가 새 사이클의 녹음을 풀면 말한 무전이 사라진다.
  * 주행·정차와 무관하게 동작한다(입력은 버튼·핸들 키뿐). '보내지 않은 무전' 다시 보내기·지우기([resend]·[deleteUnsent])는 **정차 중에만**.
  * 녹음 내용·인식 원문·닉네임은 로그에 남기지 않는다 — `ptt: …` 줄은 단계·길이·바이트·판정·근거만(규칙 8).
  *
@@ -147,7 +150,7 @@ class PttController(
 
     // ---------------------------------------------------------------- 명령 처리(액터 — 한 번에 하나씩)
 
-    private fun handle(c: Command) {
+    private suspend fun handle(c: Command) {
         when (c) {
             is Command.Press -> onPress(c.source)
             is Command.Resend -> c.done.complete(onResend(c.id))
@@ -156,7 +159,7 @@ class PttController(
         }
     }
 
-    private fun onPress(source: String) {
+    private suspend fun onPress(source: String) {
         val stage = _state.value.stage
         _state.update { it.copy(stats = it.stats.copy(presses = it.stats.presses + 1)) }
         DhLog.i("ptt: press source=$source stage=$stage")
@@ -178,7 +181,7 @@ class PttController(
         }
     }
 
-    private fun onResend(id: String): Boolean {
+    private suspend fun onResend(id: String): Boolean {
         val stage = _state.value.stage
         if (stage.busy) {
             DhLog.i("ptt: resend refused (busy stage=$stage)")
@@ -207,12 +210,13 @@ class PttController(
         return removeUnsent(id, deleteFile = true).also { if (it) DhLog.i("ptt: unsent deleted n=${_unsent.value.size}") }
     }
 
-    private fun onGroup(gid: String?) {
+    private suspend fun onGroup(gid: String?) {
         if (gid == currentGroup) return
         val had = currentGroup
         currentGroup = gid
         if (had == null && _unsent.value.isEmpty() && !_state.value.stage.busy) return
-        cycle?.cancel(); cycle = null
+        // 옛 사이클의 정리(finally)가 끝난 뒤 다음 명령을 받는다 — 바로 이어진 누름의 새 녹음을 옛 정리가 풀지 않게
+        cycle?.cancelAndJoin(); cycle = null
         recorder.cancel()
         val dropped = _unsent.value
         dropped.forEach { it.file.delete() }
@@ -221,8 +225,9 @@ class PttController(
         DhLog.i("ptt: group changed → reset (unsent dropped=${dropped.size})")
     }
 
-    private fun launchCycle(block: suspend () -> Unit) {
-        cycle?.cancel()
+    private suspend fun launchCycle(block: suspend () -> Unit) {
+        // 옛 사이클이 끝날 때까지 기다린다(녹음기 start 가 동기라 그 안에서는 취소를 못 알아챈다) — 두 사이클이 녹음기 하나를 같이 쓰지 않게
+        cycle?.cancelAndJoin()
         drainPresses()
         cycle = scope.launch {
             try {
@@ -249,6 +254,14 @@ class PttController(
                 speakLater(PttPrompts.MIC_PERMISSION)
                 notice(PttNotice.MIC_PERMISSION)
                 return
+            }
+            // 녹음기를 여는 동안(MediaRecorder prepare·포커스 — 실기기 수백 ms)에도 바쁨으로 보인다. 그 사이 누름은 presses 로 가서 녹음 루프가 시작할 때 버린다
+            // (빠른 두 번 탭이 새 사이클을 세워 녹음기를 다투지 않게). 화면은 바로 '녹음 중'이 된다
+            _state.update {
+                it.copy(
+                    stage = PttStage.RECORDING, remainingS = PttFormat.ceilSeconds(timings.maxRecordMs), totalS = (timings.maxRecordMs / 1000).toInt(),
+                    level = 0f, listening = false, countdownMode = false, notice = null, sentTo = 0,
+                )
             }
             when (val s = recorder.start()) {
                 is RecordStart.Failed -> {

@@ -142,6 +142,16 @@ kotlin {
     }
 }
 
+// Pleos SDK(SpeechToText·TextToSpeech 3.3.1)가 universal-access 0.6.0 을 거쳐 끌어오는 security-crypto-ktx 1.1.0-alpha06 을 **모든 구성**에서 뺀다 —
+// debug·release, 어느 Pleos SDK 줄이든 토큰 저장소 라이브러리가 security-crypto 1.0.0(EncryptedTokenStore, MasterKeys API) 하나로 같게.
+// 주의: UA 의 보안 저장소(`ai.pleos.playground.security.ua.s` — MasterKey·MasterKey$Builder·EncryptedSharedPreferences.create(…, MasterKey, …))는
+// **1.1.x API 라 1.0.0 에는 없다**(javap 확인 — 1.0.0 은 MasterKeys 만). 이 클래스는 UniversalAccess.create 에서만 만들어지고, STT SDK 는 registerApp(UA 변형)으로
+// useUaSdk 를 켤 때만 그 경로를 탄다 → 우리는 registerApp 을 부르지 않고 ON_DEVICE 만 쓰므로 닿지 않는다. registerApp(SERVER 모드)을 켜려면
+// security-crypto 를 1.1.x 로 올리고(토큰 저장소 검증) 이 exclude 를 함께 바꾼다 — 안 그러면 NoClassDefFoundError(docs/10 Q9).
+configurations.configureEach {
+    exclude(group = "androidx.security", module = "security-crypto-ktx")
+}
+
 dependencies {
     // 공용 메시지 스키마 (합성 빌드)
     implementation(libs.donghaeng.protocol)
@@ -151,10 +161,8 @@ dependencies {
     "pleosImplementation"(libs.pleos.navihelper)
     "pleosImplementation"(libs.pleos.fusedlocation)
     // F16 무전 '네/아니' 1순위 — 준비 중 SDK 라 선택적(CLAUDE.md 규칙 5): CaaS ≥ 4.1.29·STT_SERVICE 권한·초기화가 모두 될 때만 체인 앞에 붙는다.
-    // universal-access(registerApp UA 경로 — 쓰지 않음)가 끌어오는 security-crypto-ktx 1.1.0-alpha06·appcompat·material 은 뺀다:
-    // UA 가 참조하는 MasterKey·EncryptedSharedPreferences 는 우리 security-crypto 1.0.0 에 있고, 토큰 저장소 라이브러리가 몰래 올라가지 않게 한다
+    // universal-access 0.6.0(UA)이 끌어오는 appcompat·material 은 뺀다(Compose 앱 — 쓰지 않는다). security-crypto-ktx 는 아래 configurations 에서 모두 뺀다.
     "pleosImplementation"(libs.pleos.speechtotext) {
-        exclude(group = "androidx.security")
         exclude(group = "androidx.appcompat")
         exclude(group = "com.google.android.material")
     }
