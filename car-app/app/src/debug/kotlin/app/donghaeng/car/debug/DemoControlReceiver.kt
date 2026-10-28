@@ -123,6 +123,11 @@ class DemoControlReceiver : BroadcastReceiver() {
                     DhLog.i("demo: navi_route → ${dest.toLogString()}")
                 }
             }
+            "loc_order" -> {
+                val order = intent.getStringExtra("order") ?: DemoPrefs.ORDER_DEFAULT
+                DemoPrefs.setLocationOrder(context, order)
+                DhLog.i("demo: loc_order=${DemoPrefs.locationOrder(context)} (pleos flavor, 앱 재시작 후 적용)")
+            }
             "gpx" -> {
                 val role = intent.getStringExtra("role") ?: DemoPrefs.ROLE_LEAD
                 DemoPrefs.setGpxRole(context, role)

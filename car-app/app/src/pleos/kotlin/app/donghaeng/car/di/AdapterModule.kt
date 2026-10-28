@@ -48,8 +48,17 @@ object AdapterModule {
 
     @Provides
     @Singleton
-    fun provideLocationAdapter(@ApplicationContext context: Context, naviMonitor: NaviEventMonitor): LocationAdapter =
-        CompositeLocationAdapter(listOf(PleosFusedLocationAdapter(context), NaviLocationSource(naviMonitor), AndroidLocationSource(context), FakeLocationAdapter()))
+    fun provideLocationAdapter(@ApplicationContext context: Context, naviMonitor: NaviEventMonitor): LocationAdapter {
+        // 시연(Pleos AVD): 순정 내비 위치가 기본값에 고정되므로(docs/10 R17) adb emu geo fix 를 쓰려면 Android 소스를 먼저 — DemoPrefs.locationOrder
+        val order = app.donghaeng.car.core.common.DemoPrefs.locationOrder(context)
+        val sources = if (order == app.donghaeng.car.core.common.DemoPrefs.ORDER_ANDROID_FIRST) {
+            listOf(AndroidLocationSource(context), NaviLocationSource(naviMonitor), FakeLocationAdapter())
+        } else {
+            listOf(PleosFusedLocationAdapter(context), NaviLocationSource(naviMonitor), AndroidLocationSource(context), FakeLocationAdapter())
+        }
+        app.donghaeng.car.core.common.DhLog.i("location: 소스 순서 $order")
+        return CompositeLocationAdapter(sources)
+    }
 
     @Provides
     @Singleton
