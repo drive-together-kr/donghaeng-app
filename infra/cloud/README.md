@@ -31,7 +31,7 @@ loopback 전용(ssh -L):  127.0.0.1:15432 postgres · 127.0.0.1:6379 redis · 12
 **클라우드 콘솔의 방화벽(보안 그룹·네트워크 ACL)** 인바운드 TCP **22 · 80 · 443 · 8883** 을 연다. VM 안의 ufw 는 deploy.sh 가 같은 4개로 맞춘다.
 
 **Let's Encrypt 발급 조건** — Caddy 가 첫 기동 때 `<IP>.sslip.io` 인증서를 받는다.
-- `<a-b-c-d>.sslip.io` 는 sslip.io 공개 DNS 가 `a.b.c.d` 로 풀어 준다(설정할 것 없음). 표기는 하이픈형(`1-2-3-4.sslip.io`)을 쓴다.
+- `<a-b-c-d>.sslip.io` 는 sslip.io 공개 DNS 가 `a.b.c.d` 로 풀어 준다(설정할 것 없음). 표기는 점 표기(`1.2.3.4.sslip.io`, CLAUDE.md 규칙 12)를 쓴다 — deploy.sh·remote-env.sh 가 이 꼴로 만든다. 하이픈형(`1-2-3-4.sslip.io`)도 같은 IP 로 풀리지만 인증서 이름이 달라 섞어 쓰지 않는다.
 - Let's Encrypt 검증 서버가 **인터넷에서 VM 의 80(HTTP-01) 또는 443(TLS-ALPN-01)** 에 닿아야 한다. 둘 다 막혀 있으면 발급이 계속 실패하고 HTTPS·8883 이 모두 안 열린다.
 - 발급은 보통 수십 초. 인증서·ACME 계정은 `caddy-data` 볼륨에 남고 만료 30일 전쯤 자동 갱신된다.
 - 한도: 같은 이름 인증서 **주 5회**, 같은 호스트 검증 실패 **시간당 5회**. `caddy-data` 볼륨을 지우지 말 것(`down -v` 금지). 설정을 여러 번 시험할 때만 Caddyfile 전역 블록에 `acme_ca https://acme-staging-v02.api.letsencrypt.org/directory` 를 임시로 넣는다 — 스테이징 인증서는 Android 가 신뢰하지 않으므로 시연 전에 빼고 `caddy-data` 의 스테이징 인증서를 지운다.
@@ -62,7 +62,7 @@ bash infra/cloud/deploy.sh ubuntu@203.0.113.10 -i ~/.ssh/donghaeng-vm.pem [--ema
 `POST /internal/mqtt/acl` → 404 · 접속 키 없는 `POST /v1/auth/login` → 403(§3) · `openssl s_client -connect <host>:8883 -servername <host>` 검증 OK + SAN 확인 · 8883 위 MQTT CONNECT → CONNACK ·
 `/mqtt` WebSocket 핸드셰이크 101(서브프로토콜 `mqtt`) · WSS 위 MQTT CONNECT → CONNACK. 익명 CONNECT 라 CONNACK 은 `0x05 not authorized` 가 정상이다(경로가 EMQX 까지 살아 있다는 뜻).
 
-- 설정 파일만 바꿨을 때: `--skip-build`. 헬스체크만 다시: `bash infra/cloud/deploy.sh --check-only 203-0-113-10.sslip.io`.
+- 설정 파일만 바꿨을 때: `--skip-build`. 헬스체크만 다시: `bash infra/cloud/deploy.sh --check-only 203.0.113.10.sslip.io`.
 - **Caddyfile 반영(8단계)**: Caddyfile 은 단일 파일 바인드 마운트라 ① 내용만 바뀌면 compose 가 caddy 를 다시 만들지 않고 ② 6단계 tar(GNU)가 파일을 지우고 새로 만들면
   실행 중인 컨테이너는 옛 inode(옛 내용)를 계속 보며(`caddy reload` 도 옛 내용을 다시 읽는다) ③ 제자리 편집이면 파일은 새것이어도 Caddy 는 시작 때 읽은 설정 그대로다.
   그래서 deploy.sh 가 `~/donghaeng/.caddyfile-applied` 에 "caddy 컨테이너 ID + 그 컨테이너가 읽은 Caddyfile sha256" 을 남기고, 지금 VM 파일과 다르면

@@ -2,7 +2,7 @@
 # 동행 클라우드(T32) 배포 — 로컬 PC 에서 실행한다(Windows Git Bash · macOS · Linux). infra/cloud/README.md
 #
 #   bash infra/cloud/deploy.sh <user>@<VM-IP> [-i <ssh 키>] [--skip-build] [--keep-tag] [--email <ACME 메일>] [--ip <공인 IPv4>]
-#   bash infra/cloud/deploy.sh --check-only <host>          # 배포 없이 헬스체크만 (예: 1-2-3-4.sslip.io)
+#   bash infra/cloud/deploy.sh --check-only <host>          # 배포 없이 헬스체크만 (예: 1.2.3.4.sslip.io)
 #
 #   -i <키>        ssh 개인키 (ssh -i 그대로)
 #   --skip-build   이미지 빌드·전송을 건너뛴다(설정 파일·.env 만 바꿀 때). VM 에 이미지가 이미 있어야 한다.
@@ -230,7 +230,7 @@ fi
 [[ "$TARGET" == *@* ]] || die "대상은 <user>@<VM-IP> 꼴이어야 해요: $TARGET"
 [ -n "$PUBLIC_IP" ] || PUBLIC_IP="${TARGET#*@}"
 is_ipv4 "$PUBLIC_IP" || die "공인 IPv4 를 알 수 없어요: '$PUBLIC_IP' — ssh 별칭을 쓰면 --ip <공인 IPv4> 를 함께 주세요"
-EXPECTED_HOST="${PUBLIC_IP//./-}.sslip.io"
+EXPECTED_HOST="$PUBLIC_IP.sslip.io"   # 점 표기(CLAUDE.md 규칙 12 · remote-env.sh 와 같은 규칙)
 HOST="$EXPECTED_HOST"
 
 for tool in ssh tar gzip curl openssl od; do command -v "$tool" >/dev/null 2>&1 || die "$tool 이 필요해요"; done
@@ -245,6 +245,8 @@ if [ "$SKIP_BUILD" = 0 ]; then
     DOCKER=(docker)
   elif [ -n "$desktop_docker" ] && [ -x "$desktop_docker" ]; then
     DOCKER=("$desktop_docker")
+    # 같은 폴더의 docker-credential-desktop 을 buildx 가 PATH 에서 찾는다(없으면 'error getting credentials' 로 빌드 실패)
+    PATH="$(dirname "$desktop_docker"):$PATH"; export PATH
   else
     die "docker CLI 를 찾지 못했어요(Docker Desktop 실행 확인) — 이미지가 VM 에 이미 있으면 --skip-build"
   fi

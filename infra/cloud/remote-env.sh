@@ -5,7 +5,7 @@
 #
 # - infra/.env 가 이미 있으면 기존 값은 건드리지 않는다(멱등 — 재배포해도 비밀·JWT 키가 바뀌지 않아 발급 토큰·DB 가 유지된다).
 #   단, 템플릿에 나중에 추가된 CHANGE_ME 항목 중 볼륨·발급 토큰과 무관한 것(DH_DEV_LOGIN_KEY)이 없으면 그 줄만 덧붙인다.
-# - 없으면 cloud/.env.example 을 읽어 <IP> 를 1-2-3-4 꼴로 바꾸고, 값이 CHANGE_ME 인 항목을 openssl 로 만든 값으로 채운다.
+# - 없으면 cloud/.env.example 을 읽어 <IP> 를 VM IP(점 표기 그대로)로 바꾸고, 값이 CHANGE_ME 인 항목을 openssl 로 만든 값으로 채운다.
 #   비밀은 전부 hex(compose 보간 `$`, EMQX HOCON `"`·`}`, redis-server 인자 공백 회피), JWT 키는 RSA 2048 PKCS#8 PEM 한 줄(\n 두 글자).
 # - 결과는 chmod 600. 값은 화면·로그에 찍지 않는다(키 이름만).
 set -Eeuo pipefail
@@ -77,7 +77,7 @@ case "$pem" in
   *) die "RSA 키 생성 결과가 PKCS#8 PEM 이 아니에요 (openssl $(openssl version))" ;;
 esac
 
-export RE_LABEL="${IP//./-}"
+export RE_LABEL="$IP"   # 점 표기 그대로(1.2.3.4.sslip.io) — sslip.io 는 하이픈형(1-2-3-4)도 같은 IP 로 풀어 준다
 export RE_CADDY_EMAIL="$EMAIL"
 export RE_POSTGRES_PASSWORD; RE_POSTGRES_PASSWORD="$(hex 24)"
 export RE_DH_REDIS_PASSWORD; RE_DH_REDIS_PASSWORD="$(hex 24)"
@@ -88,7 +88,7 @@ export RE_DH_CAR_ID_SALT; RE_DH_CAR_ID_SALT="$(hex 32)"
 export RE_DH_DEV_LOGIN_KEY; RE_DH_DEV_LOGIN_KEY="$(appendable_secret DH_DEV_LOGIN_KEY)"
 export RE_DH_JWT_PRIVATE_KEY_PEM="$pem"
 
-# 주석·빈 줄은 그대로 두고, 값 줄에서만 <IP> → 1-2-3-4, KEY=CHANGE_ME → RE_KEY 값, 빈 CADDY_EMAIL= → 메일(있으면).
+# 주석·빈 줄은 그대로 두고, 값 줄에서만 <IP> → 1.2.3.4, KEY=CHANGE_ME → RE_KEY 값, 빈 CADDY_EMAIL= → 메일(있으면).
 awk '
   /^[[:space:]]*(#|$)/ { print; next }
   {
