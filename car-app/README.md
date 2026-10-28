@@ -15,10 +15,13 @@ cd car-app
 .\gradlew.bat :app:assembleFakeDebug  --console=plain    # 전부 Fake (일반 폰·태블릿 AVD 에서도 실행)
 .\gradlew.bat :app:testFakeDebugUnitTest --console=plain # 단위 테스트
 
-# 클라우드(T32) 빌드 — 서버 주소를 Gradle 속성으로 덮어쓴다 (기본값은 gradle.properties: 에뮬레이터 → 호스트)
-.\gradlew.bat :app:assemblePleosRelease -PdhPublicBaseUrl=https://1-2-3-4.sslip.io -PdhMqttPublicUri=ssl://1-2-3-4.sslip.io:8883
+# 클라우드(T32) 빌드 — release 기본 서버 = 클라우드. 호스트만 준다(https://{host} · ssl://{host}:8883 은 Gradle 이 만든다)
+.\gradlew.bat :app:assemblePleosRelease -PdhCloudHost=1-2-3-4.sslip.io
+# dhCloudHost 가 비어 있으면 release 도 debug 값(10.0.2.2)으로 빌드되고 경고만 뜬다:
+#   w: [donghaeng] dhCloudHost is empty - release keeps the debug server (...)
 # T40 전까지 release 에는 signingConfig 가 없어 위 명령의 산출물은 app-pleos-release-unsigned.apk(미서명) 이고 adb install 이 거부한다
-# (INSTALL_PARSE_FAILED_NO_CERTIFICATES). 설치해서 확인할 클라우드 빌드가 필요하면 같은 -P 옵션으로 :app:assemblePleosDebug 를 쓴다.
+# (INSTALL_PARSE_FAILED_NO_CERTIFICATES). 설치해서 확인할 클라우드 빌드가 필요하면 debug 에 주소를 직접 준다(또는 앱의 숨은 메뉴로 바꾼다):
+.\gradlew.bat :app:assemblePleosDebug -PdhPublicBaseUrl=https://1-2-3-4.sslip.io -PdhMqttPublicUri=ssl://1-2-3-4.sslip.io:8883
 
 # 캐시 없이 전부 다시 빌드·테스트해 확인하고 싶을 때 (gradle.properties 의 org.gradle.caching=true 는 유지)
 .\gradlew.bat :app:assembleFakeDebug :app:testFakeDebugUnitTest --rerun-tasks --no-build-cache --console=plain
@@ -28,8 +31,27 @@ cd car-app
 — release 는 T40 까지 `app-pleos-release-unsigned.apk` / `app-fake-release-unsigned.apk` (서명 없음)
 (release 서명·`apk/{팀명}_동행_release.apk` 복사는 T40)
 
-`-PdhPublicBaseUrl` 의 스킴이 매니페스트 `android:usesCleartextTraffic` 을 정한다: `http://`(기본값, 로컬 개발) → `true`,
-`https://`(클라우드) → `false`. HiveMQ(`tcp://`)에는 적용되지 않으므로 MqttGateway(T16)는 서버 주소가 https 면 `ssl://` 만 허용한다.
+### 서버 주소 (T32)
+
+| 빌드 타입 | 기본 서버 (`BuildConfig.DH_PUBLIC_BASE_URL` / `DH_MQTT_PUBLIC_URI`) | Gradle 속성 |
+|---|---|---|
+| debug | `http://10.0.2.2:8080` / `tcp://10.0.2.2:1883` (에뮬레이터 → 호스트) | `dhPublicBaseUrl` · `dhMqttPublicUri` (gradle.properties, `-P` 로 덮어쓰기) |
+| release | `https://{dhCloudHost}` / `ssl://{dhCloudHost}:8883` (클라우드) — `dhCloudHost` 가 비면 debug 값 + 경고 | `dhCloudHost` (gradle.properties 는 빈 값, VM IP 를 받으면 채우거나 `-P`) |
+
+- **평문 http 정책**: 빌드 기본 서버가 `http://` 면 `res/xml/network_security_config_open.xml`(평문 전부 허용), `https://` 면
+  `network_security_config_cloud.xml`(평문은 `10.0.2.2`·`localhost`·`127.0.0.1` 만 — 현장 로컬 서버 폴백, docs/10 R9)을 매니페스트 placeholder 로 고른다.
+  HiveMQ(Netty)에는 적용되지 않으므로 MqttGateway 는 서버 주소가 https 면 `ssl://`·`wss://` 만 허용한다(`MqttUriPolicy`).
+- **숨은 메뉴 '서버 주소'**: 설정 화면 제목 **설정** 을 3초 안에 5번 탭(정차 중) → 지금 유효값(사용자 지정 ?: 빌드 기본값)과 출처를 보고
+  서버 주소·MQTT 주소(비우면 페어링 응답 `mqtt.uri`)를 바꾼다. 형식 검증(경로 없는 `http(s)://호스트[:포트]`, 이 빌드가 막는 평문 호스트,
+  https 서버 + 평문 브로커) → 확인 창 → 저장. **서버 주소가 바뀌면 차량 연결(토큰)과 현재 그룹이 지워진다**(`TokenStore.clear(SERVER_CHANGED)`,
+  다른 서버의 차량 JWT 는 무효) → 폰에서 다시 연결. MQTT 주소만 바꾸면 같은 토큰으로 다시 붙는다. [기본값 복원] 으로 되돌린다.
+  REST 는 OkHttp `ServerHostInterceptor` 가 요청마다 호스트를 바꾸고(Retrofit 재생성 없음), 홈·진단의 서버 주소는 유효값 + "(사용자 지정)" 으로 보인다.
+  저장 위치: SharedPreferences `server_config`(비밀 아님). 로그 `server address changed base=… baseChanged=true`, 앱 시작 때 `server override active …`.
+- **MQTT WSS 자동 전환**: 서버가 https 면 기본 전송(`ssl://{host}:8883`)과 **베이스 URL 에서 파생한** `wss://{host}/mqtt`(443, Caddy → EMQX 8083)를
+  후보로 둔다(서버 응답은 바뀌지 않는다, docs/03 머리말). 브로커에 닿지 못한 시도가 연속 2회이거나 첫 연결이 10초 안에 안 되면
+  `mqtt transport fallback → wss (from tls: …)` 를 남기고 바꾼다. 붙은 전송은 SharedPreferences `mqtt_transport` 에 기억해 다음 시작에 먼저 시도하고,
+  그 전송이 같은 조건으로 실패하면 반대로 돌아간다. 진단 **MQTT 연결** 카드의 '전송'(tcp/tls/wss · 전환 N회), 30초 `health … tr=wss` 로 확인한다.
+  WebSocket 전송을 위해 `io.netty:netty-codec-http`(HiveMQ POM 에서 optional, 같은 4.1.115.Final)를 직접 의존한다.
 
 AGP 9 로 올리지 않는다(Android Studio 가 권해도 거절). 툴체인 버전은 `gradle/libs.versions.toml` 한 곳에서만 바꾼다.
 
@@ -166,13 +188,14 @@ I DongHaeng: token store: saved vehicleId=veh_… token=eyJh…(len=…)
 페어링돼 있으면 앱이 뜨자마자 `MqttSessionManager` 가 브로커에 붙는다. 기대 로그:
 ```
 mqtt session manager started
-mqtt connected broker=10.0.2.2:1883 tls=false vid=veh_…** reconnect=false
+mqtt connected broker=10.0.2.2:1883 transport=tcp vid=veh_…** reconnect=false
 mqtt connack reason=SUCCESS sessionPresent=false
 mqtt subscribed topic=dh/v1/vehicle/veh_…**/cmd
 ```
 - 브로커 재시작(`cd infra && docker compose restart emqx`) 뒤 `mqtt disconnected source=SERVER …` → 수 초 안에 `mqtt connected … reconnect=true` + `mqtt subscribed …` 가 다시 찍히면 자동 복구 OK. 설정 → 진단 화면의 **MQTT 연결** 카드에서 상태/재연결 횟수/구독 토픽/마지막 cmd 를 그대로 볼 수 있다.
 - 서버 재시작 뒤 `CONNACK … NOT_AUTHORIZED` 가 반복되면: EMQX 가 JWKS 를 다시 받을 때까지(최대 30초) 정상이며, 계속되면 토큰이 서버의 새 서명 키와 맞지 않는 것 — `infra/.env` 에 `DH_JWT_PRIVATE_KEY_PEM` 을 고정하고 차량을 다시 페어링한다.
-- TLS: `-PdhMqttPublicUri=ssl://…:8883` 또는 서버 응답 `mqtt.uri` 가 `ssl://` 이면 시스템 신뢰 저장소로 TLS 접속(`tls=true`). 서버가 https 인데 브로커가 `tcp://` 면 `mqtt refused: 서버가 https 이므로 브로커도 ssl:// 이어야 해요` 를 남기고 붙지 않는다(`MqttUriPolicyTest`).
+- TLS: `-PdhMqttPublicUri=ssl://…:8883` 또는 서버 응답 `mqtt.uri` 가 `ssl://` 이면 시스템 신뢰 저장소로 TLS 접속(`transport=tls`). 서버가 https 인데 브로커가 `tcp://`·`ws://` 면 `mqtt refused: 서버가 https 이므로 브로커도 ssl:// 또는 wss:// 이어야 해요` 를 남기고 붙지 않는다(`MqttUriPolicyTest`).
+- WSS 폴백(T32): https 서버에서 8883 이 막히면 `mqtt transport fallback → wss …` → `mqtt connected broker=<host>:443 transport=wss …`. 확인 방법(VM 수령 후): 숨은 메뉴 MQTT 주소에 닫힌 포트(`ssl://<VM-IP>.sslip.io:8884`)를 넣고 저장 → 10초 안에 위 두 줄과 진단 '전송 wss · 전환 1회'.
 
 ### T17 — 그룹 생성 · 초대 QR (`adb logcat -s DongHaeng`)
 홈(연결됨) → **같이 가기 시작** → 목적지(내비 안내 중이면 자동, 아니면 시연용 프리셋) · 그룹 이름 · 최대 인원 → **같이 가기 시작** 버튼 → 서버 `POST /v1/groups`(차량 JWT) → 초대 QR(`invite.url` 그대로) + 남은 시간 + 멤버 목록. 기대 로그:
@@ -262,5 +285,6 @@ Virtual Console 은 웹 UI 외에 HTTP API 도 있다(위 T22 절 참고: `/vehi
 > **Pleos AVD 에서 `SocketTimeoutException`(서버 연결 불가)이 나면** Wi-Fi 를 끈다: `adb -s <pleos-serial> shell svc wifi disable`. 이 AVD 는 Wi-Fi(wlan0)가 기본 네트워크일 때 호스트 10.0.2.2 에 닿지 않고 유선(eth0)으로만 닿는다. 확인 `adb -s <serial> shell ping -c 1 10.0.2.2`, 되돌리기 `svc wifi enable`. (docs/09 §1)
 
 - 에뮬레이터 → 호스트 서버: `http://10.0.2.2:8080`, MQTT `tcp://10.0.2.2:1883` (기본값, `infra/` docker compose)
-- 클라우드: `https://<VM-IP>.sslip.io`, `ssl://<VM-IP>.sslip.io:8883` (`-P` 로 빌드 시 지정, 고정 도메인 없음)
+- 클라우드: `https://<VM-IP>.sslip.io`, `ssl://<VM-IP>.sslip.io:8883` (release 기본 — `-PdhCloudHost=<VM-IP>.sslip.io`, 고정 도메인 없음). 8883 이 막힌 망에서는 `wss://<VM-IP>.sslip.io/mqtt` 로 자동 전환
+- 앱을 다시 빌드하지 않고 서버를 바꾸려면 설정 제목 5번 탭 → '서버 주소'(위 '서버 주소 (T32)' 절)
 - 차량 앱은 QR 문자열을 만들지 않는다 — 페어링 QR(verifyUri)·그룹 QR(invite.url)은 서버 응답을 그대로 표시한다.
