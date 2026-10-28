@@ -3,10 +3,12 @@ package app.donghaeng.event
 import app.donghaeng.group.GroupMembershipApi
 import app.donghaeng.identity.IdentityApi
 import app.donghaeng.mqtt.MqttInboundHandler
+import app.donghaeng.presence.PresenceApi
 import app.donghaeng.protocol.DestinationArrived
 import app.donghaeng.protocol.DhJson
 import app.donghaeng.protocol.EnergyKind
 import app.donghaeng.protocol.Envelope
+import app.donghaeng.protocol.EventAudience
 import app.donghaeng.protocol.GroupEvent
 import app.donghaeng.protocol.GroupEventType
 import app.donghaeng.protocol.LowEnergy
@@ -45,8 +47,13 @@ class RedisEventDedup(private val redis: StringRedisTemplate) : EventDedup {
 }
 
 /**
- * 차량 이벤트 정규화 (T26, docs/06 §3): 소속 그룹 확인 → 중복 억제 → 음성 문구 → 그룹 이벤트 저장(커밋 뒤 MQTT 팬아웃).
+ * 차량 이벤트 정규화 (T26, docs/06 §3): 소속 그룹 확인 → 중복 억제 → 음성 문구 → 수신 대상 → 그룹 이벤트 저장(커밋 뒤 MQTT 팬아웃).
  * ROUTE_CHANGED 는 routesync(T28), PRESET_MESSAGE 는 T53 이 맡으므로 여기서는 기록만 하지 않고 건너뛴다.
+ *
+ * 수신 대상(docs/03 §5.4 `audience`): `HARD_BRAKE` 의 문구는 "앞쪽 ○○ 차가 급제동"이라 **출처보다 경로상 뒤에 있는 차**만 들어야 한다.
+ * 이벤트는 그룹 토픽 하나로 나가므로 서버가 지금 스냅샷([PresenceApi.snapshotOf], 패널 간격과 같은 `distanceToLeaderM`)으로
+ * 뒤차 목록을 정해 `audience` 에 싣고, 차량 앱·companion 은 [EventAudience.isForMe] 로 자기 차가 대상일 때만 알린다.
+ * 그 밖의 종류는 audience 없음(= 그룹 전체).
  */
 @Service
 class VehicleEventService(
@@ -55,6 +62,7 @@ class VehicleEventService(
     private val dedup: EventDedup,
     private val speech: SpeechComposer,
     private val sink: GroupEventSink,
+    private val presence: PresenceApi,
 ) {
     /** 저장된 그룹 이벤트. 그룹 없음·중복·미지원 종류면 null */
     @Transactional
@@ -74,7 +82,33 @@ class VehicleEventService(
         }
         val nickname = identity.vehicle(vehicleId)?.nickname ?: vehicleId
         val (severity, text) = describe(type, nickname, payload)
-        return sink.record(groupId, GroupEventType.valueOf(type.name), vehicleId, severity, text, payload)
+        val audience = audienceOf(groupId, vehicleId, type)
+        return sink.record(groupId, GroupEventType.valueOf(type.name), vehicleId, severity, text, payload, audience)
+    }
+
+    /**
+     * 앞뒤로 대상을 고르는 종류([EventAudience.BEHIND_ONLY_TYPES] — HARD_BRAKE)면 출처보다 뒤에 있는 멤버(출처 제외, 위치 모르는 멤버 포함,
+     * 뒤차가 없으면 빈 목록 = 아무도 알리지 않음). 스냅샷을 못 읽으면 null(그룹 전체 — 차량이 자기 스냅샷으로 다시 판정한다). 그 밖 종류는 null.
+     */
+    private fun audienceOf(groupId: String, vehicleId: String, type: VehicleEventType): List<String>? {
+        if (!EventAudience.isBehindOnly(type.name)) return null
+        val state = try {
+            presence.snapshotOf(groupId)
+        } catch (e: Exception) {
+            log.warn("event audience: snapshot failed → whole group groupId={} type={} cause={}", groupId, type, e.javaClass.simpleName)
+            return null
+        }
+        if (state == null) {
+            log.warn("event audience: no snapshot → whole group groupId={} type={}", groupId, type)
+            return null
+        }
+        val behind = EventAudience.behind(vehicleId, state.members)
+        val others = state.members.count { it.vehicleId != vehicleId }
+        val unknown = state.members.count { it.vehicleId != vehicleId && it.distanceToLeaderM == null }
+        val sourceKnown = state.members.firstOrNull { it.vehicleId == vehicleId }?.distanceToLeaderM != null
+        // 좌표·닉네임 없이 수만 남긴다 (CLAUDE.md 규칙 8)
+        log.info("event audience groupId={} vid={} type={} behind={}/{} unknownPos={} sourceKnown={}", groupId, vehicleId, type, behind.size, others, unknown, sourceKnown)
+        return behind
     }
 
     private fun describe(type: VehicleEventType, nickname: String, payload: JsonObject): Pair<Severity, String?> = when (type) {

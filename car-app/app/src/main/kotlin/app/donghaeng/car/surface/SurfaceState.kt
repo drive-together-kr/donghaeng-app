@@ -6,6 +6,7 @@ import app.donghaeng.car.domain.session.ReceivedGroupEvent
 import app.donghaeng.car.feature.drive.ContinuousDriveTimer
 import app.donghaeng.car.feature.drive.FloatingPanelUi
 import app.donghaeng.car.feature.drive.PttUi
+import app.donghaeng.protocol.EventAudience
 import app.donghaeng.protocol.GroupState
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -33,7 +34,8 @@ import java.time.ZoneId
  *
  * - [mode] = [SurfacePolicy.mode](그룹 세션, 오버레이 권한), [panelVisible] = PANEL 이고 동행 화면이 보이지 않음(started 기준).
  * - [panelUi] = [FloatingPanelMapper] 결과(그룹이 있을 때만, 1초 틱으로 이벤트 10초 창을 갱신, 신선도·나이는 [serverNow] 기준).
- * - [recentEvents] = 앱 시작 이후 받은 그룹 이벤트(실제 수신 시각) — 그룹이 바뀌면 비운다.
+ * - [recentEvents] = 앱 시작 이후 받은 그룹 이벤트(실제 수신 시각) 중 **내 차가 대상인 것**([EventAudience] — 급제동은 출처보다 뒤에 있는 차만,
+ *   audience 가 없으면 받는 순간의 스냅샷으로 앞뒤 판정) — 그룹이 바뀌면 비운다. 패널 소식 줄·정차 대시보드 띠·지난 소식이 모두 여기서 나온다.
  * - [corner] = 패널 모서리(SharedPreferences "dh_surface"), [isDriving] = 드래그 허용 판단(정차 중에만).
  * - [continuousDriveMs] = 시작부터 주행 여부를 따라가는 [ContinuousDriveTimer](대시보드가 안 보이는 주행 중에도 센다).
  */
@@ -112,9 +114,18 @@ class SurfaceState(
         job?.cancel(); job = null
     }
 
-    /** 이벤트 한 건 기록(디버그 리시버도 부른다) — 최신 먼저, eventId 중복 제거 */
-    fun noteEvent(e: ReceivedGroupEvent) {
+    /**
+     * 이벤트 한 건 기록(디버그 리시버도 부른다) — 최신 먼저, eventId 중복 제거. 내 차가 대상이 아니면([EventAudience.decide]) 버린다.
+     * 앞뒤 판정은 받는 순간의 스냅샷으로 한 번만 한다(나중에 차 순서가 바뀌어도 목록이 흔들리지 않게). 기록했으면 true
+     */
+    fun noteEvent(e: ReceivedGroupEvent): Boolean {
+        val audience = EventAudience.decide(e.event, myVehicleId(), groupState.value?.members)
+        if (!audience.forMe) {
+            DhLog.i("surface: skip not-for-me ${e.event.type} basis=${audience.basis}")
+            return false
+        }
         _recent.update { (listOf(e) + it).distinctBy { r -> r.event.eventId }.take(MAX_EVENTS) }
+        return true
     }
 
     override fun serverNow(): Long = serverClock()

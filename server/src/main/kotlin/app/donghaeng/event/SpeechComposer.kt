@@ -39,7 +39,11 @@ class SpeechComposer {
     fun lowEnergy(nickname: String, kind: EnergyKind, pct: Int): String =
         if (kind == EnergyKind.EV) "$nickname 배터리가 $pct% 남았어요." else "$nickname 연료가 $pct% 남았어요."
 
-    /** `앞쪽 {nickname}이 급제동했어요. 주의하세요.` — 선두보다 뒤 차량에 읽힐 문구(누가 읽을지는 차량 쪽 음성 안내가 정한다) */
+    /**
+     * `앞쪽 {nickname}이 급제동했어요. 주의하세요.` — **급제동한 차보다 경로상 뒤에 있는 차**만 듣는 문구.
+     * 대상은 서버가 정한다: [VehicleEventService] 가 스냅샷 `distanceToLeaderM` 으로 뒤차를 골라 `GroupEvent.audience` 에 싣고,
+     * 차량 앱은 `EventAudience.isForMe` 로 자기 차가 audience 에 있을 때만 읽는다(앞차·급제동한 차 자신은 듣지 않는다, docs/03 §5.4).
+     */
     fun hardBrake(nickname: String): String = "앞쪽 ${nickname}${Josa.iGa(nickname)} 급제동했어요. 주의하세요."
 
     /** `{nickname}이 {name}에 도착했어요.` */

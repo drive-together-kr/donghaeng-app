@@ -3,11 +3,15 @@ package app.donghaeng.car.surface
 import app.donghaeng.car.domain.session.ReceivedGroupEvent
 import app.donghaeng.car.feature.drive.DriveFormat
 import app.donghaeng.car.feature.drive.EventBannerUi
+import app.donghaeng.protocol.EventAudience
 
 /**
  * 표면(플로팅 패널 소식 줄·정차 대시보드 띠·지난 소식)이 **같은 규칙으로** 이벤트를 고르게 하는 순수 함수 (docs/05 §5.2).
  *
  * - 내 차 출처 제외 — 카드([EventCardPolicy])·음성(VoiceAnnouncer)과 같다(내 차 일은 내가 안다).
+ * - 대상 아님 제외 — 서버가 정한 `audience`(급제동 = 출처보다 뒤에 있는 차)에 내 차가 없으면 뺀다([EventAudience]).
+ *   audience 가 없는 급제동의 스냅샷 앞뒤 판정은 받는 순간 한 번만 한다([SurfaceState.noteEvent]) — 여기서 매 틱 다시 보면 차 순서가 바뀔 때
+ *   지난 소식이 나타났다 사라질 수 있어서다. 그래서 여기서는 스냅샷 없이(null) 본다(= audience 만 판정, 없으면 통과).
  * - '방금 소식'(패널 소식 줄·대시보드 띠) = 기기에서 받은 지 [BANNER_WINDOW_MS](10초) 안 **그리고** 서버 시계로 [FRESHNESS_MS](60초, 카드와 같은 기준) 안에 생긴 이벤트.
  *   HiveMqttGateway 는 세션을 유지(cleanStart=false + sessionExpiry)하므로 터널 등으로 끊겼다 재접속하면 브로커에 쌓인 QoS1 옛 이벤트가 한꺼번에
  *   '지금' 수신된다(receivedAt = 지금). 이들은 봉투 ts 가 오래돼 여기서 빠진다 — 카드(60 s)·음성(5 s)이 거르는 이벤트를 패널·띠가 '방금'으로 띄우지 않게.
@@ -21,8 +25,9 @@ object SurfaceEvents {
     private val newestFirst: Comparator<ReceivedGroupEvent> =
         compareByDescending<ReceivedGroupEvent> { it.envelopeTsMs }.thenByDescending { it.receivedAtMs }
 
+    /** 내 차 출처·대상 아님(audience) 제외 */
     fun othersOnly(events: List<ReceivedGroupEvent>, myVehicleId: String?): List<ReceivedGroupEvent> =
-        if (myVehicleId == null) events else events.filter { it.event.sourceVehicleId != myVehicleId }
+        events.filter { (myVehicleId == null || it.event.sourceVehicleId != myVehicleId) && EventAudience.isForMe(it.event, myVehicleId, null) }
 
     /** 서버 시계 기준 나이(ms, 0 이상) */
     fun ageMs(e: ReceivedGroupEvent, serverNowMs: Long): Long = (serverNowMs - e.envelopeTsMs).coerceAtLeast(0)

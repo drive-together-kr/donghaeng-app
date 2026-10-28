@@ -17,7 +17,8 @@ car-app · server · companion/sdk 가 함께 쓰는 Kotlin 데이터 클래스(
 | `Place.kt` | 목적지·경유지 `Place` |
 | `VehicleEvents.kt` | 차량 이벤트 `VehicleEventType` + 본문 클래스(`LowEnergy`, `HardBrake`, `HazardOn`, …) + `vehicleEventSerializer()` (§5.2) |
 | `GroupState.kt` | `GroupState`, `MemberState`, `MemberStatus` (§5.3) |
-| `GroupEvent.kt` | `GroupEvent`, `Severity`, `GroupEventType` (§5.4) |
+| `GroupEvent.kt` | `GroupEvent`(+ 선택 `audience` — 알릴 차량, null = 그룹 전체), `Severity`, `GroupEventType` (§5.4) |
+| `EventAudience.kt` | 수신 대상 규칙 하나: 서버 `behind(source, members)`(급제동 = `distanceToLeaderM` 이 출처보다 큰 멤버, 모르면 포함) · 차량/companion `isForMe(event, myVehicleId, members)`(audience 우선, 없으면 스냅샷 앞뒤, 모르면 대상) (§5.4) |
 | `Commands.kt` | `CmdType` + 본문 클래스(`GroupJoined`, `RouteFollowProposal`, `RestStopProposal`, `GroupEnded`, `TokenRevoked`) + `cmdSerializer()` (§5.5) |
 | `Ack.kt` | `Ack` (§5.6), `Presence` (LWT 본문) |
 | `Topics.kt` | 토픽 문자열 생성·해석 (§4) |

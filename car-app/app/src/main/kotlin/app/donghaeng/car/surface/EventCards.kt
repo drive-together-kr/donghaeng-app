@@ -14,6 +14,8 @@ import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.session.ReceivedGroupEvent
 import app.donghaeng.car.feature.drive.DriveFormat
 import app.donghaeng.car.feature.drive.Tone
+import app.donghaeng.protocol.EventAudience
+import app.donghaeng.protocol.GroupState
 import app.donghaeng.protocol.Severity
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -47,6 +49,7 @@ sealed interface CardDecision {
  *
  * - 대상: 저잔량·급제동·에어백·경유지/목적지 도착·합류·연결 끊김·동승자 메시지(+ 다음 작업 F16 의 `VOICE_MESSAGE` — 문자열 비교라 enum 이 없어도 된다).
  * - 내 차가 출처인 이벤트 제외(내 차 일은 내가 안다).
+ * - 대상 아님 제외([EventAudience.isForMe]): 급제동은 출처보다 뒤에 있는 차만(서버 `audience`, 없으면 [decide] 의 스냅샷으로 앞뒤 판정, 모르면 대상).
  * - 신선도: 서버 시계 기준 [FRESHNESS_MS](60초)보다 오래된 이벤트(재연결 뒤 밀려 온 옛 소식)는 카드로 띄우지 않는다.
  * - 카테고리: 메시지 → msg, 그 밖(저잔량·급제동·도착·합류·끊김) → navigation. Pleos 알림 표시기(ai.umos.notification)는 일반 앱 알림 중
  *   `call`·`msg`·`navigation`(·`connect.system`)만 헤드업 카드로 띄우고 `status` 는 알림 목록에만 넣는다(2026-10-28 실측 — 표시기 로그 `needHeadUpNotification`).
@@ -73,10 +76,11 @@ object EventCardPolicy {
         else -> CATEGORY_NAVIGATION
     }
 
-    fun decide(e: ReceivedGroupEvent, myVehicleId: String?, serverNowMs: Long): CardDecision {
+    fun decide(e: ReceivedGroupEvent, myVehicleId: String?, serverNowMs: Long, groupState: GroupState? = null): CardDecision {
         val type = e.event.type
         if (type !in TARGET_TYPES) return CardDecision.Skip("not-target")
         if (myVehicleId != null && e.event.sourceVehicleId == myVehicleId) return CardDecision.Skip("own")
+        if (!EventAudience.isForMe(e.event, myVehicleId, groupState?.members)) return CardDecision.Skip("not-audience")
         val age = serverNowMs - e.envelopeTsMs
         if (age > FRESHNESS_MS) return CardDecision.Skip("stale")
         return CardDecision.Post(
@@ -164,6 +168,8 @@ class EventCardNotifier(
     private val mode: StateFlow<SurfaceMode>,
     private val groupName: () -> String?,
     private val poster: CardPoster,
+    /** 최신 그룹 스냅샷 — audience 없는 급제동의 앞뒤 판정([EventCardPolicy.decide]) */
+    private val groupState: () -> GroupState? = { null },
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     /** 빈도 제한용 기기 시계 */
     private val clock: () -> Long = System::currentTimeMillis,
@@ -192,7 +198,7 @@ class EventCardNotifier(
     @Synchronized
     fun onEvent(e: ReceivedGroupEvent): Boolean {
         if (mode.value == SurfaceMode.OFF) return skip("no-group", e)
-        return when (val d = EventCardPolicy.decide(e, myVehicleId(), serverNow())) {
+        return when (val d = EventCardPolicy.decide(e, myVehicleId(), serverNow(), groupState())) {
             is CardDecision.Skip -> skip(d.reason, e)
             is CardDecision.Post -> {
                 val now = clock()

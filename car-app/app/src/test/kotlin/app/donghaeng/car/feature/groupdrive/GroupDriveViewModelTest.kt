@@ -176,6 +176,24 @@ class GroupDriveViewModelTest {
     }
 
     @Test
+    fun `brake events not addressed to my car stay out of the event strip`() = runTest(dispatcher) {
+        // 나 = veh_B. 선두 A(0) — 나 B(1.2 km 뒤) — C(2.4 km 뒤)
+        val vm = viewModel()
+        val job = vm.uiState.onEach { }.launchIn(this)
+        runCurrent()
+        deliverState(GroupState("grp_1", "veh_A", listOf(member("veh_A", "아빠 차", MemberStatus.DRIVING, dist = 0), member("veh_B", "둘째 차", MemberStatus.DRIVING, dist = 1_200), member("veh_C", "삼촌 차", MemberStatus.DRIVING, dist = 2_400))))
+        runCurrent()
+        val empty = JsonObject(emptyMap())
+        deliverEvent(GroupEvent("evt_front", "HARD_BRAKE", "veh_A", Severity.WARN, "앞쪽 아빠 차가 급제동했어요.", empty, audience = listOf("veh_B", "veh_C")))  // 뒤차인 나 → 보임
+        deliverEvent(GroupEvent("evt_rear", "HARD_BRAKE", "veh_C", Severity.WARN, "앞쪽 삼촌 차가 급제동했어요.", empty, audience = emptyList()))         // 앞차인 나 → 안 보임
+        deliverEvent(GroupEvent("evt_old", "HARD_BRAKE", "veh_C", Severity.WARN, "앞쪽 삼촌 차가 급제동했어요.", empty))                                  // audience 없음 → 스냅샷상 C 가 뒤 → 안 보임
+        deliverEvent(GroupEvent("evt_low", "LOW_ENERGY", "veh_C", Severity.WARN, "삼촌 차 연료가 12% 남았어요.", empty))                                 // 그룹 전체
+        runCurrent()
+        assertEquals(listOf("evt_low", "evt_front"), vm.uiState.value.events.map { it.eventId })
+        job.cancel()
+    }
+
+    @Test
     fun `leaving clears the session so the screen shows the ended pane`() = runTest(dispatcher) {
         val vm = viewModel()
         val job = vm.uiState.onEach { }.launchIn(this)

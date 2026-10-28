@@ -227,7 +227,7 @@ ACL: 차량 `{vid}`는 자신의 `telemetry/event/ack/presence`에만 publish, �
 | type | data | 생성 조건 |
 |---|---|---|
 | `LOW_ENERGY` | `{ kind: "FUEL"\|"EV", pct }` | 15% 이하 최초 진입, 이후 5%p마다 |
-| `HARD_BRAKE` | `{ decelMps2, speedBeforeKph }` | 브레이크 ON & 1초 내 감속 ≥ 4 m/s² (위치 기반 속도로 판정) |
+| `HARD_BRAKE` | `{ decelMps2, speedBeforeKph }` | 브레이크 ON & 1초 내 감속 ≥ 4 m/s² (위치 기반 속도로 판정). 그룹 이벤트로 나갈 때 **출처보다 뒤에 있는 차만** 대상(§5.4 `audience`) |
 | `HAZARD_ON` | `{}` | TurnSignal 상태에서 좌우 동시 점멸 판정 시 (지원 확인 후) |
 | `AIRBAG_DEPLOYED` | `{}` | Safety airbag deployed 콜백 |
 | `ROUTE_CHANGED` | `{ destination, waypoints:[...] }` | 선두차 목적지·경유지 변경 |
@@ -258,6 +258,21 @@ ACL: 차량 `{vid}`는 자신의 `telemetry/event/ack/presence`에만 publish, �
   "payload": { "kind": "FUEL", "pct": 12 }
 }
 ```
+```json
+"data": {
+  "eventId": "evt_01H...", "type": "HARD_BRAKE", "sourceVehicleId": "veh_B",
+  "severity": "WARN",
+  "speech": "앞쪽 둘째 차가 급제동했어요. 주의하세요.",
+  "payload": { "decelMps2": 5.6, "speedBeforeKph": 72.0 },
+  "audience": ["veh_C"]                           // 선택. 알릴 차량 — 없으면(null) 그룹 전체
+}
+```
+**수신 대상 `audience` (선택, 2026-10-28 추가):** 그룹 이벤트는 그룹 토픽 하나로 모든 멤버에게 가지만, 이벤트마다 **알릴 차량**을 정할 수 있다.
+- 필드 없음(null) = 그룹 전체(지금까지의 모든 이벤트와 같다). 문자열 배열 = 그 `vehicleId` 의 차만 음성·알림 카드·패널 소식 줄·피드에 띄운다. **빈 배열 `[]` = 아무도 알리지 않음**(이벤트는 기록·피드 조회용으로 남는다). `DhJson` 규칙(`explicitNulls = false`)상 null 은 직렬화에서 빠지므로 옛 클라이언트·옛 메시지와 호환된다(모르는 키는 무시).
+- 지금 채우는 종류는 **`HARD_BRAKE` 하나** — 문구가 "앞쪽 {nickname}이 급제동했어요"라 **급제동한 차보다 경로상 뒤에 있는 차**만 들어야 한다. 서버(`VehicleEventService`)가 그 순간의 스냅샷(`PresenceApi.snapshotOf`, §5.3 과 같은 판정)에서 `distanceToLeaderM` 이 출처보다 **큰** 멤버를 고른다 — 플로팅 패널 간격(상대 − 나, 양수 = "뒤")과 같은 기준이다. 출처는 제외, 같은 값은 뒤가 아니다. 선두가 밟으면 나머지 전원, 맨 뒤 차가 밟으면 `[]`.
+- **가정:** 선두가 맨 앞이다(`distanceToLeaderM` 은 선두까지 직선 거리라 선두를 앞지른 차·굽은 길은 근사 — 패널 간격과 같은 한계). 출처나 어떤 멤버의 값을 모르면(위치 없음) 그 멤버는 **대상에 넣는다** — 경고를 놓치는 것보다 한 번 더 듣는 편이 낫다. 스냅샷을 못 읽으면 `audience` 없이(그룹 전체) 보내고 차량이 아래 폴백으로 다시 판정한다.
+- 받는 쪽(차량 앱·companion): `protocol.EventAudience.isForMe(event, myVehicleId, members)` 하나로 판정한다. ① `audience` 가 있으면 `myVehicleId ∈ audience` ② 없는데 `HARD_BRAKE` 면(옛 서버·디버그 주입) 자기 최신 스냅샷으로 "출처 `distanceToLeaderM` < 내 값"일 때만, 내 id·출처·스냅샷·거리 중 하나라도 모르면 대상 ③ 그 밖은 그룹 전체. 서버의 대상 고르기(`EventAudience.behind`)와 같은 비교를 쓴다.
+- `GET /groups/{id}` 의 `recentEvents` 도 같은 `audience` 를 돌려준다(`group_event.audience` JSONB, docs/04 V4). 같은 이벤트를 다시 받는 경우(QoS1 재전송·재접속 시 브로커가 보관한 메시지)에도 본문이 같으므로 대상이 유지된다.
 **STATE 판정 규칙 (presence, T24 구현):** 서버는 2초마다(`dh.presence.snapshot-interval-ms`) 활성 그룹마다 스냅샷을 **retained·QoS 0** 으로 발행하고, 그룹이 끝나면 빈 payload(retained) 로 지운다.
 - `online`: `…/presence` 토픽 값(접속 시 `{"online":true}`, LWT `{"online":false}`)이 있으면 그 값, 없으면 "15초 안에 텔레메트리가 왔는가". 텔레메트리 수신도 online 으로 친다(retained presence 를 놓친 경우 대비).
 - `ageMs`: 마지막 텔레메트리 봉투 `ts` 기준 경과. 위치 없으면 null. `eta`·`energy` 는 차량이 마지막으로 보낸 값을 유지한다(변화 시에만 오므로).

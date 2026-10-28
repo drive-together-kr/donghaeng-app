@@ -8,8 +8,10 @@ import app.donghaeng.companion.sdk.GroupMember
 import app.donghaeng.companion.sdk.GroupSnapshot
 import app.donghaeng.companion.sdk.MyVehicle
 import app.donghaeng.companion.sdk.PairResult
+import app.donghaeng.protocol.EventAudience
 import app.donghaeng.protocol.GroupEvent
 import app.donghaeng.protocol.GroupEventType
+import app.donghaeng.protocol.MemberState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -186,7 +188,7 @@ object DongHaengStore {
                 .collect { snap ->
                     _snapshot.value = snap
                     _groupError.value = null
-                    onEvents(snap.events)
+                    onEvents(snap.events, snap.members)
                 }
         }
     }
@@ -227,8 +229,11 @@ object DongHaengStore {
 
     fun markAllRead() = _notifications.update { list -> list.map { it.copy(read = true) } }
 
-    private fun onEvents(events: List<GroupEvent>) {
-        val fresh = events.filter { seenEventIds.add(it.eventId) }
+    private fun onEvents(events: List<GroupEvent>, members: List<MemberState>) {
+        val myId = _activeGroup.value?.myVehicleId?.takeIf { it.isNotBlank() }
+        // 내 차가 대상이 아닌 이벤트(내 차보다 뒤에 있는 차의 급제동 — 문구가 "앞쪽 ○○ 차가 급제동")는 알림으로 올리지 않는다.
+        // 차량 앱과 같은 규칙(EventAudience, docs/03 §5.4): 서버 audience 우선, 없으면 스냅샷 앞뒤, 모르면 올린다
+        val fresh = events.filter { seenEventIds.add(it.eventId) }.filter { EventAudience.isForMe(it, myId, members) }
         if (fresh.isEmpty()) return
         val now = System.currentTimeMillis()
         // 처음 받은 스냅샷의 과거 이벤트는 알림으로 올리지 않는다(이미 읽은 것으로)

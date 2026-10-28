@@ -160,6 +160,24 @@ class DocSamplesTest {
         assertEquals(LowEnergy(EnergyKind.FUEL, 12), DhJson.payloadAs<LowEnergy>(e.payload))
     }
 
+    /** §5.4 그룹 EVENT data — 급제동 + 수신 대상 audience */
+    @Test
+    fun section5_4_group_event_with_audience() {
+        val raw = """
+            {
+              "eventId": "evt_01H...", "type": "HARD_BRAKE", "sourceVehicleId": "veh_B",
+              "severity": "WARN",
+              "speech": "앞쪽 둘째 차가 급제동했어요. 주의하세요.",
+              "payload": { "decelMps2": 5.6, "speedBeforeKph": 72.0 },
+              "audience": ["veh_C"]
+            }
+        """.trimIndent()
+        val e = DhJson.json.decodeFromString<GroupEvent>(raw)
+        assertEquals(GroupEventType.HARD_BRAKE, e.eventType)
+        assertEquals(listOf("veh_C"), e.audience)
+        assertEquals(HardBrake(5.6, 72.0), DhJson.payloadAs<HardBrake>(e.payload))
+    }
+
     /** §5.5 CMD data 들 (표의 표기 그대로) */
     @Test
     fun section5_5_cmds() {

@@ -87,6 +87,7 @@ object SurfaceModule {
         mode = state.mode,
         groupName = { sessionManager.session.value?.name },
         poster = AndroidCardPoster(context),
+        groupState = { sessionManager.groupState.value },
     )
 
     @Provides

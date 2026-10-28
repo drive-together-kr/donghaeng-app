@@ -1,10 +1,12 @@
 package app.donghaeng.presence
 
+import app.donghaeng.event.VehicleEventService
 import app.donghaeng.group.GroupMembershipApi
 import app.donghaeng.mqtt.MqttPublisher
 import app.donghaeng.protocol.DhJson
 import app.donghaeng.protocol.Energy
 import app.donghaeng.protocol.Envelope
+import app.donghaeng.protocol.GroupEventType
 import app.donghaeng.protocol.GroupState
 import app.donghaeng.protocol.LocSource
 import app.donghaeng.protocol.MemberStatus
@@ -12,6 +14,7 @@ import app.donghaeng.protocol.MessageTypes
 import app.donghaeng.protocol.Place
 import app.donghaeng.protocol.Telemetry
 import app.donghaeng.protocol.Topics
+import app.donghaeng.protocol.VehicleEventType
 import app.donghaeng.protocol.rest.ApiPaths
 import app.donghaeng.protocol.rest.DeviceApproveRequest
 import app.donghaeng.protocol.rest.DeviceCodeRequest
@@ -27,7 +30,9 @@ import app.donghaeng.protocol.rest.TokenResponse
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.put
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -98,6 +103,7 @@ class PresenceIT {
     @Autowired lateinit var presenceIngestor: PresenceIngestor
     @Autowired lateinit var membership: GroupMembershipApi
     @Autowired lateinit var builder: SnapshotBuilder
+    @Autowired lateinit var vehicleEvents: VehicleEventService
 
     private val json = DhJson.json
 
@@ -215,5 +221,42 @@ class PresenceIT {
         recorder.sent.clear()
         publisher.publishAll()
         assertTrue(recorder.sent.none { it.topic == Topics.groupState(gid) })
+    }
+
+    @Test
+    fun `hard brake audience is chosen from the live snapshot, stored with the event and returned by GET group`() {
+        val a = driver("a2", "아빠 차")
+        val b = driver("b2", "둘째 차")
+        val c = driver("c2", "삼촌 차")
+        val created = create(a)
+        listOf(b, c).forEach { call(HttpMethod.POST, ApiPaths.GROUPS_JOIN, json.encodeToString(GroupJoinRequest(created.invite.token, null)), it.userToken).assertOk() }
+        val gid = created.groupId
+
+        // 선두 A, B 약 1 km 뒤, C 약 2 km 뒤 (위도 0.009° ≈ 1 km)
+        val now = System.currentTimeMillis()
+        ingest(a.vehicleId, Telemetry(lat = 37.5000, lon = 127.0, heading = 0f, speedKph = 80f, locSource = LocSource.NAVI), now)
+        ingest(b.vehicleId, Telemetry(lat = 37.4910, lon = 127.0, heading = 0f, speedKph = 80f, locSource = LocSource.NAVI), now)
+        ingest(c.vehicleId, Telemetry(lat = 37.4820, lon = 127.0, heading = 0f, speedKph = 80f, locSource = LocSource.NAVI), now)
+        val brake = buildJsonObject { put("decelMps2", 5.6); put("speedBeforeKph", 72.0) }
+
+        // 가운데 B 급제동 → 뒤차 C 만
+        val fromB = assertNotNull(vehicleEvents.handle(b.vehicleId, VehicleEventType.HARD_BRAKE, brake))
+        assertEquals(listOf(c.vehicleId), fromB.audience)
+        // 맨 뒤 C 급제동 → 아무도 아님(기록은 남음)
+        val fromC = assertNotNull(vehicleEvents.handle(c.vehicleId, VehicleEventType.HARD_BRAKE, brake))
+        assertEquals(emptyList(), fromC.audience)
+        // 그 밖 종류는 그룹 전체(audience 없음)
+        val low = assertNotNull(vehicleEvents.handle(c.vehicleId, VehicleEventType.LOW_ENERGY, buildJsonObject { put("kind", "FUEL"); put("pct", 12) }))
+        assertNull(low.audience)
+
+        // REST recentEvents 가 MQTT 와 같은 audience 를 돌려준다 — null(전체)과 [](아무도 아님)을 구분해 저장
+        val raw = call(HttpMethod.GET, ApiPaths.group(gid), bearer = a.userToken).assertOk().body!!
+        val recent = json.decodeFromString<GroupDetailResponse>(raw).recentEvents
+        val byId = recent.associateBy { it.eventId }
+        assertEquals(listOf(c.vehicleId), byId.getValue(fromB.eventId).audience)
+        assertEquals(emptyList(), byId.getValue(fromC.eventId).audience)
+        assertNull(byId.getValue(low.eventId).audience)
+        assertEquals(GroupEventType.HARD_BRAKE.name, byId.getValue(fromB.eventId).type)
+        assertTrue(raw.contains("\"audience\":[]"), "빈 목록은 [] 로 나간다")
     }
 }
