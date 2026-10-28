@@ -62,11 +62,14 @@ import kotlin.coroutines.resumeWithException
  * - 404 `NOT_FOUND` 도 그대로 전달한다 — 서버는 멤버가 아닌 그룹·나간 그룹을 404 로 숨긴다(docs/03 §2.3). 호스트는 `code` 로 분기한다
  *
  * [observeGroup] 은 `GET /v1/groups/{id}` 를 [pollIntervalMs](기본 15초)마다 폴링한다(수집 취소 시 종료). 푸시 전환은 이후 작업.
+ * F16 무전: 폴링 결과의 `VOICE_MESSAGE` 는 [voiceInbox] 가 `GET /v1/groups/{id}/voice/{voiceId}`(같은 동행 JWT)로 미리 받아
+ * payload 에 `localAudioStatus`·`localAudioPath` 를 붙인다(공개 API 변경 없음 — [VoiceInbox], docs/07 §3.1).
  * 토큰·닉네임·코드는 로그에 남기지 않는다(CLAUDE.md 규칙 8).
  *
  * @param client 테스트에서 바꿔 끼울 수 있다. 기본은 연결·읽기·쓰기 10초 타임아웃
  * @param pollIntervalMs [observeGroup] 폴링 간격
  * @param clock 캐시 만료 판단용 현재 시각(ms)
+ * @param voiceInbox 무전 오디오 캐시(테스트에서 임시 폴더·시계를 끼운다)
  */
 internal class HttpDongHaengApi(
     private val config: DongHaengConfig,
@@ -74,6 +77,7 @@ internal class HttpDongHaengApi(
     private val client: OkHttpClient = defaultClient(),
     private val pollIntervalMs: Long = POLL_INTERVAL_MS,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val voiceInbox: VoiceInbox = VoiceInbox(clock = clock),
 ) : DongHaengApi {
 
     /** 끝 `/` 없는 서버 공개 주소. 경로는 [ApiPaths] 상수(`/v1/...`)를 그대로 붙인다 */
@@ -151,40 +155,83 @@ internal class HttpDongHaengApi(
 
     private suspend fun fetchGroup(groupId: String): GroupSnapshot {
         val response = authed(ApiPaths.group(groupId), "GET")
+        voiceInbox.observeServerDate(response.serverDateMs)
         val detail = decode(GroupDetailResponse.serializer(), response.body)
         // 최신 STATE 스냅샷이 있으면 그대로, 없으면 Member 목록을 오프라인 상태로 채운다
         val members = detail.snapshot?.members ?: detail.members.map { it.toOfflineState() }
-        // 서버 recentEvents 는 최신순, GroupSnapshot.events 는 오래된 것부터
-        return GroupSnapshot(detail.groupId, members, detail.recentEvents.asReversed())
+        // 서버 recentEvents 는 최신순, GroupSnapshot.events 는 오래된 것부터.
+        // VOICE_MESSAGE 는 오디오를 미리 받아 payload 에 상태·파일 경로를 붙인다(F16, docs/07 §3.1)
+        val events = voiceInbox.resolve(detail.groupId, detail.recentEvents.asReversed(), ::fetchVoice)
+        return GroupSnapshot(detail.groupId, members, events)
+    }
+
+    /**
+     * 무전 오디오 한 건(`GET /v1/groups/{id}/voice/{voiceId}`, 동행 JWT). 실패해도 스냅샷은 그대로 내보내도록 예외 대신 결과로 돌려준다.
+     * 404·410 = 만료·삭제(Gone), 5xx·429·네트워크·인증 실패 = 다시 시도, 그 밖의 4xx·크기 초과 = 포기.
+     */
+    private suspend fun fetchVoice(path: String): VoiceInbox.Fetch = try {
+        val response = authedRaw(path, "GET", jsonBody = null, accept = AUDIO_ACCEPT, maxBytes = VoiceMessages.MAX_AUDIO_BYTES)
+        when {
+            response.isSuccess -> VoiceInbox.Fetch.Ok(response.bytes)
+            response.code == 404 || response.code == 410 -> VoiceInbox.Fetch.Gone
+            response.code == 429 || response.code >= 500 -> VoiceInbox.Fetch.Failed("HTTP_${response.code}", retryable = true)
+            else -> VoiceInbox.Fetch.Failed("HTTP_${response.code}", retryable = false)
+        }
+    } catch (e: ResponseTooLarge) {
+        VoiceInbox.Fetch.Failed("TOO_LARGE", retryable = false)
+    } catch (e: DongHaengException.Unauthorized) {
+        VoiceInbox.Fetch.Failed("UNAUTHORIZED", retryable = true)
+    } catch (e: DongHaengException.Api) {
+        VoiceInbox.Fetch.Failed(e.code, retryable = true)
     }
 
     // ---------- 요청 공통 ----------
 
-    private class RawResponse(val code: Int, val body: String) {
+    /**
+     * @param bytes 응답 본문 그대로(오디오). JSON 은 [body] 로 읽는다
+     * @param serverDateMs 응답 `Date` 헤더(서버 시계, 초 단위). 없으면 null
+     */
+    private class RawResponse(val code: Int, val bytes: ByteArray, val serverDateMs: Long? = null) {
         val isSuccess: Boolean get() = code in 200..299
+        val body: String get() = String(bytes, Charsets.UTF_8)
     }
+
+    /** 응답 본문이 상한을 넘음 — 네트워크 오류([IOException])와 구분하려고 런타임 예외로 둔다 */
+    private class ResponseTooLarge : RuntimeException("response too large")
 
     /** 동행 JWT 를 실어 보내고, 401 이면 한 번 재교환 후 재시도한다. 2xx 응답만 돌려주고 나머지는 예외 */
     private suspend fun authed(path: String, method: String, jsonBody: String? = null): RawResponse {
+        val response = authedRaw(path, method, jsonBody)
+        if (!response.isSuccess) throw failure(path, response)
+        return response
+    }
+
+    /** [authed] 와 같지만 401 이 아닌 오류 응답도 그대로 돌려준다(호출 쪽이 상태 코드로 가른다) */
+    private suspend fun authedRaw(
+        path: String,
+        method: String,
+        jsonBody: String? = null,
+        accept: String = JSON_ACCEPT,
+        maxBytes: Long = Long.MAX_VALUE,
+    ): RawResponse {
         val first = bearer()
-        var response = execute(request(path, method, jsonBody, first))
+        var response = execute(request(path, method, jsonBody, first, accept), maxBytes)
         if (response.code == 401) {
             Log.w(TAG, "401 → re-exchange path=$path")
             val second = bearer(rejected = first)
-            response = execute(request(path, method, jsonBody, second))
+            response = execute(request(path, method, jsonBody, second, accept), maxBytes)
             if (response.code == 401) {
                 cached = null
                 throw DongHaengException.Unauthorized()
             }
         }
-        if (!response.isSuccess) throw failure(path, response)
         return response
     }
 
-    private fun request(path: String, method: String, jsonBody: String?, bearer: String?): Request {
+    private fun request(path: String, method: String, jsonBody: String?, bearer: String?, accept: String = JSON_ACCEPT): Request {
         val builder = Request.Builder()
             .url(baseUrl + path)
-            .header("Accept", "application/json")
+            .header("Accept", accept)
             .header("User-Agent", userAgent)
         if (bearer != null) builder.header("Authorization", "Bearer $bearer")
         when (method) {
@@ -194,8 +241,11 @@ internal class HttpDongHaengApi(
         return builder.build()
     }
 
-    /** OkHttp 비동기 호출을 suspend 로. 본문은 OkHttp 스레드에서 다 읽어 돌려준다. 취소하면 호출도 취소된다 */
-    private suspend fun execute(request: Request): RawResponse {
+    /**
+     * OkHttp 비동기 호출을 suspend 로. 본문은 OkHttp 스레드에서 다 읽어 돌려준다. 취소하면 호출도 취소된다.
+     * 본문이 [maxBytes] 를 넘으면 [ResponseTooLarge](무전 오디오 상한).
+     */
+    private suspend fun execute(request: Request, maxBytes: Long = Long.MAX_VALUE): RawResponse {
         val raw = try {
             suspendCancellableCoroutine<RawResponse> { cont ->
                 val call = client.newCall(request)
@@ -208,8 +258,11 @@ internal class HttpDongHaengApi(
 
                         override fun onResponse(call: Call, response: Response) {
                             val result = try {
-                                response.use { RawResponse(it.code, it.body?.string().orEmpty()) }
+                                response.use { RawResponse(it.code, readBody(it, maxBytes), it.headers.getDate("Date")?.time) }
                             } catch (e: IOException) {
+                                if (cont.isActive) cont.resumeWithException(e)
+                                return
+                            } catch (e: ResponseTooLarge) {
                                 if (cont.isActive) cont.resumeWithException(e)
                                 return
                             }
@@ -223,6 +276,17 @@ internal class HttpDongHaengApi(
             throw DongHaengException.Api("NETWORK", "서버에 연결할 수 없어요")
         }
         return raw
+    }
+
+    /** 본문 전체. [maxBytes] 를 넘으면 [ResponseTooLarge] (Content-Length 가 없어도 읽으면서 확인한다) */
+    private fun readBody(response: Response, maxBytes: Long): ByteArray {
+        val body = response.body ?: return ByteArray(0)
+        if (maxBytes == Long.MAX_VALUE) return body.bytes()
+        if (body.contentLength() > maxBytes) throw ResponseTooLarge()
+        val source = body.source()
+        // request(n) 이 true = 버퍼에 n 바이트 이상 있다 → 상한 초과
+        if (source.request(maxBytes + 1)) throw ResponseTooLarge()
+        return source.buffer.readByteArray()
     }
 
     /** 2xx 가 아닌 응답 → [DongHaengException.Api]. 본문의 오류 봉투를 읽고, 없으면 HTTP 상태로 코드를 만든다 */
@@ -279,6 +343,10 @@ internal class HttpDongHaengApi(
         private const val EXPIRY_SKEW_MS = 30 * 1000L
 
         private val JSON = "application/json; charset=utf-8".toMediaType()
+        private const val JSON_ACCEPT = "application/json"
+
+        /** 무전 오디오(docs/03 §2.6 — audio/mp4 · audio/aac · audio/wav). 오류 봉투(JSON)도 받는다 */
+        private const val AUDIO_ACCEPT = "audio/*, application/json;q=0.5"
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(TIMEOUT_S, TimeUnit.SECONDS)

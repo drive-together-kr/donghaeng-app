@@ -65,8 +65,16 @@ public data class PairResult(
  *
  * 멤버 상태와 이벤트는 공용 스키마(`app.donghaeng.protocol`)의 타입을 그대로 쓴다 — 차량 앱·서버와 같은 정의다.
  *
+ * **무전(F16, `type == "VOICE_MESSAGE"`)**: payload 는 `app.donghaeng.protocol.VoiceMessagePayload`
+ * (`voiceId, durationMs, mime, sizeBytes, expiresAtMs`, `DhJson.payloadAs` 로 해석)이고, `sourceVehicleId` 가 보낸 차다.
+ * 호스트 앱은 동행 토큰을 갖지 않으므로 모듈이 오디오를 미리 내려받아(앱 전용 캐시) payload 에 두 키를 **덧붙인다**:
+ * - `localAudioStatus`: `READY`(재생 가능) · `PENDING`(받는 중 — 다음 스냅샷에서 바뀐다) · `EXPIRED`(서버 보관 끝·그룹 종료) · `FAILED`(받을 수 없음)
+ * - `localAudioPath`: `READY` 일 때만, 내려받은 파일의 절대 경로(`MediaPlayer.setDataSource(path)` 로 재생). 만료·그룹 종료 때 모듈이 지운다
+ *
+ * 공개 함수는 늘리지 않았다(docs/07 §3·§3.1). 재생(오디오 포커스·출력)은 호스트 앱 몫이다.
+ *
  * @param members 각 차의 위치·속도·ETA·잔량·상태 (서버 STATE 와 동일 형태)
- * @param events 최근 그룹 이벤트, 오래된 것부터 (합류·저잔량·동승자 메시지 등)
+ * @param events 최근 그룹 이벤트, 오래된 것부터 (합류·저잔량·동승자 메시지·무전 등)
  */
 public data class GroupSnapshot(
     public val groupId: String,
