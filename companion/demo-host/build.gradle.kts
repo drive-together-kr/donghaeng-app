@@ -98,4 +98,7 @@ dependencies {
 
     // 지도 탭: osmdroid(OpenStreetMap 타일). 그룹 차량 마커(동행 D)도 이 위에 그린다
     implementation(libs.osmdroid)
+
+    // 순수 로직 단위 테스트(무전 목록 VoiceItems·시연 신호음 FakeVoiceTone)
+    testImplementation(libs.junit)
 }

@@ -148,7 +148,14 @@ internal class HttpDongHaengApi(
 
     override fun observeGroup(groupId: String): Flow<GroupSnapshot> = flow {
         while (true) {
-            emit(fetchGroup(groupId))
+            val snapshot = try {
+                fetchGroup(groupId)
+            } catch (e: DongHaengException.Api) {
+                // 멤버가 아니게 된 그룹(나감·내보내짐)은 서버가 404 로 숨긴다 — 받아 둔 무전도 지운다
+                if (e.code == ErrorCodes.NOT_FOUND) voiceInbox.forgetGroup(groupId)
+                throw e
+            }
+            emit(snapshot)
             delay(pollIntervalMs)
         }
     }
@@ -161,7 +168,12 @@ internal class HttpDongHaengApi(
         val members = detail.snapshot?.members ?: detail.members.map { it.toOfflineState() }
         // 서버 recentEvents 는 최신순, GroupSnapshot.events 는 오래된 것부터.
         // VOICE_MESSAGE 는 오디오를 미리 받아 payload 에 상태·파일 경로를 붙인다(F16, docs/07 §3.1)
-        val events = voiceInbox.resolve(detail.groupId, detail.recentEvents.asReversed(), ::fetchVoice)
+        val events = voiceInbox.resolve(
+            groupId = detail.groupId,
+            events = detail.recentEvents.asReversed(),
+            groupEnded = detail.status.equals(GROUP_STATUS_ENDED, ignoreCase = true),
+            fetch = ::fetchVoice,
+        )
         return GroupSnapshot(detail.groupId, members, events)
     }
 
@@ -344,6 +356,9 @@ internal class HttpDongHaengApi(
 
         private val JSON = "application/json; charset=utf-8".toMediaType()
         private const val JSON_ACCEPT = "application/json"
+
+        /** `GroupDetailResponse.status` 의 종료 값(docs/03 §2.3 — ACTIVE | ENDED) */
+        private const val GROUP_STATUS_ENDED = "ENDED"
 
         /** 무전 오디오(docs/03 §2.6 — audio/mp4 · audio/aac · audio/wav). 오류 봉투(JSON)도 받는다 */
         private const val AUDIO_ACCEPT = "audio/*, application/json;q=0.5"

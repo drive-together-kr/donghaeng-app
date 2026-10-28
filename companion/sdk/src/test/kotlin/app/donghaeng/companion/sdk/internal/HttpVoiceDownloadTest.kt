@@ -86,11 +86,15 @@ class HttpVoiceDownloadTest {
     private fun exchangeOk(token: String = dhJwt) =
         json(200, """{"accessToken":"$token","refreshToken":"rt","user":{"userId":"usr_t","displayName":"동승자"}}""")
 
-    private fun groupWithVoice(expiresAtMs: Long = System.currentTimeMillis() + 24 * 3600_000L, voiceId: String = "vm_1"): MockResponse {
+    private fun groupWithVoice(
+        expiresAtMs: Long = System.currentTimeMillis() + 24 * 3600_000L,
+        voiceId: String = "vm_1",
+        status: String = "ACTIVE",
+    ): MockResponse {
         val payload = DhJson.json.encodeToString(VoiceMessagePayload.serializer(), VoiceMessagePayload(voiceId, 3_200, "audio/mp4", audio.size, expiresAtMs))
         return json(
             200,
-            """{"groupId":"grp_1","name":"추석 귀성길","leaderVehicleId":"veh_lead","status":"ACTIVE",
+            """{"groupId":"grp_1","name":"추석 귀성길","leaderVehicleId":"veh_lead","status":"$status",
                 "members":[{"vehicleId":"veh_lead","nickname":"아빠 차","color":"#2E7DFF","role":"LEADER","joinedAt":1}],
                 "recentEvents":[
                   {"eventId":"evt_v1","type":"VOICE_MESSAGE","sourceVehicleId":"veh_lead","severity":"INFO","speech":"아빠 차 무전","payload":$payload},
@@ -229,5 +233,36 @@ class HttpVoiceDownloadTest {
 
         assertEquals("EXPIRED", snap.voice().status())
         assertEquals("교환 + 그룹만", 2, server.requestCount)
+    }
+
+    @Test
+    fun `그룹 상태가 ENDED 면 받아 둔 무전을 지우고 EXPIRED - 다시 요청하지 않는다`() = runTest {
+        server.enqueue(exchangeOk())
+        server.enqueue(groupWithVoice())
+        server.enqueue(audioResponse())
+        server.enqueue(groupWithVoice(status = "ENDED"))
+
+        val snapshots = api().observeGroup("grp_1").take(2).toList()
+
+        val file = File(snapshots[0].voice().path()!!)
+        assertEquals("EXPIRED", snapshots[1].voice().status())
+        assertTrue("그룹이 끝나면 캐시를 지운다", !file.exists())
+        assertEquals("교환 + 그룹 + 오디오 + 그룹", 4, server.requestCount)
+    }
+
+    @Test
+    fun `그룹이 404(나감)면 캐시를 지우고 흐름 예외는 그대로`() = runTest {
+        server.enqueue(exchangeOk())
+        server.enqueue(groupWithVoice())
+        server.enqueue(audioResponse())
+        server.enqueue(json(404, """{"error":{"code":"NOT_FOUND","message":"그룹을 찾을 수 없어요.","traceId":"t"}}"""))
+
+        val seen = ArrayList<GroupSnapshot>()
+        val error = runCatching { api().observeGroup("grp_1").collect { seen += it } }.exceptionOrNull()
+
+        assertTrue("$error", error is app.donghaeng.companion.sdk.DongHaengException.Api)
+        assertEquals("NOT_FOUND", (error as app.donghaeng.companion.sdk.DongHaengException.Api).code)
+        assertEquals(1, seen.size)
+        assertTrue("나간 그룹의 무전 캐시를 지운다", !File(seen[0].voice().path()!!).exists())
     }
 }

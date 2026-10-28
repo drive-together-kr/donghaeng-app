@@ -136,7 +136,7 @@ class VoiceInboxTest {
         val root = File(tmp.root, "untouched")
         val events = listOf(event("evt_1", GroupEventType.MEMBER_JOINED), event("evt_2", GroupEventType.LOW_ENERGY))
         val fetch = ok(audio)
-        val out = inbox(root).resolve("grp_1", events, fetch::invoke)
+        val out = inbox(root).resolve("grp_1", events, fetch = fetch::invoke)
         assertSame(events, out)
         assertTrue(fetch.paths.isEmpty())
         assertFalse(root.exists())
@@ -148,7 +148,7 @@ class VoiceInboxTest {
         val fetch = ok(audio)
         val events = listOf(event("evt_0", GroupEventType.MEMBER_JOINED), voiceEvent("evt_1", "vm_1"), event("evt_2", GroupEventType.LOW_ENERGY))
 
-        val first = inbox.resolve("grp_1", events, fetch::invoke)
+        val first = inbox.resolve("grp_1", events, fetch = fetch::invoke)
 
         assertEquals(listOf("/v1/groups/grp_1/voice/vm_1"), fetch.paths)
         assertEquals("순서·다른 이벤트 유지", events.map { it.eventId }, first.map { it.eventId })
@@ -163,7 +163,7 @@ class VoiceInboxTest {
         assertArrayEquals(audio, file.readBytes())
         assertFalse("임시 .part 파일이 남지 않는다", File(file.parentFile, "vm_1.m4a.part").exists())
 
-        val second = inbox.resolve("grp_1", events, fetch::invoke)
+        val second = inbox.resolve("grp_1", events, fetch = fetch::invoke)
         assertEquals("캐시 재사용", 1, fetch.paths.size)
         assertEquals("READY", second[1].status())
         assertEquals(file.absolutePath, second[1].path())
@@ -173,18 +173,18 @@ class VoiceInboxTest {
     fun `expiresAtMs 가 지난 무전은 요청 없이 EXPIRED, 받아 둔 파일도 지운다`() = runTest {
         val inbox = inbox()
         val fetch = ok(audio)
-        val stale = inbox.resolve("grp_1", listOf(voiceEvent("evt_old", "vm_old", expiresAtMs = t0 - 1)), fetch::invoke)
+        val stale = inbox.resolve("grp_1", listOf(voiceEvent("evt_old", "vm_old", expiresAtMs = t0 - 1)), fetch = fetch::invoke)
         assertEquals("EXPIRED", stale[0].status())
         assertNull(stale[0].path())
         assertTrue(fetch.paths.isEmpty())
 
         val events = listOf(voiceEvent("evt_1", "vm_1", expiresAtMs = t0 + 60_000))
-        val ready = inbox.resolve("grp_1", events, fetch::invoke)
+        val ready = inbox.resolve("grp_1", events, fetch = fetch::invoke)
         val file = File(ready[0].path()!!)
         assertTrue(file.isFile)
 
         now = t0 + 60_000 // 만료 시각 도달
-        val expired = inbox.resolve("grp_1", events, fetch::invoke)
+        val expired = inbox.resolve("grp_1", events, fetch = fetch::invoke)
         assertEquals("EXPIRED", expired[0].status())
         assertNull(expired[0].path())
         assertFalse("만료되면 캐시 파일을 지운다", file.exists())
@@ -197,13 +197,13 @@ class VoiceInboxTest {
         val events = listOf(voiceEvent("evt_1", "vm_1", expiresAtMs = t0 + day - 60_000))
 
         val wrongClock = inbox(File(tmp.root, "a"))
-        assertEquals("서버 시계를 모르면 기기 시계로 본다", "EXPIRED", wrongClock.resolve("grp_1", events, ok(audio)::invoke)[0].status())
+        assertEquals("서버 시계를 모르면 기기 시계로 본다", "EXPIRED", wrongClock.resolve("grp_1", events, fetch = ok(audio)::invoke)[0].status())
 
         val synced = inbox(File(tmp.root, "b"))
         synced.observeServerDate(t0)
         assertEquals(t0, synced.serverNow())
         val fetch = ok(audio)
-        assertEquals("READY", synced.resolve("grp_1", events, fetch::invoke)[0].status())
+        assertEquals("READY", synced.resolve("grp_1", events, fetch = fetch::invoke)[0].status())
         assertEquals(1, fetch.paths.size)
 
         synced.observeServerDate(null) // Date 없는 응답은 맞춘 값을 지우지 않는다
@@ -215,8 +215,8 @@ class VoiceInboxTest {
         val inbox = inbox()
         val fetch = FakeFetch { VoiceInbox.Fetch.Gone }
         val events = listOf(voiceEvent("evt_1", "vm_1"))
-        assertEquals("EXPIRED", inbox.resolve("grp_1", events, fetch::invoke)[0].status())
-        assertEquals("EXPIRED", inbox.resolve("grp_1", events, fetch::invoke)[0].status())
+        assertEquals("EXPIRED", inbox.resolve("grp_1", events, fetch = fetch::invoke)[0].status())
+        assertEquals("EXPIRED", inbox.resolve("grp_1", events, fetch = fetch::invoke)[0].status())
         assertEquals(1, fetch.paths.size)
     }
 
@@ -225,10 +225,10 @@ class VoiceInboxTest {
         val inbox = inbox()
         val fetch = FakeFetch { VoiceInbox.Fetch.Failed("NETWORK", retryable = true) }
         val events = listOf(voiceEvent("evt_1", "vm_1"))
-        assertEquals("PENDING", inbox.resolve("grp_1", events, fetch::invoke)[0].status())
-        assertEquals("PENDING", inbox.resolve("grp_1", events, fetch::invoke)[0].status())
-        assertEquals("FAILED", inbox.resolve("grp_1", events, fetch::invoke)[0].status())
-        assertEquals("FAILED", inbox.resolve("grp_1", events, fetch::invoke)[0].status())
+        assertEquals("PENDING", inbox.resolve("grp_1", events, fetch = fetch::invoke)[0].status())
+        assertEquals("PENDING", inbox.resolve("grp_1", events, fetch = fetch::invoke)[0].status())
+        assertEquals("FAILED", inbox.resolve("grp_1", events, fetch = fetch::invoke)[0].status())
+        assertEquals("FAILED", inbox.resolve("grp_1", events, fetch = fetch::invoke)[0].status())
         assertEquals(3, fetch.paths.size)
     }
 
@@ -238,25 +238,25 @@ class VoiceInboxTest {
         var fail = true
         val fetch = FakeFetch { if (fail) VoiceInbox.Fetch.Failed("HTTP_503", retryable = true) else VoiceInbox.Fetch.Ok(audio) }
         val events = listOf(voiceEvent("evt_1", "vm_1"))
-        assertEquals("PENDING", inbox.resolve("grp_1", events, fetch::invoke)[0].status())
+        assertEquals("PENDING", inbox.resolve("grp_1", events, fetch = fetch::invoke)[0].status())
         fail = false
-        assertEquals("READY", inbox.resolve("grp_1", events, fetch::invoke)[0].status())
+        assertEquals("READY", inbox.resolve("grp_1", events, fetch = fetch::invoke)[0].status())
     }
 
     @Test
     fun `영구 오류(크기 초과·403)와 빈 본문은 바로 FAILED`() = runTest {
         val inbox = inbox()
         val tooLarge = FakeFetch { VoiceInbox.Fetch.Failed("TOO_LARGE", retryable = false) }
-        assertEquals("FAILED", inbox.resolve("grp_1", listOf(voiceEvent("evt_1", "vm_1")), tooLarge::invoke)[0].status())
+        assertEquals("FAILED", inbox.resolve("grp_1", listOf(voiceEvent("evt_1", "vm_1")), fetch = tooLarge::invoke)[0].status())
         val empty = ok(ByteArray(0))
-        assertEquals("FAILED", inbox.resolve("grp_1", listOf(voiceEvent("evt_2", "vm_2")), empty::invoke)[0].status())
+        assertEquals("FAILED", inbox.resolve("grp_1", listOf(voiceEvent("evt_2", "vm_2")), fetch = empty::invoke)[0].status())
     }
 
     @Test
     fun `형식이 깨진 VOICE_MESSAGE 는 FAILED 로 표시만 하고 요청하지 않는다`() = runTest {
         val fetch = ok(audio)
         val broken = GroupEvent("evt_1", "VOICE_MESSAGE", "veh_a", Severity.INFO, null, buildJsonObject { put("voiceId", "../x") })
-        val out = inbox().resolve("grp_1", listOf(broken), fetch::invoke)
+        val out = inbox().resolve("grp_1", listOf(broken), fetch = fetch::invoke)
         assertEquals("FAILED", out[0].status())
         assertTrue(fetch.paths.isEmpty())
     }
@@ -267,11 +267,11 @@ class VoiceInboxTest {
         val fetch = ok(audio)
         val events = (1..5).map { voiceEvent("evt_$it", "vm_$it") } // 오래된 것부터
 
-        val first = inbox.resolve("grp_1", events, fetch::invoke)
+        val first = inbox.resolve("grp_1", events, fetch = fetch::invoke)
         assertEquals(listOf("PENDING", "PENDING", "READY", "READY", "READY"), first.map { it.status() })
         assertEquals(listOf("vm_5", "vm_4", "vm_3"), fetch.paths.map { it.substringAfterLast('/') })
 
-        val second = inbox.resolve("grp_1", events, fetch::invoke)
+        val second = inbox.resolve("grp_1", events, fetch = fetch::invoke)
         assertEquals(List(5) { "READY" }, second.map { it.status() })
         assertEquals(5, fetch.paths.size)
     }
@@ -282,14 +282,14 @@ class VoiceInboxTest {
         val inbox = inbox(root)
         val fetch = ok(audio)
         val voice = voiceEvent("evt_1", "vm_1")
-        val ready = inbox.resolve("grp_1", listOf(voice), fetch::invoke)
+        val ready = inbox.resolve("grp_1", listOf(voice), fetch = fetch::invoke)
         val file = File(ready[0].path()!!)
         assertTrue(file.isFile)
         // 다른 그룹 파일은 남는다
-        val other = inbox.resolve("grp_2", listOf(voiceEvent("evt_9", "vm_9")), fetch::invoke)
+        val other = inbox.resolve("grp_2", listOf(voiceEvent("evt_9", "vm_9")), fetch = fetch::invoke)
         val otherFile = File(other[0].path()!!)
 
-        val ended = inbox.resolve("grp_1", listOf(voice, event("evt_2", GroupEventType.GROUP_ENDED)), fetch::invoke)
+        val ended = inbox.resolve("grp_1", listOf(voice, event("evt_2", GroupEventType.GROUP_ENDED)), fetch = fetch::invoke)
 
         assertEquals("EXPIRED", ended[0].status())
         assertNull(ended[0].path())
@@ -301,6 +301,35 @@ class VoiceInboxTest {
     }
 
     @Test
+    fun `서버 그룹 상태가 ENDED 면 GROUP_ENDED 이벤트가 밀려나 있어도 캐시를 지우고 EXPIRED`() = runTest {
+        val inbox = inbox()
+        val fetch = ok(audio)
+        val voice = voiceEvent("evt_1", "vm_1")
+        val file = File(inbox.resolve("grp_1", listOf(voice), fetch = fetch::invoke)[0].path()!!)
+
+        val out = inbox.resolve("grp_1", listOf(voice), groupEnded = true, fetch = fetch::invoke)
+
+        assertEquals("EXPIRED", out[0].status())
+        assertFalse(file.exists())
+        assertEquals(1, fetch.paths.size)
+    }
+
+    @Test
+    fun `forgetGroup - 더 볼 수 없는 그룹(나간 뒤 404)의 캐시를 지운다`() = runTest {
+        val root = File(tmp.root, "voice")
+        val inbox = inbox(root)
+        val fetch = ok(audio)
+        val file = File(inbox.resolve("grp_1", listOf(voiceEvent("evt_1", "vm_1")), fetch = fetch::invoke)[0].path()!!)
+        assertTrue(file.isFile)
+
+        inbox.forgetGroup("grp_1")
+        inbox.forgetGroup("../etc") // 안전하지 않은 ID 는 무시
+
+        assertFalse(file.exists())
+        assertFalse(File(root, "grp_1").exists())
+    }
+
+    @Test
     fun `이전 프로세스가 받아 둔 파일은 다시 받지 않는다`() = runTest {
         val root = File(tmp.root, "voice")
         val cached = File(File(root, "grp_1"), "vm_1.m4a")
@@ -309,7 +338,7 @@ class VoiceInboxTest {
         cached.setLastModified(now) // 시작 때 정리(하루 넘은 파일)의 기준이 이 테스트 시계라서
         val fetch = ok(byteArrayOf(9))
 
-        val out = inbox(root).resolve("grp_1", listOf(voiceEvent("evt_1", "vm_1")), fetch::invoke)
+        val out = inbox(root).resolve("grp_1", listOf(voiceEvent("evt_1", "vm_1")), fetch = fetch::invoke)
 
         assertEquals("READY", out[0].status())
         assertEquals(cached.absolutePath, out[0].path())
@@ -319,14 +348,14 @@ class VoiceInboxTest {
     @Test
     fun `안전하지 않은 groupId 는 내려받지 않고 FAILED`() = runTest {
         val fetch = ok(audio)
-        val out = inbox().resolve("../grp", listOf(voiceEvent("evt_1", "vm_1")), fetch::invoke)
+        val out = inbox().resolve("../grp", listOf(voiceEvent("evt_1", "vm_1")), fetch = fetch::invoke)
         assertEquals("FAILED", out[0].status())
         assertTrue(fetch.paths.isEmpty())
     }
 
     @Test
     fun `wav mime 은 wav 확장자로 저장된다`() = runTest {
-        val out = inbox().resolve("grp_1", listOf(voiceEvent("evt_1", "vm_w", mime = "audio/wav")), ok(audio)::invoke)
+        val out = inbox().resolve("grp_1", listOf(voiceEvent("evt_1", "vm_w", mime = "audio/wav")), fetch = ok(audio)::invoke)
         assertTrue(out[0].path()!!.endsWith("vm_w.wav"))
     }
 }

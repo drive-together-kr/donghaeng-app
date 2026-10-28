@@ -18,16 +18,20 @@ import app.donghaeng.protocol.GroupEventType
 import app.donghaeng.protocol.MemberState
 import app.donghaeng.protocol.MemberStatus
 import app.donghaeng.protocol.Severity
+import app.donghaeng.protocol.VoiceMessagePayload
 import app.donghaeng.protocol.rest.InvitePreviewResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlin.math.cos
 import kotlin.math.max
@@ -188,6 +192,7 @@ class FakeGateway(private val tickMs: Long = 2_000L) : DongHaengGateway {
         while (true) {
             val elapsedS = ((System.currentTimeMillis() - group.startedAt) / 1000).toInt()
             scheduleEvents(group, elapsedS)
+            scheduleVoice(group, elapsedS)
             emit(GroupSnapshot(group.id, group.members.mapIndexed { i, m -> memberState(m, i, tick, elapsedS) }, group.events.toList()))
             tick++
             delay(tickMs)
@@ -210,6 +215,34 @@ class FakeGateway(private val tickMs: Long = 2_000L) : DongHaengGateway {
         once(GroupEventType.DESTINATION_ARRIVED, 90) {
             group.event(GroupEventType.DESTINATION_ARRIVED, LEADER, Severity.INFO, "아빠 차가 먼저 도착했어요.", buildJsonObject { put("name", DESTINATION) })
         }
+    }
+
+    /**
+     * 30s 아빠 차 무전(F16). 실제 SDK 가 하는 일(오디오를 받아 두고 payload 에 `localAudioStatus`·`localAudioPath` 를 붙이기)을 흉내 낸다 —
+     * 녹음 대신 신호음 WAV([FakeVoiceTone])를 앱 캐시(`java.io.tmpdir`)에 만든다. 호스트 화면 코드는 실서버와 같은 경로로 처리한다.
+     */
+    private suspend fun scheduleVoice(group: Group, elapsedS: Int) {
+        if (elapsedS < 30 || group.events.any { it.type == GroupEventType.VOICE_MESSAGE.name }) return
+        val tone = withContext(Dispatchers.IO) {
+            runCatching { FakeVoiceTone.write(File(System.getProperty("java.io.tmpdir") ?: ".", "donghaeng-demo-voice")) }.getOrNull()
+        }
+        val now = System.currentTimeMillis()
+        val base = DhJson.payloadOf(
+            VoiceMessagePayload(
+                voiceId = "vm_demo_${group.id.takeLast(4)}_1",
+                durationMs = tone?.durationMs ?: 1_500,
+                mime = "audio/wav",
+                sizeBytes = tone?.sizeBytes ?: 0,
+                expiresAtMs = now + VoiceEvents.RETENTION_MS,
+            ),
+        )
+        val payload = JsonObject(
+            base + buildMap {
+                put(VoiceEvents.KEY_STATUS, JsonPrimitive(if (tone != null) VoiceAudioStatus.READY.name else VoiceAudioStatus.FAILED.name))
+                tone?.let { put(VoiceEvents.KEY_PATH, JsonPrimitive(it.file.absolutePath)) }
+            },
+        )
+        group.events += group.event(GroupEventType.VOICE_MESSAGE, LEADER, Severity.INFO, "아빠 차 무전", payload)
     }
 
     /** 서울시청(37.5665, 126.9780)에서 동쪽으로 틱마다 ~45m 이동. 선두가 앞, 내 차·삼촌 차가 뒤따른다 */

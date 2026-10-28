@@ -90,7 +90,8 @@ internal object VoiceMessages {
  *   프로세스가 다시 떠도 파일이 있으면 다시 받지 않는다.
  * - 만료: **서버 시계** 기준 `expiresAtMs` 가 지나면 EXPIRED + 파일 삭제. 서버 시계는 응답 `Date` 헤더로 맞춘다([observeServerDate]) —
  *   폰 시계가 틀려도 서버 보관 기간과 어긋나지 않게. 404 도 EXPIRED(서버: 만료·삭제 404).
- * - 그룹 종료: 이벤트에 `GROUP_ENDED` 가 보이면 그 그룹 파일을 바로 지운다(서버가 그룹 종료 때 무전을 지우는 것과 같은 원칙).
+ * - 그룹 종료: 그룹 상태가 `ENDED` 이거나 이벤트에 `GROUP_ENDED` 가 보이면 그 그룹 파일을 바로 지운다(서버가 그룹 종료 때 무전을 지우는 것과 같은 원칙).
+ *   그룹을 더 볼 수 없게 되면(나간 뒤 404) 전송 계층이 [forgetGroup] 으로 지운다.
  * - 한 번 폴링에 최대 [maxDownloadsPerPoll] 개(최신부터)만 받는다 — 나머지는 PENDING 으로 다음 폴링에. 일시 오류는 [maxAttempts] 번까지.
  * - 디스크: 시작 후 첫 처리 때 하루 넘은 파일을 지우고, 전체가 [maxFiles] 개를 넘으면 오래된 것부터 지운다.
  * - 로그: voiceId·크기·길이·상태만(닉네임·토큰·내용 없음, CLAUDE.md 규칙 8).
@@ -145,12 +146,18 @@ internal class VoiceInbox(
 
     /**
      * [events](오래된 것부터) 중 `VOICE_MESSAGE` 에 상태를 붙여 돌려준다. 다른 이벤트·순서는 그대로다.
-     * 무전도 `GROUP_ENDED` 도 없으면 아무 일도 하지 않는다(파일 시스템을 건드리지 않음).
+     * 무전도 그룹 종료도 없으면 아무 일도 하지 않는다(파일 시스템을 건드리지 않음).
      *
+     * @param groupEnded 서버 그룹 상태가 `ENDED`(이벤트 `GROUP_ENDED` 가 최근 20건 밖으로 밀려나도 종료를 안다)
      * @param fetch [VoiceMessages.downloadPath] 경로를 받아 오디오를 내려받는다(인증·401 재교환은 전송 계층 몫)
      */
-    suspend fun resolve(groupId: String, events: List<GroupEvent>, fetch: suspend (path: String) -> Fetch): List<GroupEvent> {
-        val ended = events.any { it.type == GroupEventType.GROUP_ENDED.name }
+    suspend fun resolve(
+        groupId: String,
+        events: List<GroupEvent>,
+        groupEnded: Boolean = false,
+        fetch: suspend (path: String) -> Fetch,
+    ): List<GroupEvent> {
+        val ended = groupEnded || events.any { it.type == GroupEventType.GROUP_ENDED.name }
         if (!ended && events.none(VoiceMessages::isVoice)) return events
         return mutex.withLock {
             sweepOnce()
@@ -259,11 +266,19 @@ internal class VoiceInbox(
         entry.status = VoiceMessages.Status.EXPIRED
     }
 
+    /** 그룹을 더 볼 수 없음(나간 그룹 404 등) — 그 그룹의 캐시를 지운다 */
+    suspend fun forgetGroup(groupId: String) {
+        if (!VoiceMessages.isSafeId(groupId)) return
+        mutex.withLock {
+            if (File(rootDir, groupId).exists() || entries.keys.any { it.startsWith("$groupId/") }) purgeGroup(groupId)
+        }
+    }
+
     /** 그룹 종료 — 그 그룹의 캐시 파일을 모두 지운다 */
     private fun purgeGroup(groupId: String) {
         val dir = File(rootDir, groupId)
         val files = dir.listFiles().orEmpty()
-        if (files.isNotEmpty()) Log.i(TAG, "voice: group ended — delete files=${files.size}")
+        if (files.isNotEmpty()) Log.i(TAG, "voice: group ended or gone — delete files=${files.size}")
         files.forEach { it.delete() }
         dir.delete()
         entries.filterKeys { it.startsWith("$groupId/") }.forEach { (_, e) ->

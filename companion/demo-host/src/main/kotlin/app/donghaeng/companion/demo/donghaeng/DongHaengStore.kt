@@ -94,6 +94,10 @@ object DongHaengStore {
     private val _notifications = MutableStateFlow<List<DhNotification>>(emptyList())
     val notifications: StateFlow<List<DhNotification>> = _notifications.asStateFlow()
 
+    /** F16 무전 목록(최신부터) — 스냅샷의 `VOICE_MESSAGE` 를 모아 둔다. 오디오 파일은 동행 모듈이 받아 둔다 */
+    private val _voices = MutableStateFlow<List<VoiceItem>>(emptyList())
+    val voices: StateFlow<List<VoiceItem>> = _voices.asStateFlow()
+
     private val _sharing = MutableStateFlow(SharingSettings())
     val sharing: StateFlow<SharingSettings> = _sharing.asStateFlow()
 
@@ -139,6 +143,8 @@ object DongHaengStore {
         _snapshot.value = null
         _groupError.value = null
         _notifications.value = emptyList()
+        VoicePlayer.stop("reset")
+        _voices.value = emptyList()
         _vehicles.value = emptyList()
         _vehiclesError.value = null
     }
@@ -172,6 +178,8 @@ object DongHaengStore {
         _snapshot.value = null
         _groupError.value = null
         seenEventIds.clear()
+        VoicePlayer.stop("switch_group")
+        _voices.value = emptyList()
         startObserving(result.groupId)
         pushNotification(DhNotification("joined_${result.groupId}", GroupEventType.MEMBER_JOINED, "동행 그룹 합류", "'${result.name}' 그룹에 ${myNick}(으)로 합류했어요", System.currentTimeMillis()), system = false)
         return result
@@ -188,9 +196,37 @@ object DongHaengStore {
                 .collect { snap ->
                     _snapshot.value = snap
                     _groupError.value = null
+                    updateVoices(snap)
                     onEvents(snap.events, snap.members)
                 }
         }
+    }
+
+    /**
+     * 스냅샷의 `VOICE_MESSAGE` 를 무전 목록에 합친다(같은 이벤트는 상태만 갱신 — 받는 중 → 재생 가능).
+     * 무전은 그룹 전체 대상(audience 없음, docs/03 §5.4)이지만 다른 이벤트와 같은 [EventAudience] 판정을 거친다.
+     * 로그 `voice: received …` 는 기기 확인용(voiceId·상태·길이만).
+     */
+    private fun updateVoices(snap: GroupSnapshot) {
+        val group = _activeGroup.value
+        val myId = group?.myVehicleId?.takeIf { it.isNotBlank() }
+        val incoming = snap.events
+            .filter { it.eventType == GroupEventType.VOICE_MESSAGE && EventAudience.isForMe(it, myId, snap.members) }
+            .mapNotNull { VoiceEvents.toItem(it, snap.members, group) }
+        val ended = snap.events.any { it.eventType == GroupEventType.GROUP_ENDED }
+        if (incoming.isEmpty() && _voices.value.isEmpty()) return
+        val before = _voices.value.associateBy { it.eventId }
+        val merged = VoiceEvents.merge(_voices.value, incoming, groupEnded = ended)
+        merged.forEach { item ->
+            val old = before[item.eventId]
+            if (old == null || old.status != item.status) {
+                Log.i(DemoApplication.TAG, "voice: received voiceId=${item.voiceId} status=${item.status} durMs=${item.durationMs} mine=${item.mine}")
+            }
+        }
+        if (merged != _voices.value) _voices.value = merged
+        // 재생 중인 무전이 만료·그룹 종료로 사라지면 멈춘다
+        val playing = VoicePlayer.state.value.voiceId
+        if (playing != null && merged.none { it.voiceId == playing && it.status == VoiceAudioStatus.READY }) VoicePlayer.stop("expired")
     }
 
     /** 이 폰에서 그룹 보기를 끝낸다(종료된 그룹 정리). 차량은 차에서 나가기를 누른다 */
@@ -203,6 +239,8 @@ object DongHaengStore {
         }
         _activeGroup.value = null
         _snapshot.value = null
+        VoicePlayer.stop("leave")
+        _voices.value = emptyList()
     }
 
     /** 차량 등록 QR 승인(대체 수단) — 스캔 화면에서 */
@@ -270,9 +308,17 @@ private fun GroupEvent.toNotification(now: Long, read: Boolean): DhNotification 
         GroupEventType.REST_STOP_PROPOSAL -> "휴게소 제안"
         GroupEventType.DEVIATION -> "경로 이탈"
         GroupEventType.MEMBER_OFFLINE -> "연결 끊김"
+        GroupEventType.VOICE_MESSAGE -> "무전"
         else -> "동행 알림"
     }
-    return DhNotification(id = eventId, type = type, title = title, body = speech ?: eventLabel(this.type), atMs = now, read = read)
+    val body = if (type == GroupEventType.VOICE_MESSAGE) {
+        // "아빠 차 무전 · 0:07" — 재생은 알림 목록·동행 메인의 [재생] 버튼(폰은 자동 재생하지 않는다, VoicePlayer)
+        val durationMs = (payload["durationMs"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toIntOrNull()
+        listOfNotNull(speech ?: "그룹 무전", durationMs?.let(::durationLabel)).joinToString(" · ")
+    } else {
+        speech ?: eventLabel(this.type)
+    }
+    return DhNotification(id = eventId, type = type, title = title, body = body, atMs = now, read = read)
 }
 
 /** 동행 예외 → 사용자 문구(공식 앱은 자기 디자인 가이드로 매핑한다) */

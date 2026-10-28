@@ -57,6 +57,8 @@ import app.donghaeng.protocol.GroupEventType
 fun NotificationsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val notifications by DongHaengStore.notifications.collectAsStateWithLifecycle()
+    val voices by DongHaengStore.voices.collectAsStateWithLifecycle()
+    val player by VoicePlayer.state.collectAsStateWithLifecycle()
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     LaunchedEffect(Unit) {
@@ -102,7 +104,14 @@ fun NotificationsScreen(onBack: () -> Unit) {
                             Text(n.title, style = MaterialTheme.typography.labelMedium, color = KiaColors.TextSecondary)
                             Text(n.body, style = MaterialTheme.typography.bodyLarge)
                         }
-                        Text(relativeTime(n.atMs), style = MaterialTheme.typography.labelSmall, color = KiaColors.TextSecondary)
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(relativeTime(n.atMs), style = MaterialTheme.typography.labelSmall, color = KiaColors.TextSecondary)
+                            // 무전(F16)은 그 자리에서 듣는다 — 오디오는 동행 모듈이 받아 둔 파일
+                            voices.firstOrNull { it.eventId == n.id }?.let { voice ->
+                                Spacer(Modifier.height(8.dp))
+                                VoicePlayButton(item = voice, playing = player.voiceId == voice.voiceId, onClick = { toggleVoice(context, voice) })
+                            }
+                        }
                     }
                 }
             }
@@ -138,6 +147,7 @@ private fun iconFor(type: GroupEventType?): Int = when (type) {
     GroupEventType.DESTINATION_ARRIVED -> R.drawable.ms_flag
     GroupEventType.HARD_BRAKE, GroupEventType.DEVIATION -> R.drawable.ms_warning
     GroupEventType.PASSENGER_MESSAGE -> R.drawable.ms_chat_bubble
+    GroupEventType.VOICE_MESSAGE -> R.drawable.ms_headset_mic
     GroupEventType.GROUP_ENDED -> R.drawable.ms_check_circle
     else -> R.drawable.ms_notifications
 }
@@ -151,7 +161,7 @@ object DongHaengNotifier {
         if (manager.getNotificationChannel(CHANNEL_ID) == null) {
             manager.createNotificationChannel(
                 NotificationChannel(CHANNEL_ID, context.getString(R.string.notification_channel_donghaeng), NotificationManager.IMPORTANCE_DEFAULT).apply {
-                    description = "동행 그룹의 합류·도착·잔량 소식"
+                    description = "동행 그룹의 합류·도착·잔량·무전 소식"
                 },
             )
         }
