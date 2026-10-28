@@ -36,6 +36,10 @@ data class VoiceAnnouncerState(
     val skippedDuplicate: Int = 0,
     val skippedDisabled: Int = 0,
     val skippedNoSpeech: Int = 0,
+    /** F16 `VOICE_MESSAGE` — 문구("○○ 무전")는 VoicePlayback 이 재생 직전에 읽는다(중복 방지) */
+    val handedToPlayback: Int = 0,
+    /** F16 무전 녹음·확인·재생 중 — NORMAL·LOW 문장은 큐에서 기다린다(HIGH·CRITICAL 은 그대로) */
+    val held: Boolean = false,
     val lastSpokenType: String? = null,
     val lastSpokenPriority: Priority? = null,
     val lastSpokenAtMs: Long? = null,
@@ -54,6 +58,9 @@ data class VoiceAnnouncerState(
  * - **중복**: 같은 문장은 [dupWindowMs] 안에 한 번만.
  * - 한 문장을 읽는 동안은 길이로 추정한 시간([msPerChar] × 글자 수 + [baseMs]) 만큼 다음 문장을 기다린다(TTS 완료 콜백이 없는 폴백 모드에서도 순서가 지켜지도록).
  * - 문장 원문(닉네임 포함)은 로그에 남기지 않는다 — 종류·길이·우선순위만.
+ * - **F16 무전**: `VOICE_MESSAGE` 는 여기서 읽지 않는다 — `VoicePlayback` 이 "○○ 무전" 알림 뒤 녹음을 재생한다(같은 문구를 두 번 읽지 않게).
+ *   무전 녹음·확인·수신 재생 중에는 [setHeld] 로 NORMAL·LOW 문장을 큐에 붙잡아 둔다(마이크·재생과 겹치지 않게). HIGH·CRITICAL(급제동·에어백)은 안전이 먼저라 그대로 읽는다.
+ *   붙잡힌 문장도 [maxQueueWaitMs](30초) 규칙을 그대로 따른다(녹음 15초 + 확인 약 8초 안에는 풀린다).
  */
 class VoiceAnnouncer(
     private val events: Flow<ReceivedGroupEvent>,
@@ -80,6 +87,21 @@ class VoiceAnnouncer(
 
     private val _state = MutableStateFlow(VoiceAnnouncerState())
     val state: StateFlow<VoiceAnnouncerState> = _state
+
+    @Volatile
+    private var held = false
+
+    /**
+     * F16 무전 녹음·확인·수신 재생 중이면 true — 그동안 NORMAL·LOW 문장은 큐에서 기다리고 HIGH 이상만 읽는다.
+     * false 로 돌아오면 밀린 문장을 이어 읽는다(30초 넘게 밀린 것은 기존 규칙대로 버린다).
+     */
+    fun setHeld(hold: Boolean) {
+        if (held == hold) return
+        held = hold
+        _state.update { it.copy(held = hold) }
+        if (!hold) signal.trySend(Unit)
+        DhLog.d("voice: held=$hold")
+    }
 
     /** 설정 화면의 "음성 안내" 스위치 */
     fun setEnabled(enabled: Boolean) {
@@ -134,6 +156,11 @@ class VoiceAnnouncer(
 
     /** 이벤트 한 건을 정책에 따라 큐에 넣는다(테스트에서 직접 부를 수 있다) */
     suspend fun onEvent(e: ReceivedGroupEvent) {
+        if (e.event.type == GroupEventType.VOICE_MESSAGE.name) {
+            // F16: 알림 문구는 VoicePlayback 이 재생 직전에 읽는다 — 여기서 또 읽으면 "○○ 무전"이 두 번 나온다
+            _state.update { it.copy(handedToPlayback = it.handedToPlayback + 1) }
+            return
+        }
         val speech = e.event.speech?.trim().orEmpty()
         if (speech.isEmpty()) {
             _state.update { it.copy(skippedNoSpeech = it.skippedNoSpeech + 1) }
@@ -186,7 +213,11 @@ class VoiceAnnouncer(
         while (true) {
             signal.receive()
             while (true) {
-                val item = mutex.withLock { queue.removeFirstOrNull()?.also { _state.update { s -> s.copy(queued = queue.size) } } } ?: break
+                val item = mutex.withLock {
+                    // 무전 중(held)에는 HIGH 이상만 꺼낸다 — 나머지는 풀릴 때(setHeld(false) → signal) 이어 읽는다
+                    val index = if (held) queue.indexOfFirst { it.priority >= Priority.HIGH } else if (queue.isEmpty()) -1 else 0
+                    if (index < 0) null else queue.removeAt(index).also { _state.update { s -> s.copy(queued = queue.size) } }
+                } ?: break
                 val now = clock()
                 // 신선도는 들어올 때 봤다. 큐에서 너무 오래 기다린 것(앞 문장이 길었던 경우)만 버린다
                 if (now - item.enqueuedAt > maxQueueWaitMs) {

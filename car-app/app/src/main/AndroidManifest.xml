@@ -12,10 +12,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" /> <!-- 위치 권한 전에는 dataSync 타입으로 시작(T23) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" /> <!-- F16 무전: 마이크 권한이 있으면 | microphone(내비가 앞이어도 녹음) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 주행 중 표면: 순정 내비 위 플로팅 패널(TYPE_APPLICATION_OVERLAY, docs/05 §5.2). Pleos 는 설정 화면이 없어
          adb 의 appops set(사용자 10) SYSTEM_ALERT_WINDOW allow 로만 허용된다(docs/10 R16). 없으면 알림 카드 + 음성 모드 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- F16 무전: 녹음(MediaRecorder)·'네/아니' 인식(SpeechRecognizer·Vosk AudioRecord). dangerous — 위치·알림과 같은 시점(그룹 활성 + 정차)에 한 번 요청.
+         거부면 무전 보내기만 안 된다(버튼에 "마이크 권한 필요"), 받은 무전 재생은 그대로 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Pleos 차량 권한(pleos.car.permission.*, android.car.permission.*)은 src/pleos/AndroidManifest.xml 에만 선언 -->
 
     <!-- required=false 는 fake flavor 용(일반 폰·태블릿 AVD 설치). pleos flavor 는 FusedLocation AAR 이 automotive required=true 로
@@ -74,11 +78,12 @@
             </intent-filter>
         </activity>
 
-        <!-- T23: 그룹 활성 중 포그라운드 서비스(알림만 — 수집·발행은 Application 싱글턴). 위치 권한 있으면 location, 없으면 dataSync 타입 -->
+        <!-- T23: 그룹 활성 중 포그라운드 서비스(알림만 — 수집·발행은 Application 싱글턴). 위치 권한 있으면 location, 없으면 dataSync 타입.
+             F16: 마이크 권한이 있으면 microphone 을 더한다 — 백그라운드 앱의 마이크 입력은 무음이 되므로(Android 11+ while-in-use) -->
         <service
             android:name=".service.DriveSessionService"
             android:exported="false"
-            android:foregroundServiceType="location|dataSync" />
+            android:foregroundServiceType="location|dataSync|microphone" />
 
         <!-- 순정 내비 위 플로팅 패널(오버레이 창). DriveSurfaceController 가 그룹 + 오버레이 권한 + 동행 화면 비전면일 때만 시작 -->
         <service

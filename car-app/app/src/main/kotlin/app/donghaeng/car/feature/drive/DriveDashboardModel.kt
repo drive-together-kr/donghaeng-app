@@ -104,6 +104,19 @@ data class PttUi(
     val fallbackCountdown: Boolean = false,
     /** 재생 길이 "0:07" */
     val durationText: String? = null,
+    // ---- F16 실제 상태 연결(surface PttUiMapper 가 채운다) ----
+    /** phase = SENT 인데 아직 서버로 올리는 중(sentTo = 0) — "보내는 중…" */
+    val sending: Boolean = false,
+    /** phase = IDLE 일 때 3초 안내(너무 짧아요·취소했어요·보내지 않았어요·보내지 못했어요·녹음 실패·마이크 권한) — null 이면 평소 [무전] 버튼 */
+    val notice: app.donghaeng.car.domain.ptt.PttNotice? = null,
+    /** 마이크 권한 없음 — 무전 버튼에 "마이크 권한 필요"(정차 중에만 [권한 열기]) */
+    val micDenied: Boolean = false,
+    /** phase = PLAYING 인데 재생이 끝나 3초 머무는 중 */
+    val playingEnded: Boolean = false,
+    /** 재생을 기다리는 받은 무전 수 */
+    val queuedIncoming: Int = 0,
+    /** '보내지 않은 무전' 수 */
+    val unsentCount: Int = 0,
 )
 
 data class RecentEventUi(val text: String, val tone: Tone, val whenText: String)

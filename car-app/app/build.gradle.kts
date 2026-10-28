@@ -123,6 +123,12 @@ android {
             excludes += "META-INF/INDEX.LIST"
             excludes += "META-INF/io.netty.versions.properties"
         }
+        jniLibs {
+            // F16 Vosk: ABI 당 약 10 MB(4개 = APK +40 MB). 대상 기기는 64비트(Pleos AVD x86_64, 차량 arm64)라 32비트 사본만 뺀다.
+            // 32비트 기기에서는 Vosk 적재가 실패(UnsatisfiedLinkError)하고 인식 체인이 그 단계를 건너뛴다 — 다른 라이브러리의 ABI 지원은 그대로
+            excludes += "lib/x86/libvosk.so"
+            excludes += "lib/armeabi-v7a/libvosk.so"
+        }
     }
 
     testOptions {
@@ -144,6 +150,14 @@ dependencies {
     "pleosImplementation"(libs.pleos.vehicle)
     "pleosImplementation"(libs.pleos.navihelper)
     "pleosImplementation"(libs.pleos.fusedlocation)
+    // F16 무전 '네/아니' 1순위 — 준비 중 SDK 라 선택적(CLAUDE.md 규칙 5): CaaS ≥ 4.1.29·STT_SERVICE 권한·초기화가 모두 될 때만 체인 앞에 붙는다.
+    // universal-access(registerApp UA 경로 — 쓰지 않음)가 끌어오는 security-crypto-ktx 1.1.0-alpha06·appcompat·material 은 뺀다:
+    // UA 가 참조하는 MasterKey·EncryptedSharedPreferences 는 우리 security-crypto 1.0.0 에 있고, 토큰 저장소 라이브러리가 몰래 올라가지 않게 한다
+    "pleosImplementation"(libs.pleos.speechtotext) {
+        exclude(group = "androidx.security")
+        exclude(group = "androidx.appcompat")
+        exclude(group = "com.google.android.material")
+    }
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
@@ -173,11 +187,16 @@ dependencies {
     implementation(libs.netty.codec.http)   // T32 MQTT over WebSocket(wss) 전송 — HiveMQ POM 에서 optional
     implementation(libs.zxing.core)
 
+    // F16 무전 '네/아니' 오프라인 인식(두 flavor 공통). 모델(소형 한국어 82 MB zip / 풀면 253 MB)은 APK 에 넣지 않는다 —
+    // tools/demo 가 앱 files/vosk-ko-small 로 넣었을 때만 쓰고, 없으면 인식 체인이 다음 단계(카운트다운)로 간다(docs/05 § 무전)
+    implementation(libs.vosk.android)
+
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)   // F16 무전 업로드·다운로드 클라이언트(multipart) 단위 테스트
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

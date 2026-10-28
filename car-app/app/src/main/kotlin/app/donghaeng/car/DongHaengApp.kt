@@ -71,6 +71,8 @@ class DongHaengApp : Application() {
     lateinit var healthLogger: app.donghaeng.car.domain.health.HealthLogger
     @Inject
     lateinit var serverConfig: app.donghaeng.car.core.network.ServerConfig
+    @Inject
+    lateinit var pttRuntime: app.donghaeng.car.domain.ptt.PttRuntime
 
     override fun onCreate() {
         // T33: I/W/E 로그를 files/dh_log.txt 에도 남긴다(logcat 회전과 무관하게 사후 추적) — Hilt 주입(super.onCreate) 전에 붙여 시작 로그부터 담는다
@@ -99,5 +101,6 @@ class DongHaengApp : Application() {
         latencyMeter.start()              // T31: 그룹 EVENT/STATE 지연 측정
         driveSurfaceController.start()    // 주행 중 표면: 플로팅 패널·알림 카드(docs/05 §5.2)
         healthLogger.start()              // T33: 30초마다 `health …` 한 줄(soak.py 가 읽는다)
+        pttRuntime.start()                // F16: 무전 — 트리거(MediaSession 은 그룹 있을 때만)·보내기 상태 기계·받은 무전 재생
     }
 }

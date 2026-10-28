@@ -83,7 +83,10 @@ class SurfaceState(
 
     private val driveTimer = ContinuousDriveTimer()
 
-    /** 무전 상태(F16 다음 작업이 채운다) — 지금은 항상 IDLE */
+    /**
+     * 무전 상태(F16) — `PttRuntime` 이 보내기 상태 기계(PttController) + 받은 무전 재생(VoicePlayback)을 `PttUiMapper` 로 합쳐 넣는다.
+     * 패널([panelUi])과 정차 대시보드가 같은 값을 본다.
+     */
     val ptt = MutableStateFlow(PttUi())
 
     @OptIn(ExperimentalCoroutinesApi::class)

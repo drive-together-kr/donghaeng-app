@@ -42,6 +42,15 @@ class DriveSessionController(
             .launchIn(scope)
     }
 
+    /**
+     * 권한 다이얼로그 결과 뒤(앱이 앞에 있을 때) 서비스를 다시 시작해 포그라운드 타입을 새 권한에 맞춘다 —
+     * 위치 승인 → location, 마이크 승인 → microphone(F16 무전 녹음이 백그라운드에서도 무음이 되지 않게). 그룹이 없으면 아무것도 안 한다.
+     */
+    fun refreshType(session: GroupSession?) {
+        if (session == null || !_serviceRunning.value) return
+        startService(session)
+    }
+
     private fun startService(s: GroupSession) {
         val intent = DriveSessionService.intent(context)
         try {

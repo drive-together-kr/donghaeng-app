@@ -1,10 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- debug 빌드 전용: 시연 스크립트(tools/demo)가 adb 로 앱을 조작하는 리시버. release 에는 들어가지 않는다 (T30, docs/09 §1).
-     SYSTEM_ALERT_WINDOW·POST_NOTIFICATIONS 는 main 매니페스트에 있다(플로팅 패널·알림 카드 — docs/05 §5.2). -->
+     SYSTEM_ALERT_WINDOW·POST_NOTIFICATIONS·RECORD_AUDIO(F16 무전) 는 main 매니페스트에 있다(플로팅 패널·알림 카드 — docs/05 §5.2, 무전 녹음). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-
-    <!-- F16 무전 사전 실측(F16Probes) — 녹음 프로브. 실제 기능이 들어오면 main 매니페스트로 옮긴다 -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application>
         <!-- 표면 조사용 프로브(2026-10-28 실측) — 실제 패널은 main 의 surface.FloatingPanelService -->

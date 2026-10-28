@@ -9,10 +9,13 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.model.Priority
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
@@ -24,6 +27,7 @@ import java.util.concurrent.atomic.AtomicReference
  * - 오디오: `USAGE_ASSISTANCE_NAVIGATION_GUIDANCE`, 말하기 전 **오디오 포커스 `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`** 요청, 마지막 문장이 끝나면 반납.
  *   문장 앞에 **선행 묵음 200 ms**(Pleos 가이드) — 블루투스/앰프가 깨어나며 첫 음절이 잘리는 것을 막는다.
  * - [Priority.CRITICAL] 은 `QUEUE_FLUSH` 로 재생 중인 안내를 끊는다. 큐 순서·신선도는 `VoiceAnnouncer` 가 결정한다.
+ * - F16: [speakAndWait] 는 같은 큐에 넣고 그 utterance 의 onDone/onError 를 기다린다(엔진 없음 → 즉시 [SpeakResult.FALLBACK], [stop] → 실패로 풀림).
  *
  * 문장 원문은 **어떤 빌드에서도** 로그에 남기지 않는다(닉네임 포함, CLAUDE.md 규칙 8) — 길이와 utteranceId 만 남긴다.
  */
@@ -83,14 +87,37 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceAdapter {
         DhLog.i("TTS 준비 완료 (Android TextToSpeech ${engine?.defaultEngine ?: ""}, ko-KR)")
     }
 
+    /** F16: [speakAndWait] 가 기다리는 utterance → 완료 신호(onDone = true, onError = false) */
+    private val waiters = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
+
     override suspend fun speak(text: String, priority: Priority) {
+        enqueue(text, priority, waiter = null)
+    }
+
+    override suspend fun speakAndWait(text: String, priority: Priority, timeoutMs: Long): SpeakResult {
+        val done = CompletableDeferred<Boolean>()
+        return when (enqueue(text, priority, waiter = done)) {
+            Enqueued.FALLBACK -> SpeakResult.FALLBACK
+            Enqueued.FAILED -> SpeakResult.FAILED
+            Enqueued.QUEUED -> when (withTimeoutOrNull(timeoutMs) { done.await() }) {
+                true -> SpeakResult.SPOKEN
+                false -> SpeakResult.FAILED
+                null -> SpeakResult.TIMEOUT
+            }
+        }
+    }
+
+    private enum class Enqueued { QUEUED, FALLBACK, FAILED }
+
+    private fun enqueue(text: String, priority: Priority, waiter: CompletableDeferred<Boolean>?): Enqueued {
         val utteranceId = "dh-${utteranceSeq++}"
         val engine = tts
         if (engine == null || state.get() != State.READY) {
             DhLog.i("TTS 폴백 [$priority] ${describe(text, utteranceId)}")
             _status.update { it.copy(fallbackCount = it.fallbackCount + 1, lastUtteranceMs = System.currentTimeMillis()) }
-            return
+            return Enqueued.FALLBACK
         }
+        if (waiter != null) waiters[utteranceId] = waiter
         requestFocus()
         val queueMode = if (priority == Priority.CRITICAL) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
         if (priority == Priority.CRITICAL) outstanding.set(0)
@@ -99,25 +126,32 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceAdapter {
         engine.playSilentUtterance(PRE_SILENCE_MS, queueMode, "$utteranceId-s")
         outstanding.incrementAndGet()
         val result = engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
-        if (result != TextToSpeech.SUCCESS) {
+        return if (result != TextToSpeech.SUCCESS) {
             outstanding.decrementAndGet()
+            waiters.remove(utteranceId)
             DhLog.w("TTS speak 실패 result=$result [$priority] ${describe(text, utteranceId)}")
             _status.update { it.copy(failedCount = it.failedCount + 1) }
             releaseFocusIfIdle()
+            Enqueued.FAILED
         } else {
             DhLog.d("TTS speak [$priority] ${describe(text, utteranceId)}")
             _status.update { it.copy(spokenCount = it.spokenCount + 1, lastUtteranceMs = System.currentTimeMillis()) }
+            Enqueued.QUEUED
         }
     }
 
     override fun stop() {
         runCatching { tts?.stop() }
         outstanding.set(0)
+        // 멈춘 문장을 기다리던 쪽(무전 확인·수신 알림)은 실패로 풀어 준다 — onDone 이 오지 않을 수 있다
+        waiters.values.forEach { it.complete(false) }
+        waiters.clear()
         releaseFocusIfIdle()
     }
 
     private fun onUtteranceFinished(utteranceId: String?, ok: Boolean) {
         if (!ok) DhLog.w("TTS utterance 오류 id=$utteranceId")
+        if (utteranceId != null) waiters.remove(utteranceId)?.complete(ok)
         if (outstanding.decrementAndGet() <= 0) {
             outstanding.set(0)
             releaseFocusIfIdle()
