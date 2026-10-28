@@ -39,4 +39,10 @@ class SpeechComposerTest {
         assertEquals("그룹이 종료됐어요.", speech.groupEnded(SpeechComposer.REASON_ALL_LEFT))
         assertEquals("그룹이 종료됐어요.", speech.groupEnded("SOMETHING_ELSE"))
     }
+
+    @Test
+    fun `무전 알림 — 닉네임 뒤에 조사 없이 '무전'`() {
+        assertEquals("아빠 차 무전", speech.voiceMessage("아빠 차"))
+        assertEquals("삼촌 무전", speech.voiceMessage("삼촌"))
+    }
 }

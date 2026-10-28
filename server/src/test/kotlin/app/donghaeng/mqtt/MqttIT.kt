@@ -12,6 +12,7 @@ import app.donghaeng.protocol.LocSource
 import app.donghaeng.protocol.MessageTypes
 import app.donghaeng.protocol.Telemetry
 import app.donghaeng.protocol.Topics
+import app.donghaeng.protocol.VoiceMessagePayload
 import app.donghaeng.protocol.rest.ApiPaths
 import app.donghaeng.protocol.rest.DeviceApproveRequest
 import app.donghaeng.protocol.rest.DeviceCodeRequest
@@ -25,6 +26,7 @@ import app.donghaeng.protocol.rest.LoginRequest
 import app.donghaeng.protocol.rest.PassengerMessageRequest
 import app.donghaeng.protocol.Place
 import app.donghaeng.protocol.rest.TokenResponse
+import app.donghaeng.protocol.rest.VoiceUploadResponse
 import com.hivemq.client.mqtt.MqttClient
 import com.hivemq.client.mqtt.MqttGlobalPublishFilter
 import com.hivemq.client.mqtt.datatypes.MqttQos
@@ -44,6 +46,7 @@ import org.springframework.boot.test.web.client.TestRestTemplate
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
+import org.springframework.core.io.ByteArrayResource
 import org.springframework.http.HttpEntity
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpMethod
@@ -53,6 +56,7 @@ import org.springframework.http.client.JdkClientHttpRequestFactory
 import org.springframework.stereotype.Component
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
+import org.springframework.util.LinkedMultiValueMap
 import org.testcontainers.Testcontainers
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
@@ -63,6 +67,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -89,7 +94,8 @@ class MqttItConfig {
  * 서버는 고정 포트(18089)로 떠서 컨테이너가 `host.testcontainers.internal:18089` 로 접근한다.
  *
  * 확인: 서버 자신의 접속·공유 구독, 차량 토큰 접속, 차량 ACL(자기 토픽만), 합류 → cmd GROUP_JOINED 수신, 그룹 이벤트 팬아웃,
- * 비멤버는 그룹 토픽 구독 거부, 다른 차량 토픽 발행은 서버에 닿지 않음. Docker 없으면 건너뛴다.
+ * 비멤버는 그룹 토픽 구독 거부, 다른 차량 토픽 발행은 서버에 닿지 않음, F16 무전 업로드 → 그룹 event 토픽 `VOICE_MESSAGE` → 받은 차가 다운로드.
+ * Docker 없으면 건너뛴다.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT, properties = ["server.port=18089", "dh.internal-token=it-internal-token"])
 @org.testcontainers.junit.jupiter.Testcontainers(disabledWithoutDocker = true)
@@ -304,6 +310,56 @@ class MqttIT {
         assertEquals(1, mine.size, "exactly the legitimate telemetry reaches the handler: ${telemetry.received}")
         assertEquals(3L, mine.single().second.seq)
         assertNull(telemetry.received.firstOrNull { it.first == a.vehicleId }, "spoofed publish to A's topic must be denied by ACL")
+    }
+
+    @Test
+    fun `voice upload fans out VOICE_MESSAGE on the group event topic and the receiving car downloads it`() {
+        awaitServerConnected()
+        val a = driver("voice-a", "아빠 차")
+        val b = driver("voice-b", "엄마 차")
+        val created: GroupCreateResponse = call(HttpMethod.POST, ApiPaths.GROUPS, json.encodeToString(GroupCreateRequest("무전 MQTT", DEST)), a.vehicleToken).decode()
+        val joinRes = call(HttpMethod.POST, ApiPaths.GROUPS_JOIN, json.encodeToString(GroupJoinRequest(created.invite.token)), b.user.accessToken)
+        assertEquals(200, joinRes.statusCode.value(), joinRes.body)
+
+        val carA = connectVehicle(a)
+        val groupEvents = LinkedBlockingQueue<Mqtt5Publish>()
+        carA.toAsync().publishes(MqttGlobalPublishFilter.SUBSCRIBED) { groupEvents.offer(it) }
+        assertTrue(carA.subscribeOk(created.mqttTopics.event))
+
+        // B(차량 토큰)가 녹음을 올린다 — docs/03 §2.6 multipart(audio + durationMs)
+        val audio = ByteArray(9_000) { (it % 200).toByte() }
+        val parts = LinkedMultiValueMap<String, Any>().apply {
+            add("audio", HttpEntity(object : ByteArrayResource(audio) { override fun getFilename() = "ptt.m4a" }, HttpHeaders().apply { contentType = MediaType.parseMediaType("audio/mp4") }))
+            add("durationMs", "3100")
+        }
+        val uploadHeaders = HttpHeaders().apply {
+            contentType = MediaType.MULTIPART_FORM_DATA
+            accept = listOf(MediaType.APPLICATION_JSON)
+            setBearerAuth(b.vehicleToken)
+        }
+        val uploadRes = rest.exchange("${ApiPaths.group(created.groupId)}/voice", HttpMethod.POST, HttpEntity(parts, uploadHeaders), String::class.java)
+        assertEquals(201, uploadRes.statusCode.value(), uploadRes.body)
+        val uploaded: VoiceUploadResponse = uploadRes.decode()
+
+        // A 는 그룹 event 토픽으로 VOICE_MESSAGE 를 받는다 (봉투 type EVENT, 그룹 전체, '{닉네임} 무전')
+        val voice = generateSequence { groupEvents.poll(20, TimeUnit.SECONDS) }
+            .map { DhJson.decode<GroupEvent>(String(it.payloadAsBytes)) }
+            .firstOrNull { it.data.type == GroupEventType.VOICE_MESSAGE.name }
+        assertNotNull(voice, "VOICE_MESSAGE must fan out on the group event topic")
+        assertEquals(MessageTypes.EVENT, voice.type)
+        assertEquals(uploaded.eventId, voice.data.eventId)
+        assertEquals(b.vehicleId, voice.data.sourceVehicleId)
+        assertEquals("엄마 차 무전", voice.data.speech)
+        assertNull(voice.data.audience)
+        val payload = DhJson.payloadAs(voice.data.payload, VoiceMessagePayload.serializer())
+        assertEquals(VoiceMessagePayload(uploaded.voiceId, 3_100, "audio/mp4", audio.size, uploaded.expiresAtMs), payload)
+
+        // 받은 이벤트의 voiceId 로 A 가 내려받는다
+        val downloadHeaders = HttpHeaders().apply { setBearerAuth(a.vehicleToken) }
+        val got = rest.exchange("${ApiPaths.group(created.groupId)}/voice/${payload.voiceId}", HttpMethod.GET, HttpEntity<Void>(downloadHeaders), ByteArray::class.java)
+        assertEquals(200, got.statusCode.value())
+        assertEquals(MediaType.parseMediaType("audio/mp4"), got.headers.contentType)
+        assertContentEquals(audio, got.body)
     }
 
     @Test

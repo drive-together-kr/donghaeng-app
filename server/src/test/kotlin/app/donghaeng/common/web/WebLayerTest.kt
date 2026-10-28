@@ -139,6 +139,24 @@ class WebLayerTest {
     }
 
     @Test
+    @WithMockUser
+    fun `error bodies are JSON even when Accept excludes JSON - no empty 500 from content negotiation`() {
+        // 무전 다운로드처럼 오디오만 받는 클라이언트(Accept: audio/*)도 404·405 를 docs/03 오류 형식으로 받는다
+        mvc.get("/v1/nope") { accept = MediaType.parseMediaType("audio/*") }.andExpect {
+            status { isNotFound() }
+            content { contentTypeCompatibleWith(MediaType.APPLICATION_JSON) }
+            jsonPath("$.error.code") { value("NOT_FOUND") }
+            jsonPath("$.error.traceId") { isNotEmpty() }
+        }
+        mvc.post("/.well-known/jwks.json") { accept = MediaType.IMAGE_PNG }.andExpect {
+            status { isMethodNotAllowed() }
+            header { string("Allow", containsString("GET")) }
+            content { contentTypeCompatibleWith(MediaType.APPLICATION_JSON) }
+            jsonPath("$.error.code") { value("METHOD_NOT_ALLOWED") }
+        }
+    }
+
+    @Test
     fun `landing pages are public and escape user input`() {
         mvc.get("/j/{token}", "inv_<script>x").andExpect {
             status { isOk() }

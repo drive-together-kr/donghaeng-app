@@ -18,6 +18,12 @@ spring:
       password: ${DH_REDIS_PASSWORD:}
   jackson:
     default-property-inclusion: non_null
+  # multipart 본문은 F16 무전 업로드(POST /v1/groups/{id}/voice, docs/03 §2.6)뿐이다. 파일 상한 = 계약의 512 KB(=524288 B, 같으면 허용),
+  # 요청 전체는 폼 필드·경계 여유를 두고 1MB(클라우드 Caddy request_body 와 같음). 넘으면 컨트롤러 전에 413 VOICE_TOO_LARGE(GlobalExceptionHandler).
+  servlet:
+    multipart:
+      max-file-size: 512KB
+      max-request-size: 1MB
 
 server:
   port: 8080
@@ -56,5 +62,8 @@ dh:
   jwt:
     # RS256 개인키 (PKCS#8 PEM, 한 줄 `\n` 이스케이프 허용). 비우면 기동 시 개발용 키 생성(WARN, 재시작마다 바뀜).
     private-key-pem: ${DH_JWT_PRIVATE_KEY_PEM:}
+  # F16 무전 보관 정리(VoiceRetention): 만료(업로드 + 24h) 무전 삭제 주기(ms). 그룹 종료 시 삭제는 즉시(GROUP_ENDED), 다운로드는 만료 시각을 직접 비교한다.
+  voice:
+    purge-interval-ms: ${DH_VOICE_PURGE_INTERVAL_MS:600000}
   # CarInfo 차량 ID 해시 salt (docs/04 vehicle.car_info_id_hash). 운영에서는 반드시 바꾸고, 바꾼 뒤에는 유지한다.
   car-id-salt: ${DH_CAR_ID_SALT:dev-salt-change-me}

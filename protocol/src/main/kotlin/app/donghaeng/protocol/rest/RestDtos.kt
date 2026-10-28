@@ -78,8 +78,14 @@ object ErrorCodes {
     const val GROUP_FULL = "GROUP_FULL"               // 409: maxMembers 도달
     const val NO_PAIRED_VEHICLE = "NO_PAIRED_VEHICLE" // 404: 합류할 내 차가 없음(대표 차량 없음 또는 vehicleId 가 내 활성 차량이 아님)
     const val ALREADY_MEMBER = "ALREADY_MEMBER"       // 409: 그 차량이 이미 이 그룹의 멤버
-    const val GROUP_ENDED = "GROUP_ENDED"             // 409: 이미 종료된 그룹에 대한 변경 요청(나가기·종료·위임·초대·메시지)
+    const val GROUP_ENDED = "GROUP_ENDED"             // 409: 이미 종료된 그룹에 대한 변경 요청(나가기·종료·위임·초대·메시지·무전)
     const val INVALID_MESSAGE = "INVALID_MESSAGE"     // 400: 동승자 메시지가 비었거나 60자 초과
+
+    // 무전 (§2.6, F16)
+    const val VOICE_TOO_LARGE = "VOICE_TOO_LARGE"               // 413: 오디오가 512 KB 초과
+    const val INVALID_VOICE = "INVALID_VOICE"                   // 400: audio 파일이 없음·비었음, durationMs 가 정수 1~16 000 이 아님
+    const val UNSUPPORTED_VOICE_TYPE = "UNSUPPORTED_VOICE_TYPE" // 415: audio 의 Content-Type 이 audio/mp4·audio/aac·audio/wav 가 아님
+    const val VOICE_RATE_LIMITED = "VOICE_RATE_LIMITED"         // 429: 같은 차가 3초 안에 두 번째 업로드
 }
 
 /** 오류 응답 봉투 (클라이언트 파싱용). 서버는 같은 모양을 `common/api/ApiError` 로 만든다. */
