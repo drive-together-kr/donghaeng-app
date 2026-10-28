@@ -40,8 +40,9 @@ companion 모듈은 제공자와 무관하게 아래 교환 한 가지 경로만
 `POST /auth/login` 은 `provider` 가 `dev` 일 때만 200 (그 외 400 `VALIDATION_FAILED`). `provider_sub` 는 소문자 이메일 — 대소문자가 달라도 같은 사용자다.
 
 `POST /auth/refresh` `{ "refreshToken": "..." }` → 200 새 토큰 쌍. **회전**: 이전 refresh 는 즉시 폐기되고 재사용하면 401. 무효·폐기·만료는 모두 401 `INVALID_TOKEN`(구분하지 않음).
+**재사용 유예 60 s (T33 리뷰)**: 서버가 회전을 커밋한 뒤 응답이 닿지 못하면(읽기 타임아웃·네트워크 단절·프로세스 종료) 클라이언트는 이전 refresh 만 가진 채 남는다. 그래서 이전 refresh 가 **회전된 지 60 s 안에** 다시 오고 **그 다음 토큰이 아직 한 번도 쓰이지 않았으면**(해제·이전으로 폐기되지도 않았으면) 응답 유실 재시도로 보고 다음 토큰을 폐기한 뒤 새 쌍을 돌려준다(살아 있는 refresh 는 계속 하나). 다음 토큰을 이미 썼거나, 해제·이전으로 폐기됐거나, 60 s 가 지났으면 401. 유예는 처음 회전 시각부터 재므로 재시도를 거듭해도 늘지 않는다(`refresh_token.replaced_by`, docs/04 V4). 유예 안에서는 도난된 이전 토큰도 한 번 통할 수 있다는 점을 받아들인 절충이다(차량은 single-flight 라 정상 흐름에서 같은 refresh 를 동시에 두 번 보내지 않는다).
 refresh 토큰은 불투명 문자열(랜덤 32바이트 Base62, 30일, 서버엔 SHA-256 해시만). 차량 refresh 토큰이면 `accessToken` 은 **차량 토큰**이고 `user` 는 소유자다(차량 앱도 같은 엔드포인트를 쓴다). 페어링이 해제된 차량의 refresh 는 거부.
-**차량 앱의 사용(T33 구현)**: 차량 JWT(24h)의 `exp` 를 보고(서명 검증 없이 payload 만) 남은 시간이 2시간 이하면 선제 갱신(앱 시작 + 30분 점검), 인증 경로 REST 가 401 이면 OkHttp `Authenticator` 가 한 번 갱신하고 같은 요청을 새 Bearer 로 재시도(`/v1/auth/*`·`/v1/device/*` 제외), MQTT CONNACK 이 `NOT_AUTHORIZED`/`BAD_USER_NAME_OR_PASSWORD` 면 갱신 뒤 새 토큰으로 다시 접속한다. 동시 요청은 한 번만 갱신(single-flight)하고 회전된 `accessToken`·`refreshToken` 은 한 번에 저장한다. 갱신이 401 이면 차량은 자격 증명을 지우고(`REFRESH_REJECTED`) "폰에서 다시 연결해 주세요" 를 띄운다. 해제된 차량의 남은 access token 으로 부른 그룹 API 는 401 이 아니라 403 이라 갱신 대상이 아니다.
+**차량 앱의 사용(T33 구현)**: 차량 JWT(24h)의 `exp` 를 보고(서명 검증 없이 payload 만) 남은 시간이 2시간 이하면 선제 갱신(앱 시작 + 30분 점검), 인증 경로 REST 가 401 이면 OkHttp `Authenticator` 가 한 번 갱신하고 같은 요청을 새 Bearer 로 재시도(`/v1/auth/*`·`/v1/device/*` 제외), MQTT CONNACK 이 `NOT_AUTHORIZED`/`BAD_USER_NAME_OR_PASSWORD` 면 갱신 뒤 새 토큰으로 다시 접속한다. 동시 요청은 한 번만 갱신(single-flight)하고 회전된 `accessToken`·`refreshToken` 은 한 번에 저장한다. 갱신 401 은 본문 `code` 가 `INVALID_TOKEN` 일 때만 자격 증명 문제로 본다(프록시·캡티브 포털의 401 은 실패로만 세고 토큰 유지). **선제 갱신**이 401 인데 access token 이 아직 유효하면 지우지 않고 '다시 연결 필요(HH:mm 까지 동작)' 배너만 띄운 뒤, 만료 직후 점검이나 실제 거부(REST 401·MQTT 인증 거부)에서 지운다 — 바로 지우면 그룹 세션까지 사라진다. 실제 거부 뒤의 갱신이 401 이면 보낸 refresh 가 아직 저장돼 있을 때만(compare-and-set) 자격 증명을 지우고(`REFRESH_REJECTED`) "폰에서 다시 연결해 주세요" 를 띄운다. 선제 갱신이 네트워크·5xx 로 실패하면 20 s 뒤 한 번 더 시도한다(위 재사용 유예 안). MQTT 인증 거부로 회전한 새 토큰도 다시 거부되면(브로커 JWKS·설정 문제) MQTT 발 회전 간격을 1→2→4→8→16→30분으로 늘리고 접속에 성공하면 처음부터 — 진단 카드·health `mqttRot` 에 단계가 보인다. 해제된 차량의 남은 access token 으로 부른 그룹 API 는 401 이 아니라 403 이라 갱신 대상이 아니다.
 
 **JWT 형식 (RS256)**: 헤더 `kid`, `iss = "donghaeng"`. 사용자 토큰 `sub = usr_…`, `typ = "user"`, 1시간. 차량 토큰 `sub = veh_…`, `typ = "vehicle"`, `owner = usr_…`, 24시간. 공개키는 `GET /.well-known/jwks.json`(JWK Set — `kty RSA`, `use sig`, `alg RS256`, `kid`, `n`, `e`; EMQX 도 같은 키로 검증). 보호된 API 에 토큰이 없으면 401 `UNAUTHORIZED`, 무효하면 401 `INVALID_TOKEN`, 역할(사용자/차량)이 맞지 않으면 403 `FORBIDDEN`.
 
@@ -105,6 +106,7 @@ refresh 토큰은 불투명 문자열(랜덤 32바이트 Base62, 30일, 서버�
 `GET /me/vehicles` → 200 `[{ vehicleId, nickname, brand, model, isPrimary }]` — `VehicleDirectory` 조회(MVP: 동행 DB 의 해제되지 않은 차량), 대표 차량이 먼저. 없으면 `[]`.
 `PATCH /me/vehicles/{vehicleId}` `{ nickname?, isPrimary? }` → 200 `MyVehicleDto`. 둘 다 없으면 400. `isPrimary: true` 면 같은 사용자의 다른 대표 차량은 자동 해제된다(사용자당 하나 — DB 부분 유니크 인덱스). 내 차가 아니거나 해제된 차는 404 `NOT_FOUND`.
 `DELETE /me/vehicles/{vehicleId}` → 204 페어링 해제: `vehicle.revoked_at` 기록 + 그 차량의 refresh 토큰 폐기 + 활성 그룹에서 제외. 이미 발급된 차량 access token 은 만료(24h)까지 서명상 유효하지만 그룹 API 는 403 이고, 서버가 커밋 뒤 그 차량에 cmd `TOKEN_REVOKED`(QoS 1, retain 없음)를 보내 차량 앱이 스스로 자격 증명을 지운다(T33 구현). 같은 차를 다시 페어링하면 같은 `vehicleId` 가 복원된다. 없으면 404(이때는 보내지 않는다).
+**한계(T33 리뷰)**: `TOKEN_REVOKED` 는 retain 이 없고 차량 MQTT 영속 세션은 300 s 에 만료되므로, **차가 300 s 넘게 오프라인일 때 해제하면 그 cmd 는 사라진다**. 그 뒤 차는 서명상 유효한 access token 으로 MQTT 에 다시 붙어 '연결됨' 으로 보이고, 해제 때의 `MEMBER_LEFT`/`GROUP_ENDED` 도 놓쳐 옛 그룹 세션이 남을 수 있다(그룹 API 는 403 `FORBIDDEN`). 이 상태는 다음 갱신 시점에 정리된다 — 선제 갱신(만료 2시간 전)의 refresh 가 401 이면 '다시 연결 필요' 배너, access token 만료 뒤 점검·인증 거부에서 자격 증명 삭제(`REFRESH_REJECTED`). 즉 최대 약 24시간 '연결됨' 으로 남을 수 있다. 보완 후보(미구현): 앱 시작·재연결 때 가벼운 REST 확인으로 403(차량 해제 전용 코드 필요) 감지, 또는 EMQX authn 에서 `vehicle.active` 확인으로 해제된 차의 CONNECT 거부.
 
 ## 2. 그룹 (group)
 
@@ -287,7 +289,7 @@ T14 가 만드는 수명주기 이벤트의 payload:
 | `ROUTE_FOLLOW_PROPOSAL` | `{ proposalId, destination, waypoints, speech }` |
 | `REST_STOP_PROPOSAL` | `{ proposalId, poi:{poiId,name,lat,lon,distanceKm}, reason, speech }` |
 | `GROUP_ENDED` | `{ groupId, reason }` |
-| `TOKEN_REVOKED` | `{}` — 페어링 해제·소유권 이전 커밋 뒤(§1.2·§1.3), retain 없음. 차량은 봉투 `ts`(서버 시계, 초)가 지금 차량 토큰의 `iat` 이하이면 재페어링 전 MQTT 영속 세션(같은 clientId)에 남아 있던 것으로 보고 무시한다 |
+| `TOKEN_REVOKED` | `{}` — 페어링 해제·소유권 이전 커밋 뒤(§1.2·§1.3), retain 없음. 차량은 **봉투 `ts`(epoch ms, 서버 시계)를 초 단위로 내린 값 ≤ 지금 차량 토큰의 `iat`(초)** 이면 재페어링 전 MQTT 영속 세션(같은 clientId)에 남아 있던 것으로 보고 무시한다. 같은 초도 무시(`<=`)하므로 해제 직전 같은 초에 갱신·발급된 토큰은 지워지지 않고 남을 수 있다(그 토큰도 다음 갱신 때 401 로 정리된다). 300 s 넘게 오프라인이면 사라진다(§1.3 한계) |
 
 ### 5.6 ACK (차량 → 서버)
 ```json
