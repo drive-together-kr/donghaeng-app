@@ -85,9 +85,9 @@ class JdbcVoiceStore(private val jdbc: NamedParameterJdbcTemplate) : VoiceStore 
         expiresAt = rs.requireInstant("expires_at"),
     )
 
-    private companion object {
-        /** advisory lock 두 키 형식의 첫 키 — 무전 업로드(F16) 전용 */
+    internal companion object {
+        /** advisory lock 두 키 형식의 첫 키 — 무전 업로드(F16) 전용 (`VoiceFlowIT` 가 같은 잠금으로 업로드를 세워 경합을 재현한다) */
         const val LOCK_NAMESPACE = 1616
-        const val META_COLUMNS = "voice_id, group_id, sender_vehicle_id, event_id, mime, duration_ms, size_bytes, created_at, expires_at"
+        private const val META_COLUMNS = "voice_id, group_id, sender_vehicle_id, event_id, mime, duration_ms, size_bytes, created_at, expires_at"
     }
 }

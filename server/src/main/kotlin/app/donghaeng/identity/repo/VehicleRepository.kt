@@ -94,6 +94,11 @@ class VehicleRepository(private val jdbc: NamedParameterJdbcTemplate) {
         jdbc.query("SELECT $COLUMNS FROM vehicle WHERE vehicle_id = :vehicleId", mapOf("vehicleId" to vehicleId), ::mapRow)
             .firstOrNull()
 
+    /** [findById] + 행 `FOR KEY SHARE`(FK 검사와 같은 세기) — 재페어링의 `FOR UPDATE` 는 기다리고, 키가 아닌 UPDATE(해제)는 통과한다 */
+    fun findByIdForKeyShare(vehicleId: String): VehicleRecord? =
+        jdbc.query("SELECT $COLUMNS FROM vehicle WHERE vehicle_id = :vehicleId FOR KEY SHARE", mapOf("vehicleId" to vehicleId), ::mapRow)
+            .firstOrNull()
+
     /** 여러 ID 를 한 번에 (해제 여부 무관). 빈 입력이면 빈 목록 */
     fun findAllByIds(vehicleIds: Collection<String>): List<VehicleRecord> =
         if (vehicleIds.isEmpty()) emptyList()

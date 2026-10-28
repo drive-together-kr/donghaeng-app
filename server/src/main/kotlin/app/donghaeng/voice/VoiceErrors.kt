@@ -26,6 +26,10 @@ internal object VoiceErrors {
     fun rateLimited() =
         ApiException(HttpStatus.TOO_MANY_REQUESTS, ErrorCodes.VOICE_RATE_LIMITED, "무전은 ${VoiceRules.RATE_WINDOW.seconds}초에 한 번 보낼 수 있어요.")
 
+    /** 토큰 `typ` 이 맞지 않음 — group 의 같은 오류(`GroupErrors.wrongPrincipal`)와 같은 403 `FORBIDDEN` */
+    fun wrongPrincipal(detail: String) =
+        ApiException(HttpStatus.FORBIDDEN, ErrorCodes.FORBIDDEN, detail)
+
     /** 없음·형식 오류·만료·그룹 종료로 삭제 — 구분하지 않는다 */
     fun notFound() =
         ApiException(HttpStatus.NOT_FOUND, ErrorCodes.NOT_FOUND, "무전을 찾을 수 없어요. 보관 시간(24시간)이 지났거나 그룹이 끝났어요.")

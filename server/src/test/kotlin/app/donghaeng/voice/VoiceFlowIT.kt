@@ -23,6 +23,7 @@ import app.donghaeng.protocol.rest.GroupJoinRequest
 import app.donghaeng.protocol.rest.LoginRequest
 import app.donghaeng.protocol.rest.TokenResponse
 import app.donghaeng.protocol.rest.VoiceUploadResponse
+import app.donghaeng.voice.repo.JdbcVoiceStore
 import kotlinx.serialization.encodeToString
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -178,14 +179,28 @@ class VoiceFlowIT {
 
     /**
      * multipart 업로드. [mime] 이 파트 Content-Type, [durationMs] 가 null 이면 필드를 빼고, [audio] 가 null 이면 파일 파트를 뺀다.
+     * [filename] 이 null 이면 `audio` 파트의 Content-Disposition 에 filename 이 없다(`form-data; name="audio"` — OkHttp `createFormData(name, null, body)` 와 같은 모양).
      */
-    private fun upload(groupId: String, bearer: String?, audio: ByteArray? = sample(), mime: MediaType = M4A, durationMs: String? = "4200"): ResponseEntity<String> {
+    private fun upload(
+        groupId: String,
+        bearer: String?,
+        audio: ByteArray? = sample(),
+        mime: MediaType = M4A,
+        durationMs: String? = "4200",
+        filename: String? = "ptt.m4a",
+    ): ResponseEntity<String> {
         val parts = LinkedMultiValueMap<String, Any>()
         if (audio != null) {
-            val file = object : ByteArrayResource(audio) {
-                override fun getFilename() = "ptt.m4a"
+            val partHeaders = HttpHeaders().apply { contentType = mime }
+            if (filename != null) {
+                val file = object : ByteArrayResource(audio) {
+                    override fun getFilename() = filename
+                }
+                parts.add("audio", HttpEntity(file, partHeaders))
+            } else {
+                // byte[] 본문은 FormHttpMessageConverter 가 filename 없이 쓴다
+                parts.add("audio", HttpEntity(audio, partHeaders))
             }
-            parts.add("audio", HttpEntity(file, HttpHeaders().apply { contentType = mime }))
         }
         if (durationMs != null) parts.add("durationMs", durationMs)
         if (parts.isEmpty()) parts.add("note", "empty")
@@ -407,6 +422,106 @@ class VoiceFlowIT {
         } finally {
             pool.shutdownNow()
         }
+    }
+
+    @Test
+    fun `an upload racing a re-pairing of the same car does not deadlock - lock order is vehicle row then group row`() {
+        val a = driver("pa", "아빠 차")
+        val b = driver("pb", "엄마 차")
+        val gid = group(a, b)
+        val pool = Executors.newFixedThreadPool(2)
+        // 재페어링(다른 계정 승인) 흉내: VehicleRegistry.register 의 차량 행 FOR UPDATE → evictVehicle 의 그룹 행 FOR UPDATE 와 같은 순서
+        val lockVehicleRow = "select vehicle_id from vehicle where vehicle_id = ? for update"
+        val lockGroupRow = "select status from travel_group where group_id = ? for update"
+        try {
+            // ① 재페어링이 먼저 차량 행을 잡았다 → 업로드는 그룹 행보다 먼저 차량 행(FOR KEY SHARE)에서 기다린다.
+            //    (예전 순서 = 그룹 행 FOR SHARE 를 쥔 채 voice_message FK 검사가 차량 행을 기다림 → 재페어링이 그룹 행을 원하면 교착 40P01 → 업로드 500)
+            val first = TransactionTemplate(txManager).execute {
+                jdbc.execute("set local lock_timeout = '10s'")
+                jdbc.queryForMap(lockVehicleRow, b.vehicleId)
+                val inFlight = pool.submit<ResponseEntity<String>> { upload(gid, b.vehicleToken) }
+                Thread.sleep(700)
+                assertFalse(inFlight.isDone, "upload must wait for the vehicle row")
+                jdbc.queryForMap(lockGroupRow, gid) // 업로드가 그룹 행을 쥐고 있지 않으므로 바로 얻는다
+                inFlight
+            }!!
+            first.get(20, TimeUnit.SECONDS).assertOk(201)
+
+            // ② 업로드가 먼저 차량·그룹 행을 잡았다: 업로드를 그 뒤의 빈도 제한 잠금(같은 차 advisory)에서 세워 두고 재페어링을 보낸다
+            //    → 재페어링이 차량 행에서 기다렸다가 업로드가 끝난 뒤 진행한다(예전 순서면 재페어링이 차량 행을 먼저 얻어 교착)
+            forgetRate(b.vehicleId)
+            val (second, repair) = TransactionTemplate(txManager).execute {
+                jdbc.queryForObject("select pg_advisory_xact_lock(?, hashtext(?))", Any::class.java, JdbcVoiceStore.LOCK_NAMESPACE, b.vehicleId)
+                val inFlight = pool.submit<ResponseEntity<String>> { upload(gid, b.vehicleToken) }
+                Thread.sleep(700)
+                assertFalse(inFlight.isDone, "upload must wait for the rate-limit lock")
+                val repairing = pool.submit<Unit> {
+                    TransactionTemplate(txManager).executeWithoutResult {
+                        jdbc.execute("set local lock_timeout = '10s'")
+                        jdbc.queryForMap(lockVehicleRow, b.vehicleId)
+                        jdbc.queryForMap(lockGroupRow, gid)
+                    }
+                }
+                Thread.sleep(700)
+                assertFalse(repairing.isDone, "re-pairing must wait for the upload's vehicle row lock")
+                inFlight to repairing
+            }!!
+            second.get(20, TimeUnit.SECONDS).assertOk(201)
+            repair.get(20, TimeUnit.SECONDS) // 교착 피해자(DeadlockLoserDataAccessException)·lock_timeout 이면 여기서 실패
+            assertEquals(2, voiceCount(gid))
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `audio part without a filename is accepted like a file part`() {
+        val a = driver("na", "아빠 차")
+        val b = driver("nb", "엄마 차")
+        val gid = group(a, b)
+
+        // Spring MultipartFile 은 filename 없는 파트를 폼 필드로 분류해 null 이 된다 — 서버는 Servlet Part 로 받아 같은 검사를 한다
+        val audio = sample(9_000)
+        val res: VoiceUploadResponse = upload(gid, a.vehicleToken, audio, filename = null).assertOk(201).decode()
+        assertContentEquals(audio, download(gid, res.voiceId, b.vehicleToken).body)
+        assertEquals(audio.size, jdbc.queryForObject("select size_bytes from voice_message where voice_id = ?", Int::class.javaObjectType, res.voiceId))
+        // 같은 상한·mime·빈 파일 규칙
+        forgetRate(a.vehicleId)
+        upload(gid, a.vehicleToken, sample(VoiceRules.MAX_BYTES + 1), filename = null).assertError(413, ErrorCodes.VOICE_TOO_LARGE)
+        upload(gid, a.vehicleToken, mime = MediaType.parseMediaType("audio/ogg"), filename = null).assertError(415, ErrorCodes.UNSUPPORTED_VOICE_TYPE)
+        upload(gid, a.vehicleToken, audio = ByteArray(0), filename = null).assertError(400, ErrorCodes.INVALID_VOICE)
+        assertEquals(1, voiceCount(gid))
+    }
+
+    @Test
+    fun `download errors stay JSON whatever the Accept header - audio-only clients get 404 and 403, not an empty 500`() {
+        val a = driver("ja", "아빠 차")
+        val b = driver("jb", "엄마 차")
+        val outsider = driver("jo", "남의 차")
+        val gid = group(a, b)
+        val audioOnly = listOf(MediaType.parseMediaType("audio/*"))
+        val v = uploadOk(gid, a)
+
+        fun ResponseEntity<ByteArray>.assertJsonError(status: Int, code: String) {
+            assertError(status, code)
+            assertTrue(headers.contentType?.isCompatibleWith(MediaType.APPLICATION_JSON) == true, "content-type=${headers.contentType}")
+        }
+
+        // 성공은 그대로 오디오
+        val ok = download(gid, v.voiceId, b.vehicleToken, accept = audioOnly)
+        assertEquals(200, ok.statusCode.value())
+        assertEquals(M4A, ok.headers.contentType)
+        // 없는 무전·비멤버(Accept: audio/mp4)·형식 오류 → 404 JSON
+        download(gid, "vce_" + "0".repeat(26), b.vehicleToken, accept = audioOnly).assertJsonError(404, ErrorCodes.NOT_FOUND)
+        download(gid, v.voiceId, outsider.vehicleToken, accept = listOf(M4A)).assertJsonError(404, ErrorCodes.NOT_FOUND)
+        download(gid, v.voiceId, outsider.userToken, accept = audioOnly).assertJsonError(404, ErrorCodes.NOT_FOUND)
+        download(gid, "not-a-voice", b.vehicleToken, accept = audioOnly).assertJsonError(404, ErrorCodes.NOT_FOUND)
+        // 페어링 해제된 차의 토큰 → 403 JSON
+        call(HttpMethod.DELETE, ApiPaths.meVehicle(b.vehicleId), bearer = b.userToken).assertOk(204)
+        download(gid, v.voiceId, b.vehicleToken, accept = audioOnly).assertJsonError(403, ErrorCodes.FORBIDDEN)
+        // 그룹이 끝나 지워진 무전 → 404 JSON
+        call(HttpMethod.POST, ApiPaths.groupEnd(gid), bearer = a.vehicleToken).assertOk(204)
+        download(gid, v.voiceId, a.vehicleToken, accept = audioOnly).assertJsonError(404, ErrorCodes.NOT_FOUND)
     }
 
     @Test

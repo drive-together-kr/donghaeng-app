@@ -37,6 +37,7 @@ class VehicleEventServiceTest {
     private class FakeIdentity(private val names: Map<String, String>) : IdentityApi {
         override fun vehicle(vehicleId: String): VehicleInfo? = names[vehicleId]?.let { VehicleInfo(vehicleId, "usr", it, "HYUNDAI", "GRANDEUR", true, true) }
         override fun vehicles(vehicleIds: Collection<String>): Map<String, VehicleInfo> = vehicleIds.mapNotNull { vehicle(it) }.associateBy { it.vehicleId }
+        override fun lockVehicleForShare(vehicleId: String): VehicleInfo? = vehicle(vehicleId)
         override fun activeVehiclesOf(userId: String): List<VehicleInfo> = emptyList()
     }
 

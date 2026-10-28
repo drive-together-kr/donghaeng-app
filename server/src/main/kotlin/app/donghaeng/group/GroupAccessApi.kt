@@ -20,7 +20,11 @@ interface GroupAccessApi {
      * 그룹 행을 `FOR SHARE` 로 잡아 **호출자 트랜잭션이 끝날 때까지** 종료·나가기(`FOR UPDATE`)와 직렬화한다.
      * 그래서 반드시 `@Transactional` 안에서 부른다(끝나는 그룹에 자원이 남거나 `GROUP_ENDED` 뒤에 이벤트가 나가지 않게).
      *
-     * @return 보낸 차 정보(별명 — 음성 문구용)
+     * 잠금 순서 = **차량 행(`FOR KEY SHARE`, identity) → 그룹 행(`FOR SHARE`)** — 재페어링(`VehicleRegistry.register`: 차량 행 `FOR UPDATE`
+     * → `evictVehicle`: 그룹 행 `FOR UPDATE`)과 같은 순서다. 호출자가 그 뒤 차량을 참조(FK)하는 행을 넣어도 FK 검사가 이미 쥔 차량 행 잠금을 쓰므로
+     * 그룹 행을 쥔 채 차량 행을 기다리지 않는다(예전 순서는 같은 차 재페어링과 엇갈리면 교착 40P01 → 업로드 500).
+     *
+     * @return 보낸 차 정보(별명 — 음성 문구용). 차량 행을 잡은 뒤 읽은 값이라 소유권 이전(재페어링)은 호출자 트랜잭션이 끝날 때까지 기다린다(해제·별명 변경은 막지 않는다)
      */
     fun lockActiveMemberVehicle(caller: Caller.Vehicle, groupId: String): VehicleInfo
 
@@ -41,7 +45,8 @@ class DefaultGroupAccessApi(
 ) : GroupAccessApi {
 
     override fun lockActiveMemberVehicle(caller: Caller.Vehicle, groupId: String): VehicleInfo {
-        val vehicle = activeVehicle(caller)
+        // 차량 행을 그룹 행보다 먼저 잡는다(재페어링과 같은 순서 — 인터페이스 KDoc)
+        val vehicle = requireActive(caller, identity.lockVehicleForShare(caller.vehicleId))
         val group = groups.findByIdForShare(groupId) ?: throw GroupErrors.groupNotFound()
         // 멤버 확인은 잠금 뒤에 읽는다 — 그 사이 나가기가 커밋됐으면 여기서 404
         if (members.findActive(groupId, vehicle.vehicleId) == null) throw GroupErrors.groupNotFound()
@@ -50,7 +55,7 @@ class DefaultGroupAccessApi(
     }
 
     override fun requireViewer(caller: Caller, groupId: String): Boolean {
-        if (caller is Caller.Vehicle) activeVehicle(caller)
+        if (caller is Caller.Vehicle) requireActive(caller, identity.vehicle(caller.vehicleId))
         val group = groups.findById(groupId) ?: throw GroupErrors.groupNotFound()
         val current = members.listActive(groupId)
         val allowed = when (caller) {
@@ -61,9 +66,9 @@ class DefaultGroupAccessApi(
         return group.active
     }
 
-    /** `GroupService.requireActiveVehicle` 와 같은 규칙: 해제됐거나 토큰 발급 뒤 소유자가 바뀐 차량은 403 */
-    private fun activeVehicle(caller: Caller.Vehicle): VehicleInfo {
-        val vehicle = identity.vehicle(caller.vehicleId) ?: throw GroupErrors.vehicleRevoked()
+    /** `GroupService.requireActiveVehicle` 와 같은 규칙: 없거나 해제됐거나 토큰 발급 뒤 소유자가 바뀐 차량은 403 */
+    private fun requireActive(caller: Caller.Vehicle, found: VehicleInfo?): VehicleInfo {
+        val vehicle = found ?: throw GroupErrors.vehicleRevoked()
         if (!vehicle.active) throw GroupErrors.vehicleRevoked()
         if (caller.ownerId != null && caller.ownerId != vehicle.ownerId) throw GroupErrors.vehicleRevoked()
         return vehicle
