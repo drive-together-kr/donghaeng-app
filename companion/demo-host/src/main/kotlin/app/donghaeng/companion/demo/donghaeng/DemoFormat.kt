@@ -61,6 +61,7 @@ fun eventLabel(type: String): String = when (GroupEventType.entries.firstOrNull 
     GroupEventType.REST_STOP_VOTE_RESULT -> "투표 결과"
     GroupEventType.DEVIATION -> "경로 이탈"
     GroupEventType.PASSENGER_MESSAGE -> "동승자"
+    GroupEventType.VOICE_MESSAGE -> "무전"
     GroupEventType.GROUP_ENDED -> "그룹 종료"
     null -> type
 }

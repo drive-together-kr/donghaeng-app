@@ -246,7 +246,8 @@ class VoiceAnnouncer(
                 GroupEventType.AIRBAG_DEPLOYED -> Priority.CRITICAL
                 GroupEventType.HARD_BRAKE, GroupEventType.DEVIATION, GroupEventType.MEMBER_OFFLINE, GroupEventType.HAZARD_ON -> Priority.HIGH
                 GroupEventType.LOW_ENERGY, GroupEventType.REST_STOP_PROPOSAL, GroupEventType.REST_STOP_VOTE_RESULT,
-                GroupEventType.PASSENGER_MESSAGE, GroupEventType.PRESET_MESSAGE, GroupEventType.ROUTE_CHANGED, GroupEventType.GROUP_ENDED -> Priority.NORMAL
+                GroupEventType.PASSENGER_MESSAGE, GroupEventType.PRESET_MESSAGE, GroupEventType.ROUTE_CHANGED, GroupEventType.GROUP_ENDED,
+                GroupEventType.VOICE_MESSAGE -> Priority.NORMAL
                 GroupEventType.MEMBER_JOINED, GroupEventType.MEMBER_LEFT, GroupEventType.LEADER_CHANGED, GroupEventType.STOPPED,
                 GroupEventType.RESUMED, GroupEventType.WAYPOINT_ARRIVED, GroupEventType.DESTINATION_ARRIVED -> Priority.LOW
                 null -> Priority.LOW

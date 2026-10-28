@@ -168,6 +168,12 @@ refresh 토큰은 불투명 문자열(랜덤 32바이트 Base62, 30일, 서버�
 - `POST /groups/{groupId}/leader` `{ vehicleId }` (방장) → 200 `GroupDetailResponse`. 대상이 현재 멤버가 아니면 404, 이미 방장이면 400. 그룹 이벤트 `LEADER_CHANGED` `{ leaderVehicleId, previousLeaderVehicleId }`.
 - `POST /groups/{groupId}/messages` (사용자 JWT — 멤버 차량 소유자) `{ "text": "앞에 휴게소 들르자", "fromVehicleId": "veh_..." }` → 201 `GroupEvent`(type `PASSENGER_MESSAGE`, `speech` = `{닉네임}에서 온 메시지. {text}`, payload `{ text }`). `fromVehicleId` 생략 시 이 그룹의 내 첫 차, 내 멤버 차가 아니면 404 `NO_PAIRED_VEHICLE`. `text` 는 공백 정리 후 1~60자(아니면 400 `INVALID_MESSAGE`). 멤버가 아니면 404, 종료된 그룹 409 `GROUP_ENDED`.
 
+### 2.6 무전(F16, 녹음형 PTT)
+- `POST /groups/{groupId}/voice` (차량 JWT — 멤버 차량만) `multipart/form-data`: `audio`(파일, `Content-Type` ∈ `audio/mp4`(AAC-LC m4a 16 kHz 모노, 기본) · `audio/aac` · `audio/wav`(디버그 주입)), `durationMs`(정수) → 201 `VoiceUploadResponse { voiceId, eventId, durationMs, expiresAtMs }` + 그룹 이벤트 `VOICE_MESSAGE`(§5.4).
+  - 검증: 크기 ≤ 512 KB(아니면 413 `VOICE_TOO_LARGE`), `durationMs` 1~16 000(아니면 400 `INVALID_VOICE`), mime 이 목록 밖이면 415 `UNSUPPORTED_VOICE_TYPE`, 같은 차 3초 안 두 번째 업로드 429 `VOICE_RATE_LIMITED`, 멤버 아님 404, 종료된 그룹 409 `GROUP_ENDED`.
+  - 보관: 업로드 + 24시간(`expiresAtMs`), 그룹이 끝나면(`GROUP_ENDED`) 그 그룹 무전을 바로 지운다. 서버는 내용을 해석하지 않는다(음성 인식·변환 없음).
+- `GET /groups/{groupId}/voice/{voiceId}` (차량 JWT — 멤버 차량, 또는 사용자 JWT — 멤버 차량 소유자) → 200 오디오 바이트(`Content-Type` = 올린 mime, `Cache-Control: private, max-age=86400`). 만료·삭제 404, 멤버 아님 404.
+
 ### 2.5 소속 규칙 (T14 확정)
 - 차량 하나는 **활성 그룹 하나**에만 속한다(Redis `veh:{vid}:group` 이 문자열 하나인 이유). 다른 그룹을 만들거나(`POST /groups`) 다른 초대로 합류하면(`POST /groups/join`) 이전 그룹에서 자동으로 나간다(`MEMBER_LEFT` reason `SWITCHED_GROUP`, 방장 승계·그룹 종료 규칙 동일). 같은 그룹 재합류만 409 `ALREADY_MEMBER`.
 - 서버는 합류·생성·나가기를 차량 단위 advisory lock → 그룹 행 잠금(ID 순) → 초대 행 잠금 순서로 직렬화한다.
@@ -290,7 +296,7 @@ ACL: 차량 `{vid}`는 자신의 `telemetry/event/ack/presence`에만 publish, �
 
 그룹 이벤트 봉투의 `type`은 공통값 **`EVENT`**(`MessageTypes.EVENT`)이고, 구체 종류는 `data.type`(문자열, `GroupEventType` 이름)으로 구분한다. STATE 봉투의 `type`은 `STATE`, ACK는 `ACK`, 차량 EVENT·CMD 봉투의 `type`은 각 표의 type 값을 그대로 쓴다.
 
-서버 생성 그룹 이벤트 type: 위 차량 이벤트 전부 + `MEMBER_JOINED`, `MEMBER_LEFT`, `LEADER_CHANGED`, `MEMBER_OFFLINE`, `REST_STOP_PROPOSAL`, `REST_STOP_VOTE_RESULT`, `DEVIATION`, `PASSENGER_MESSAGE`, `GROUP_ENDED`
+서버 생성 그룹 이벤트 type: 위 차량 이벤트 전부 + `MEMBER_JOINED`, `MEMBER_LEFT`, `LEADER_CHANGED`, `MEMBER_OFFLINE`, `REST_STOP_PROPOSAL`, `REST_STOP_VOTE_RESULT`, `DEVIATION`, `PASSENGER_MESSAGE`, `VOICE_MESSAGE`, `GROUP_ENDED`
 
 T14 가 만드는 수명주기 이벤트의 payload:
 | type | payload | speech |
@@ -299,6 +305,7 @@ T14 가 만드는 수명주기 이벤트의 payload:
 | `MEMBER_LEFT` | `{ vehicleId, nickname, reason: LEFT\|SWITCHED_GROUP, newLeaderVehicleId? }` | `{nickname}이 그룹에서 나갔어요.` (+ ` 이제 {new}이 선두예요.`) — 마지막 멤버면 null |
 | `LEADER_CHANGED` | `{ leaderVehicleId, previousLeaderVehicleId }` | 위임: `이제 {nickname}이 선두예요.` / 이탈 승계: null(MEMBER_LEFT 문구에 포함) |
 | `PASSENGER_MESSAGE` | `{ text }` (sourceVehicleId = 보낸 차) | `{nickname}에서 온 메시지. {text}` |
+| `VOICE_MESSAGE` | `VoiceMessagePayload { voiceId, durationMs, mime, sizeBytes, expiresAtMs }` (sourceVehicleId = 보낸 차, `audience` 없음 = 그룹 전체, F16 §2.6) | `{nickname} 무전` — 받는 차는 이 짧은 알림 뒤 오디오를 재생한다(문구만 읽고 끝내지 않는다) |
 | `GROUP_ENDED` | `{ groupId, reason: LEADER_ENDED\|ALL_LEFT\|ALL_ARRIVED }` (= cmd `GroupEnded`) | `방장이 그룹을 종료했어요.` / `그룹이 종료됐어요.` — 남은 멤버가 없으면 null |
 
 ### 5.5 CMD (서버 → 차량)

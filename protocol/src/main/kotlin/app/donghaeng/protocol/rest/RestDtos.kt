@@ -330,6 +330,18 @@ data class PassengerMessageRequest(
     val fromVehicleId: String? = null,
 )
 
+/**
+ * `POST /groups/{groupId}/voice` (차량 JWT, multipart: `audio` 파일 + `durationMs`) → 201 — F16 무전 업로드.
+ * 같은 내용이 그룹 이벤트 `VOICE_MESSAGE`([app.donghaeng.protocol.VoiceMessagePayload])로 그룹 전체에 나간다.
+ */
+@Serializable
+data class VoiceUploadResponse(
+    val voiceId: String,
+    val eventId: String,
+    val durationMs: Int,
+    val expiresAtMs: Long,
+)
+
 /** `POST /groups/{groupId}/leader` (방장 위임) → 200 GroupDetailResponse */
 @Serializable
 data class LeaderRequest(

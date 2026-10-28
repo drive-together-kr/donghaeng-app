@@ -76,6 +76,9 @@ enum class GroupEventType {
     /** companion 모듈(공식 앱의 동행 메뉴) 동승자 메시지 */
     PASSENGER_MESSAGE,
 
+    /** F16 무전(녹음형 PTT) — 차량이 `POST /groups/{id}/voice` 로 올린 녹음. payload [VoiceMessagePayload], sourceVehicleId = 보낸 차 */
+    VOICE_MESSAGE,
+
     /** 그룹 종료 */
     GROUP_ENDED,
     ;
@@ -84,3 +87,19 @@ enum class GroupEventType {
     val isVehicleEvent: Boolean
         get() = VehicleEventType.entries.any { it.name == name }
 }
+
+/**
+ * `VOICE_MESSAGE` 그룹 이벤트 payload (F16 무전, docs/03 §2.6·§5.4).
+ * 받는 쪽은 `GET /groups/{groupId}/voice/{voiceId}` 로 오디오를 내려받는다(멤버만, [expiresAtMs] 까지 — 그룹이 끝나면 즉시 지운다).
+ */
+@Serializable
+data class VoiceMessagePayload(
+    val voiceId: String,
+    /** 녹음 길이(ms, 서버가 상한 16 000 으로 검증) */
+    val durationMs: Int,
+    /** `audio/mp4`(AAC-LC m4a, 기본) · `audio/aac` · `audio/wav`(디버그 주입) */
+    val mime: String,
+    val sizeBytes: Int,
+    /** 서버 보관 만료(epoch ms) — 업로드 + 24시간 */
+    val expiresAtMs: Long,
+)
