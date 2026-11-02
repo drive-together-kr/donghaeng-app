@@ -47,9 +47,14 @@ public enum class AccountProvider {
  * 이 인터페이스로 받아 서버 `POST /v1/auth/exchange { provider, accessToken }` 로 동행 JWT 와 교환하고, 모듈이 그 JWT 를
  * 캐시해 모든 요청의 `Authorization: Bearer` 에 싣는다(docs/07 §4.1). 호스트 토큰이 매 요청마다 서버로 가지는 않는다.
  * 서버가 401 을 돌려주면 교환을 한 번 다시 시도한 뒤 [DongHaengException.Unauthorized] 를 던진다.
- * 호스트 토큰의 만료 갱신은 호스트 앱 책임이다. 빈 문자열을 돌려주면 [DongHaengException.Unauthorized] 가 난다.
+ * 호스트 토큰의 만료 갱신은 호스트 앱 책임이다(모듈은 교환이 필요할 때만 부르므로, 부를 때마다 만료가 가까우면 여기서 갱신하면 된다 —
+ * demo-host `HostTokenCache` 예). 빈 문자열을 돌려주면 [DongHaengException.Unauthorized] 가 난다.
  */
 public fun interface TokenProvider {
-    /** 현재 유효한 액세스 토큰. 네트워크 갱신이 필요하면 여기서 suspend 해도 된다 */
+    /**
+     * 현재 유효한 액세스 토큰. 네트워크 갱신이 필요하면 여기서 suspend 해도 된다.
+     * 갱신에 실패하면 빈 문자열을 돌려주거나 예외를 던진다 — 모듈이 [java.io.IOException] 은 `DongHaengException.Api("NETWORK")`(일시 오류),
+     * 그 밖의 예외는 [DongHaengException.Unauthorized] 로 바꿔 호출자에게 전한다(호스트 예외가 그대로 새지 않는다).
+     */
     public suspend fun accessToken(): String
 }

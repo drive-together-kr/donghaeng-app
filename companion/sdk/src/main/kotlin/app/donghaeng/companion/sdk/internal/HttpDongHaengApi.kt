@@ -22,6 +22,7 @@ import app.donghaeng.protocol.rest.GroupDetailResponse
 import app.donghaeng.protocol.rest.GroupJoinRequest
 import app.donghaeng.protocol.rest.GroupJoinResponse
 import app.donghaeng.protocol.rest.MemberDto
+import app.donghaeng.protocol.rest.MyGroupDto
 import app.donghaeng.protocol.rest.MyVehicleDto
 import app.donghaeng.protocol.rest.PassengerMessageRequest
 import app.donghaeng.protocol.rest.TokenResponse
@@ -42,7 +43,9 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -61,7 +64,11 @@ import kotlin.coroutines.resumeWithException
  * - [IOException](연결 실패·타임아웃) → `Api("NETWORK", "서버에 연결할 수 없어요")`
  * - 404 `NOT_FOUND` 도 그대로 전달한다 — 서버는 멤버가 아닌 그룹·나간 그룹을 404 로 숨긴다(docs/03 §2.3). 호스트는 `code` 로 분기한다
  *
- * [observeGroup] 은 `GET /v1/groups/{id}` 를 [pollIntervalMs](기본 15초)마다 폴링한다(수집 취소 시 종료). 푸시 전환은 이후 작업.
+ * [observeGroup] 은 `GET /v1/groups/{id}` 를 [pollIntervalMs](기본 15초)마다 폴링한다(수집 취소 시 종료). 그룹 상태가 `ENDED` 면 그 스냅샷을
+ * 내보낸 뒤 흐름을 정상 종료한다(더 폴링하지 않음). 오류는 흐름 예외 — 일시 오류(NETWORK·5xx·429) 뒤 다시 구독하는 것은 호스트 몫이다
+ * (docs/07 §3, demo-host `GroupObservation`). 푸시 전환은 이후 작업.
+ * 합류: 409 `ALREADY_MEMBER`(그 차가 이미 이 그룹에 있음)는 `GET /v1/me/groups?active=true` 로 그 차의 그룹을 찾아 성공으로 돌려준다(멱등).
+ * 동승자 메시지는 `fromVehicleId`(보낸 차)와 헤더 `Idempotency-Key` 를 싣는다.
  * F16 무전: 폴링 결과의 `VOICE_MESSAGE` 는 [voiceInbox] 가 `GET /v1/groups/{id}/voice/{voiceId}`(같은 동행 JWT)로 미리 받아
  * payload 에 `localAudioStatus`·`localAudioPath` 를 붙인다(공개 API 변경 없음 — [VoiceInbox], docs/07 §3.1).
  * 무전 캐시의 파일 작업은 호출(수집) 스레드와 무관하게 `Dispatchers.IO` 에서 돈다([VoiceInbox]) — 호스트가 [observeGroup] 을
@@ -96,6 +103,9 @@ internal class HttpDongHaengApi(
     @Volatile
     private var cached: Cached? = null
 
+    /** 이 프로세스에서 합류할 때 쓴 내 차(groupId → vehicleId) — 동승자 메시지에 fromVehicleId 가 없을 때 보낸 차로 쓴다 */
+    private val joinedVehicles = ConcurrentHashMap<String, String>()
+
     /**
      * 유효한 동행 JWT 를 돌려준다. 캐시가 없거나 만료됐으면 교환한다.
      * @param rejected 서버가 401 로 거부한 토큰. 그 토큰이 아직 캐시에 있을 때만 다시 교환한다(동시 호출이 이미 갱신했으면 재사용)
@@ -105,7 +115,7 @@ internal class HttpDongHaengApi(
         if (current != null && current.tokens.accessToken != rejected && clock() < current.expiresAtMs - EXPIRY_SKEW_MS) {
             return current.tokens.accessToken
         }
-        val hostToken = tokenProvider.accessToken()
+        val hostToken = hostAccessToken()
         if (hostToken.isBlank()) throw DongHaengException.Unauthorized()
         val body = DhJson.json.encodeToString(ExchangeRequest.serializer(), ExchangeRequest(config.provider.wireName, hostToken))
         val response = execute(request(ApiPaths.AUTH_EXCHANGE, "POST", body, bearer = null))
@@ -122,6 +132,25 @@ internal class HttpDongHaengApi(
         tokens.accessToken
     }
 
+    /**
+     * 호스트 [TokenProvider] 호출. 호스트가 던진 예외도 [DongHaengException] 계약 안으로 옮긴다(공개 KDoc: API 실패는 전부 DongHaengException):
+     * 입출력 오류([IOException] — 호스트의 토큰 갱신 중 네트워크 실패) → `Api("NETWORK")`(일시 오류 — 재시도 대상),
+     * 그 밖의 예외 → [DongHaengException.Unauthorized](호스트 재로그인 흐름). 취소는 그대로. 로그에는 예외 클래스 이름만(규칙 8).
+     */
+    private suspend fun hostAccessToken(): String = try {
+        tokenProvider.accessToken()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: DongHaengException) {
+        throw e
+    } catch (e: IOException) {
+        Log.w(TAG, "token provider io failure cause=${e.javaClass.simpleName}")
+        throw DongHaengException.Api(CODE_NETWORK, NETWORK_MESSAGE)
+    } catch (e: Exception) {
+        Log.w(TAG, "token provider failed cause=${e.javaClass.simpleName}")
+        throw DongHaengException.Unauthorized()
+    }
+
     // ---------- DongHaengApi ----------
 
     override suspend fun listMyVehicles(): List<MyVehicle> {
@@ -133,9 +162,38 @@ internal class HttpDongHaengApi(
 
     override suspend fun joinGroup(inviteToken: String, vehicleId: String?): GroupJoinResult {
         val body = DhJson.json.encodeToString(GroupJoinRequest.serializer(), GroupJoinRequest(inviteToken, vehicleId))
-        val response = authed(ApiPaths.GROUPS_JOIN, "POST", body)
-        val joined = decode(GroupJoinResponse.serializer(), response.body)
-        return GroupJoinResult(joined.groupId, joined.name, joined.members.map { it.toModel() })
+        val (result, joinedVehicle) = try {
+            val response = authed(ApiPaths.GROUPS_JOIN, "POST", body)
+            val joined = decode(GroupJoinResponse.serializer(), response.body)
+            GroupJoinResult(joined.groupId, joined.name, joined.members.map { it.toModel() }) to vehicleId
+        } catch (e: DongHaengException.Api) {
+            if (e.code != ErrorCodes.ALREADY_MEMBER) throw e
+            recoverAlreadyMember(vehicleId) ?: throw e
+        }
+        joinedVehicle?.let { joinedVehicles[result.groupId] = it }
+        return result
+    }
+
+    /**
+     * 409 `ALREADY_MEMBER` = 고른 차(생략 시 대표 차량)가 **이미 이 초대의 그룹**에 있다(서버는 같은 그룹일 때만 이 코드를 준다, docs/03 §2.2).
+     * 합류 응답이 타임아웃으로 사라진 뒤의 재시도, 앱 재시작·'그룹 보기 끝내기' 뒤 같은 QR 재스캔이 여기로 온다 —
+     * 그 차의 활성 그룹(`GET /me/groups?active=true` 의 `myVehicleIds`)을 찾아 `GET /groups/{id}` 로 멤버를 채워 합류 결과로 돌려준다.
+     * 차는 활성 그룹 하나에만 있으므로(docs/03 §2.5) 그 그룹이 곧 초대의 그룹이다. 찾지 못하면 null → 원래 409 를 그대로 던진다.
+     */
+    private suspend fun recoverAlreadyMember(vehicleId: String?): Pair<GroupJoinResult, String>? {
+        val target = vehicleId ?: run {
+            val vehicles = decode(ListSerializer(MyVehicleDto.serializer()), authed(ApiPaths.ME_VEHICLES, "GET").body)
+            vehicles.firstOrNull { it.isPrimary }?.vehicleId
+        } ?: return null
+        val groups = decode(ListSerializer(MyGroupDto.serializer()), authed("${ApiPaths.ME_GROUPS}?active=true", "GET").body)
+        val group = groups.firstOrNull { target in it.myVehicleIds && !it.status.equals(GROUP_STATUS_ENDED, ignoreCase = true) }
+        if (group == null) {
+            Log.w(TAG, "join: already member but no active group found groups=${groups.size}")
+            return null
+        }
+        val detail = decode(GroupDetailResponse.serializer(), authed(ApiPaths.group(group.groupId), "GET").body)
+        Log.i(TAG, "join: already member → existing group members=${detail.members.size}")
+        return GroupJoinResult(detail.groupId, detail.name, detail.members.map { it.toModel() }) to target
     }
 
     override suspend fun approvePairing(userCode: String, nickname: String): PairResult {
@@ -146,40 +204,54 @@ internal class HttpDongHaengApi(
         return PairResult(vehicle.vehicleId, vehicle.nickname)
     }
 
-    override suspend fun sendPassengerMessage(groupId: String, text: String) {
-        val body = DhJson.json.encodeToString(PassengerMessageRequest.serializer(), PassengerMessageRequest(text))
-        authed(ApiPaths.groupMessages(groupId), "POST", body) // 200/201/204 모두 성공. 본문은 쓰지 않는다
+    override suspend fun sendPassengerMessage(groupId: String, text: String, fromVehicleId: String?, idempotencyKey: String) {
+        // 보낸 차를 싣지 않으면 서버가 '이 그룹의 내 첫 차'(대표 차 우선)를 고른다 — 한 계정에 차가 둘이면 엉뚱한 차 이름으로 읽힌다(D025)
+        val from = fromVehicleId ?: joinedVehicles[groupId]
+        val body = DhJson.json.encodeToString(PassengerMessageRequest.serializer(), PassengerMessageRequest(text, from))
+        // 같은 키 재전송(응답 유실 뒤 다시 보내기)은 서버가 첫 응답을 그대로 돌려주고 다시 팬아웃하지 않는다(docs/03 계약 3)
+        authed(ApiPaths.groupMessages(groupId), "POST", body, headers = mapOf(IdempotencyKeys.HEADER to idempotencyKey)) // 200/201/204 모두 성공
     }
 
     override fun observeGroup(groupId: String): Flow<GroupSnapshot> = flow {
         while (true) {
-            val snapshot = try {
+            val polled = try {
                 fetchGroup(groupId)
             } catch (e: DongHaengException.Api) {
                 // 멤버가 아니게 된 그룹(나감·내보내짐)은 서버가 404 로 숨긴다 — 받아 둔 무전도 지운다
                 if (e.code == ErrorCodes.NOT_FOUND) voiceInbox.forgetGroup(groupId)
                 throw e
             }
-            emit(snapshot)
+            emit(polled.snapshot)
+            if (polled.ended) {
+                // 종료된 그룹은 더 바뀌지 않는다(종료 시점 멤버는 계속 볼 수 있어 200 이 계속 온다) — 폴링을 끝내 흐름을 정상 종료한다
+                Log.i(TAG, "observe: group ended → polling stopped")
+                return@flow
+            }
             delay(pollIntervalMs)
         }
     }
 
-    private suspend fun fetchGroup(groupId: String): GroupSnapshot {
+    /** 폴링 한 번의 결과. [ended] = 서버 그룹 상태 `ENDED` */
+    private class Polled(val snapshot: GroupSnapshot, val ended: Boolean)
+
+    private suspend fun fetchGroup(groupId: String): Polled {
         val response = authed(ApiPaths.group(groupId), "GET")
         voiceInbox.observeServerDate(response.serverDateMs)
         val detail = decode(GroupDetailResponse.serializer(), response.body)
         // 최신 STATE 스냅샷이 있으면 그대로, 없으면 Member 목록을 오프라인 상태로 채운다
         val members = detail.snapshot?.members ?: detail.members.map { it.toOfflineState() }
+        val ended = detail.status.equals(GROUP_STATUS_ENDED, ignoreCase = true)
         // 서버 recentEvents 는 최신순, GroupSnapshot.events 는 오래된 것부터.
         // VOICE_MESSAGE 는 오디오를 미리 받아 payload 에 상태·파일 경로를 붙인다(F16, docs/07 §3.1)
         val events = voiceInbox.resolve(
             groupId = detail.groupId,
             events = detail.recentEvents.asReversed(),
-            groupEnded = detail.status.equals(GROUP_STATUS_ENDED, ignoreCase = true),
+            groupEnded = ended,
             fetch = ::fetchVoice,
         )
-        return GroupSnapshot(detail.groupId, members, events)
+        // 방장은 위임·승계로 바뀐다 — 합류 결과의 역할이 아니라 매 폴링의 서버 값(D084)
+        val leader = detail.leaderVehicleId.takeIf { it.isNotBlank() }
+        return Polled(GroupSnapshot(detail.groupId, members, events, leaderVehicleId = leader), ended)
     }
 
     /**
@@ -216,9 +288,14 @@ internal class HttpDongHaengApi(
     /** 응답 본문이 상한을 넘음 — 네트워크 오류([IOException])와 구분하려고 런타임 예외로 둔다 */
     private class ResponseTooLarge : RuntimeException("response too large")
 
-    /** 동행 JWT 를 실어 보내고, 401 이면 한 번 재교환 후 재시도한다. 2xx 응답만 돌려주고 나머지는 예외 */
-    private suspend fun authed(path: String, method: String, jsonBody: String? = null): RawResponse {
-        val response = authedRaw(path, method, jsonBody)
+    /** 동행 JWT 를 실어 보내고, 401 이면 한 번 재교환 후 재시도한다. 2xx 응답만 돌려주고 나머지는 예외. [headers] 는 두 번 모두 같은 값 */
+    private suspend fun authed(
+        path: String,
+        method: String,
+        jsonBody: String? = null,
+        headers: Map<String, String> = emptyMap(),
+    ): RawResponse {
+        val response = authedRaw(path, method, jsonBody, headers = headers)
         if (!response.isSuccess) throw failure(path, response)
         return response
     }
@@ -230,13 +307,14 @@ internal class HttpDongHaengApi(
         jsonBody: String? = null,
         accept: String = JSON_ACCEPT,
         maxBytes: Long = Long.MAX_VALUE,
+        headers: Map<String, String> = emptyMap(),
     ): RawResponse {
         val first = bearer()
-        var response = execute(request(path, method, jsonBody, first, accept), maxBytes)
+        var response = execute(request(path, method, jsonBody, first, accept, headers), maxBytes)
         if (response.code == 401) {
             Log.w(TAG, "401 → re-exchange path=$path")
             val second = bearer(rejected = first)
-            response = execute(request(path, method, jsonBody, second, accept), maxBytes)
+            response = execute(request(path, method, jsonBody, second, accept, headers), maxBytes)
             if (response.code == 401) {
                 cached = null
                 throw DongHaengException.Unauthorized()
@@ -245,12 +323,20 @@ internal class HttpDongHaengApi(
         return response
     }
 
-    private fun request(path: String, method: String, jsonBody: String?, bearer: String?, accept: String = JSON_ACCEPT): Request {
+    private fun request(
+        path: String,
+        method: String,
+        jsonBody: String?,
+        bearer: String?,
+        accept: String = JSON_ACCEPT,
+        headers: Map<String, String> = emptyMap(),
+    ): Request {
         val builder = Request.Builder()
             .url(baseUrl + path)
             .header("Accept", accept)
             .header("User-Agent", userAgent)
         if (bearer != null) builder.header("Authorization", "Bearer $bearer")
+        headers.forEach { (name, value) -> builder.header(name, value) }
         when (method) {
             "GET" -> builder.get()
             else -> builder.method(method, (jsonBody ?: "{}").toRequestBody(JSON))
@@ -290,7 +376,7 @@ internal class HttpDongHaengApi(
             }
         } catch (e: IOException) {
             Log.w(TAG, "network failure path=${request.url.encodedPath} cause=${e.javaClass.simpleName}")
-            throw DongHaengException.Api("NETWORK", "서버에 연결할 수 없어요")
+            throw DongHaengException.Api(CODE_NETWORK, NETWORK_MESSAGE)
         }
         return raw
     }
@@ -352,6 +438,10 @@ internal class HttpDongHaengApi(
         private const val TAG = "DongHaeng"
         const val POLL_INTERVAL_MS = 15_000L
         private const val TIMEOUT_S = 10L
+
+        /** 연결 실패·타임아웃(호스트 토큰 제공자의 입출력 오류 포함)의 오류 코드 — 호스트는 일시 오류로 보고 다시 시도한다 */
+        const val CODE_NETWORK = "NETWORK"
+        private const val NETWORK_MESSAGE = "서버에 연결할 수 없어요"
 
         /** JWT exp 가 없을 때의 캐시 수명(사용자 토큰 1h 보다 짧게) */
         private const val DEFAULT_TTL_MS = 55 * 60 * 1000L

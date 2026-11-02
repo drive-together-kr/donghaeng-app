@@ -1,11 +1,13 @@
 package app.donghaeng.companion.demo.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import app.donghaeng.companion.demo.DemoSession
 import app.donghaeng.companion.demo.donghaeng.DongHaengMainScreen
@@ -23,6 +25,12 @@ object Routes {
     const val DONGHAENG = "donghaeng"
     const val DONGHAENG_SETTINGS = "donghaeng/settings"
     const val NOTIFICATIONS = "notifications"
+
+    /**
+     * 로그인 화면으로 되돌려야 하는지(D029). 시스템이 프로세스를 죽인 뒤 최근 앱에서 돌아오면 navigation 이 저장된 백스택(MAIN 등)을 복원하는데,
+     * 계정·동행 모듈 초기화는 메모리에만 있어 사라진 상태다 — 그대로 두면 로그인 없이 화면이 열린다.
+     */
+    fun needsLoginRedirect(loggedIn: Boolean, route: String?): Boolean = !loggedIn && route != null && route != LOGIN
 }
 
 @Composable
@@ -31,6 +39,13 @@ fun KiaApp() {
     val account by DemoSession.account.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val start = if (account == null) Routes.LOGIN else Routes.MAIN
+    val backStackEntry by navController.currentBackStackEntryAsState()
+    val route = backStackEntry?.destination?.route
+    LaunchedEffect(account, route) {
+        if (Routes.needsLoginRedirect(loggedIn = account != null, route = route)) {
+            navController.navigate(Routes.LOGIN) { popUpTo(0) { inclusive = true } }
+        }
+    }
 
     NavHost(navController = navController, startDestination = start) {
         composable(Routes.LOGIN) {

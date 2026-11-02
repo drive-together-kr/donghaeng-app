@@ -28,7 +28,7 @@ class LoginViewModel : ViewModel() {
         val trimmedNickname = nickname.trim()
         val validation = when {
             trimmedEmail.isEmpty() -> "이메일을 입력해 주세요"
-            !EMAIL.matches(trimmedEmail) -> "이메일 형식이 아니에요 (예: rider01@dev.local)"
+            !EMAIL.matches(trimmedEmail) -> "이메일 형식이 아니에요 (예: judge-1a2b3c4d@dev.local)"
             trimmedNickname.isEmpty() -> "이름을 입력해 주세요"
             trimmedNickname.length > MAX_NICKNAME -> "이름은 ${MAX_NICKNAME}자 이내로 입력해 주세요"
             else -> null

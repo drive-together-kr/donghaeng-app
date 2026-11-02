@@ -205,7 +205,8 @@ private fun LinkedVehicleRow(vehicle: MyVehicle, onClick: () -> Unit) {
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(vehicle.nickname, style = MaterialTheme.typography.titleSmall, maxLines = 1)
-                    KiaTag(if (vehicle.isPrimary) "대표 차량" else "공유받은 차량")
+                    // 서버 /me/vehicles 는 내 계정 소유 차만 준다 — '공유받은'이 아니다(D026·D093)
+                    KiaTag(if (vehicle.isPrimary) "대표 차량" else "내 차")
                 }
                 Text(
                     "${vehicle.brand} · ${vehicle.model}",

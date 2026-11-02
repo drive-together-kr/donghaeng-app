@@ -23,6 +23,20 @@ internal val AccountProvider.wireName: String
     }
 
 /**
+ * 선택 헤더 `Idempotency-Key` (docs/03 — 동승자 메시지·무전 업로드). 서버는 (호출자, 경로, 키) → 첫 응답을 24 h 기억하고
+ * 같은 키가 다시 오면 저장된 응답을 그대로 돌려준다(다시 저장·팬아웃하지 않음). 형식 `[A-Za-z0-9_-]{8,64}`.
+ */
+internal object IdempotencyKeys {
+    const val HEADER = "Idempotency-Key"
+    private val FORMAT = Regex("^[A-Za-z0-9_-]{8,64}$")
+
+    fun isValid(key: String): Boolean = FORMAT.matches(key)
+
+    /** 호출마다 새 키(UUID, 36자 — 형식 안). 호스트가 재시도에 같은 키를 쓰려면 직접 만들어 넘긴다 */
+    fun generate(): String = java.util.UUID.randomUUID().toString()
+}
+
+/**
  * JWT 의 클레임을 **검증 없이** 읽는다(서명 검증은 서버 몫). 모듈은 동행 JWT 의 `exp` 만 캐시 만료 판단에 쓴다.
  */
 internal object JwtClaims {

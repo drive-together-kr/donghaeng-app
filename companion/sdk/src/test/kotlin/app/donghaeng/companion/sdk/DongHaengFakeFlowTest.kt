@@ -127,6 +127,17 @@ class DongHaengFakeFlowTest {
     }
 
     @Test
+    fun `같은 idempotencyKey 로 두 번 보내면 메시지는 하나, fromVehicleId 가 보낸 차가 된다`() = runTest {
+        initFake()
+        val second = DongHaeng.listMyVehicles().first { !it.isPrimary }
+        val joined = DongHaeng.joinGroup("http://10.0.2.2:8080/j/inv_msg", vehicleId = second.vehicleId)
+        repeat(2) { DongHaeng.sendPassengerMessage(joined.groupId, "배고파요", fromVehicleId = second.vehicleId, idempotencyKey = "same_key_0001") }
+        val messages = DongHaeng.observeGroup(joined.groupId).first().events.filter { it.type == GroupEventType.PASSENGER_MESSAGE.name }
+        assertEquals(1, messages.size)
+        assertEquals(second.vehicleId, messages.single().sourceVehicleId)
+    }
+
+    @Test
     fun `init 에 스킴 없는 publicBaseUrl 을 주면 IllegalArgumentException`() = runTest {
         listOf("10.0.2.2:8080", "ftp://10.0.2.2:8080", "   ").forEach { bad ->
             val error = runCatching { initFake(config.copy(publicBaseUrl = bad)) }.exceptionOrNull()

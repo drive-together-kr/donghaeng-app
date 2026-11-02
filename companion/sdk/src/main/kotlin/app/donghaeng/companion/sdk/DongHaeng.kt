@@ -3,6 +3,7 @@ package app.donghaeng.companion.sdk
 import android.util.Log
 import app.donghaeng.companion.sdk.internal.DongHaengApi
 import app.donghaeng.companion.sdk.internal.HttpDongHaengApi
+import app.donghaeng.companion.sdk.internal.IdempotencyKeys
 import app.donghaeng.companion.sdk.internal.QrParser
 import kotlinx.coroutines.flow.Flow
 
@@ -16,7 +17,9 @@ import kotlinx.coroutines.flow.Flow
  * 3. 합류한 그룹은 [observeGroup] 로 상태를 받고 [sendPassengerMessage] 로 동승자 메시지를 보낸다
  *
  * 자체 로그인 화면·토큰 저장소는 없다. 모든 호출은 호스트 앱이 [TokenProvider] 로 준 토큰으로 인증한다.
- * API 호출 실패는 전부 [DongHaengException] 하위 타입으로 던진다([init] 의 설정 오류만 [IllegalArgumentException]).
+ * API 호출 실패는 전부 [DongHaengException] 하위 타입으로 던진다 — [TokenProvider] 가 던진 예외도 여기로 옮긴다
+ * (입출력 오류 → `Api("NETWORK")`, 그 밖 → [DongHaengException.Unauthorized]). 호스트 프로그래밍 오류([init] 의 설정 오류,
+ * [sendPassengerMessage] 의 키 형식)만 [IllegalArgumentException].
  */
 public object DongHaeng {
 
@@ -75,12 +78,16 @@ public object DongHaeng {
     /**
      * 그룹 QR(`{base}/j/{token}`)로 내 차를 그룹에 합류시킨다(`POST /groups/join`).
      *
+     * **멱등**: 그 차가 이미 이 그룹에 있으면(서버 409 `ALREADY_MEMBER`) 오류 대신 지금 그룹을 결과로 돌려준다 —
+     * 합류 응답이 타임아웃으로 사라진 뒤 다시 누르거나, 앱을 다시 띄워 같은 QR 을 다시 찍어도 그룹으로 돌아온다
+     * (모듈이 `GET /me/groups?active=true` 로 그 차의 그룹을 찾는다. 찾지 못하면 `ALREADY_MEMBER` 를 그대로 던진다).
+     *
      * @param qrPayload 공식 앱 스캐너가 읽은 QR 문자열 그대로
      * @param vehicleId 합류할 내 차. 생략하면 대표 차량
      * @throws DongHaengException.InvalidQr 그룹 QR이 아님. 차량 등록 QR(`/pair?c=…`)이면 호스트 앱이 [pairVehicle] 을 불러야 한다
      *   — `reason` 은 사용자에게 그대로 보여 줄 수 있는 문구다
      * @throws DongHaengException.OtherServer QR 의 호스트가 설정된 서버와 다름
-     * @throws DongHaengException.Api `INVITE_EXPIRED`, `GROUP_FULL`, `NO_PAIRED_VEHICLE`, `ALREADY_MEMBER`
+     * @throws DongHaengException.Api `INVITE_EXPIRED`, `GROUP_FULL`, `NO_PAIRED_VEHICLE`(, 활성 그룹을 찾지 못한 `ALREADY_MEMBER`)
      */
     public suspend fun joinGroup(qrPayload: String, vehicleId: String? = null): GroupJoinResult {
         val s = requireSession()
@@ -121,16 +128,38 @@ public object DongHaeng {
      * 동승자 메시지를 그룹에 보낸다(`POST /groups/{groupId}/messages`). 그룹 차량에서는 음성으로 읽힌다.
      *
      * @param text 메시지 본문(공백만이면 [DongHaengException.Api] `INVALID_MESSAGE`)
+     * @param fromVehicleId 동승자가 탄 내 차(이 그룹의 멤버). 차량에서 "{그 차 이름}에서 온 메시지"로 읽힌다.
+     *   생략하면 이 프로세스에서 그 그룹에 [joinGroup] 할 때 고른 차, 그것도 없으면 서버 기본(이 그룹의 내 첫 차 — 대표 차량 우선).
+     *   한 계정에 차가 여러 대면 넘기는 것이 맞다. 내 멤버 차가 아니면 `Api("NO_PAIRED_VEHICLE")`
+     * @param idempotencyKey 사용자 동작 한 번(같은 메시지 보내기)마다 호스트가 만든 키(`[A-Za-z0-9_-]{8,64}`, 예: UUID).
+     *   응답이 사라져 다시 보낼 때 **같은 키**를 주면 서버가 한 번만 처리해 차에서 두 번 읽히지 않는다(헤더 `Idempotency-Key`, docs/03).
+     *   생략하면 호출마다 새 키
+     * @throws IllegalArgumentException [idempotencyKey] 형식이 틀림(호스트 프로그래밍 오류 — 서버로 보내지 않는다)
      */
-    public suspend fun sendPassengerMessage(groupId: String, text: String) {
-        requireSession().api.sendPassengerMessage(groupId, text.trim())
+    public suspend fun sendPassengerMessage(
+        groupId: String,
+        text: String,
+        fromVehicleId: String? = null,
+        idempotencyKey: String? = null,
+    ) {
+        val api = requireSession().api
+        val key = idempotencyKey?.trim()?.also {
+            require(IdempotencyKeys.isValid(it)) { "idempotencyKey 는 영문·숫자·_- 8~64자여야 합니다" }
+        } ?: IdempotencyKeys.generate()
+        api.sendPassengerMessage(groupId, text.trim(), fromVehicleId?.trim()?.takeIf { it.isNotEmpty() }, key)
     }
 
     /**
-     * 그룹 상태 스트림. 멤버 위치·ETA·잔량과 최근 이벤트가 담긴 [GroupSnapshot] 을 내보낸다.
+     * 그룹 상태 스트림. 멤버 위치·ETA·잔량·지금 방장과 최근 이벤트가 담긴 [GroupSnapshot] 을 내보낸다.
      * 발행 주기는 서버 전송 방식이 정한다 — MVP 는 `GET /v1/groups/{id}` 15초 폴링, 이후 푸시로 바뀌면 이벤트 즉시(docs/07 §3).
      * 구독을 취소하면 폴링도 끝난다. 호출 시점에 [init] 이 안 되어 있으면 즉시 던진다.
-     * 서버 오류(그룹 없음, 네트워크 등)는 흐름의 예외([DongHaengException.Api])로 전달된다.
+     *
+     * 끝나는 경우:
+     * - **그룹 종료**(서버 상태 `ENDED`): 그 마지막 스냅샷(보통 `GROUP_ENDED` 이벤트 포함)을 내보낸 뒤 흐름이 **정상 종료**한다(더 폴링하지 않음).
+     * - **오류**: 흐름의 예외로 전달된다. 서버가 그룹을 숨김(나감·내보내짐) = `Api("NOT_FOUND")`, 인증 = [DongHaengException.Unauthorized],
+     *   연결 실패·타임아웃 = `Api("NETWORK")`, 봉투 없는 5xx = `Api("HTTP_5xx")`. **일시 오류(NETWORK·5xx·429) 뒤 다시 구독하는 것은 호스트 몫**이다 —
+     *   예: `retryWhen { e, n -> e is DongHaengException.Api && e.code == "NETWORK" && n < … }` 또는 demo-host `GroupObservation`
+     *   (백오프 재구독 + 화면에 '다시 연결 중' 표시). 모듈이 조용히 재시도하지 않는 이유는 호스트가 끊김을 화면에 보여 줄 수 있게 하려는 것이다.
      *
      * @throws DongHaengException.NotInitialized [init] 전 호출
      */

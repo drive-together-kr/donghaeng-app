@@ -1,6 +1,5 @@
 package app.donghaeng.companion.demo
 
-import app.donghaeng.companion.sdk.DongHaengException
 import java.net.URI
 import java.net.URLDecoder
 
@@ -46,12 +45,4 @@ object QrPathRule {
         }
 }
 
-/** 동행 예외를 사용자 문구로 — 공식 앱은 자기 디자인 가이드에 맞춰 이 매핑을 직접 한다 */
-fun DongHaengException.toUserMessage(): String = when (this) {
-    is DongHaengException.NotInitialized -> "먼저 로그인해 주세요"
-    is DongHaengException.Unauthorized -> "계정 인증이 만료됐어요. 다시 로그인해 주세요"
-    // reason 은 모듈이 사용자용 한 문장으로 준다(예: "차량 등록용 QR이에요. '차량 등록'에서 스캔해 주세요")
-    is DongHaengException.InvalidQr -> reason
-    is DongHaengException.OtherServer -> "다른 서버의 QR이에요 ($host). 앱의 서버 설정을 확인해 주세요"
-    is DongHaengException.Api -> "${message ?: "요청에 실패했어요"} [$code]"
-}
+// 동행 예외 → 사용자 문구는 donghaeng/DongHaengStore.kt 의 toUserText 하나로 합쳤다(D077 — 쓰이지 않던 toUserMessage 삭제)

@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.donghaeng.companion.demo.BuildConfig
+import app.donghaeng.companion.demo.DemoPrefs
 import app.donghaeng.companion.demo.DemoSession
 import app.donghaeng.companion.demo.ui.components.AccentButton
 import app.donghaeng.companion.demo.ui.components.Disclaimer
@@ -48,7 +49,9 @@ fun LoginScreen(
     viewModel: LoginViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    var email by rememberSaveable { mutableStateOf("rider01@dev.local") }
+    // 설치마다 다른 시연 계정(D026·D031) — 처음 실행 때 judge-<8hex>@dev.local 을 만들고, 로그인한 이메일을 다음 기본값으로 기억한다.
+    // 모두가 같은 기본 이메일을 쓰면 같은 서버 계정이 되어 다른 사람의 차가 내 그룹에 끌려간다
+    var email by rememberSaveable { mutableStateOf(DemoPrefs.loginEmail()) }
     var nickname by rememberSaveable { mutableStateOf(DemoSession.USER_NAME) }
 
     LaunchedEffect(state.loggedIn) {
@@ -92,6 +95,12 @@ fun LoginScreen(
             colors = fieldColors,
             shape = MaterialTheme.shapes.medium,
             modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            "이 설치에만 쓰는 시연 계정이에요. 다른 사람과 같은 이메일을 쓰면 같은 계정이 되어 차·그룹이 섞여요.",
+            style = MaterialTheme.typography.labelSmall,
+            color = KiaColors.TextTertiary,
+            modifier = Modifier.padding(top = 4.dp, start = 4.dp),
         )
         Spacer(Modifier.height(10.dp))
         OutlinedTextField(
