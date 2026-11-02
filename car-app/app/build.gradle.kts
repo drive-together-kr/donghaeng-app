@@ -1,3 +1,4 @@
+import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -53,6 +54,14 @@ gradle.taskGraph.whenReady {
     }
 }
 
+
+// 릴리스 서명(T40) — 키는 저장소 밖에만 둔다(CLAUDE.md 규칙 9). 서명 정보 파일(storeFile·storePassword·keyAlias·keyPassword)의 경로를
+//   -PdhReleaseSigning=<경로> 또는 ~/.gradle/gradle.properties 의 dhReleaseSigning, 또는 환경 변수 DH_RELEASE_SIGNING 으로 준다.
+//   없으면 release 는 서명되지 않은 APK(*-unsigned.apk)로 나온다(다른 개발자·CI 빌드는 그대로 된다).
+val dhReleaseSigningFile: File? = ((findProperty("dhReleaseSigning") as String?) ?: System.getenv("DH_RELEASE_SIGNING"))
+    ?.trim()?.takeIf { it.isNotEmpty() }?.let { file(it) }?.takeIf { it.isFile }
+val dhReleaseSigning: Properties? = dhReleaseSigningFile?.let { f -> Properties().apply { f.inputStream().use { load(it) } } }
+
 android {
     namespace = "app.donghaeng.car"
     compileSdk = 35
@@ -64,7 +73,7 @@ android {
         minSdk = 28          // 공모전 필수 (CLAUDE.md 규칙 11)
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -86,6 +95,17 @@ android {
         }
     }
 
+    signingConfigs {
+        dhReleaseSigning?.let { p ->
+            create("release") {
+                storeFile = file(p.getProperty("storeFile"))
+                storePassword = p.getProperty("storePassword")
+                keyAlias = p.getProperty("keyAlias")
+                keyPassword = p.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
@@ -95,8 +115,9 @@ android {
             manifestPlaceholders["networkSecurityConfig"] = networkSecurityConfigFor(dhPublicBaseUrl)
         }
         release {
-            // 축소·난독화와 서명은 T40 에서 결정한다 (Pleos SDK keep 규칙 확인 필요)
+            // T40: 축소·난독화는 하지 않는다 — Pleos SDK·Hilt·kotlinx.serialization 의 리플렉션 keep 규칙을 기기에서 다 검증할 시간이 없고, 크기(약 71 MB)는 제출 한도 안
             isMinifyEnabled = false
+            signingConfigs.findByName("release")?.let { signingConfig = it }
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // T32: 클라우드 기본 주소(dhCloudHost). 비어 있으면 debug 값 + 경고(위 taskGraph.whenReady)
             buildConfigField("String", "DH_PUBLIC_BASE_URL", "\"$releasePublicBaseUrl\"")
