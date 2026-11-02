@@ -85,6 +85,7 @@ object SignalsModule {
     /**
      * A120: 설정 화면 값(자동 따라가기·지연 표시·음성 안내) — `dh_settings` 한 곳. 지연 표시 기본값은 debug 켬 / release 끔.
      * '음성 안내'는 VoiceAnnouncer 가 메모리 값만 갖고(RB-5) 저장은 여기 — 앱 시작 때 [provideVoiceAnnouncer] 가 넣는다.
+     * 설정 화면에서 바꾼 값을 여기에 쓰는 호출(`SettingsViewModel.setVoiceEnabled` → `UserSettings.setVoiceEnabled`)은 UI 트랙 반영 뒤에 생긴다.
      */
     @Provides
     @Singleton
@@ -142,7 +143,8 @@ object SignalsModule {
         pttBusy = ptt.state.map { it.stage != PttStage.IDLE },
         pttBusyNow = { ptt.state.value.stage != PttStage.IDLE },
         hasCandidate = { chain.hasCandidate() },
-        // RA-4: 지금 마이크를 열면 소리가 담기는가 — 무전(PttModule)과 같은 판정 [PttMicGate.usable](B015)
+        // RA-4: 지금 마이크를 열면 소리가 담기는가 — 무전(PttModule)과 같은 판정 [PttMicGate.usable](B015).
+        // startedWhileVisible 은 넘기지 않는다(무전도 같음) — 그룹 서비스가 그 값을 내보내기 전까지 RB-6(API 30~33 백그라운드 시작) 분기는 쓰이지 않는다(docs/05 B015 '알려진 한계')
         micUsable = { PttMicGate.usable(Build.VERSION.SDK_INT, tracker.appVisible.value, DriveSessionService.attachedType.value) },
         speakAndWait = { voice.speakAndWait(it, Priority.NORMAL, ROUTE_ASK_SPEAK_TIMEOUT_MS) },
         listen = { chain.listen(ROUTE_ASK_LISTEN_MS).answer },

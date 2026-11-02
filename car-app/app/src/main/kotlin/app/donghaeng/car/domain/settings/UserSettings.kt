@@ -47,6 +47,8 @@ class SharedPrefsUserSettingsStore(context: Context) : UserSettingsStore {
  *   B066 을 걷어내고 이곳을 저장 주인으로 정해 두 리뷰가 함께 들어가자 **어디에도 저장되지 않았다**. RB-5 대로: 음성 엔진(`VoiceAnnouncer.setEnabled`)은
  *   메모리 값만, 저장은 설정 화면에서만 [setVoiceEnabled], 앱 시작 때 di/SignalsModule 이 엔진에 넣는다. 키는 새 이름([KEY_VOICE]) — 배치 A 중간 빌드가
  *   `voiceEnabled` 에 남겼을 수 있는 옛 값을 읽지 않게.
+ *   **설정 화면 쪽 호출은 화면(UI) 트랙 몫(handoff)** — `SettingsViewModel.setVoiceEnabled` 가 [setVoiceEnabled] 를 불러야 저장된다. 그 반영 전 빌드에서는
+ *   이 저장소에 '음성 안내'를 쓰는 곳이 없어 설정 화면에서 꺼도 앱을 다시 켜면 켬으로 돌아온다(동작 회귀는 아님 — 병합 전에도 저장되지 않았다).
  */
 class UserSettings(
     private val store: UserSettingsStore,
@@ -63,7 +65,7 @@ class UserSettings(
     fun setAutoFollow(v: Boolean) = store.putBoolean(KEY_AUTO_FOLLOW, v)
     fun setLatencyOverlay(v: Boolean) = store.putBoolean(KEY_LATENCY, v)
 
-    /** 설정 화면의 '음성 안내' 스위치에서만 부른다(진단 카드·디버그 리시버의 일시 전환은 저장하지 않는다, RB-5) */
+    /** 설정 화면의 '음성 안내' 스위치에서만 부른다(진단 카드·디버그 리시버의 일시 전환은 저장하지 않는다, RB-5). 호출 배선 = UI 트랙 handoff */
     fun setVoiceEnabled(v: Boolean) = store.putBoolean(KEY_VOICE, v)
 
     /** 저장값(없으면 기본값)을 엔진에 넣는다 — 앱 시작 때 한 번 */

@@ -222,7 +222,7 @@ class EnsureTtsEngineTest(unittest.TestCase):
 
 
 class VoiceSettingTest(unittest.TestCase):
-    """배치 B 리뷰 RB: preflight 가 status 의 voice= 를 보지 않아 '음성 안내' 저장값이 꺼진 차(latency.py 가 끈 채 멈춤·설정에서 끔)는
+    """배치 B 리뷰 RB: preflight 가 status 의 voice= 를 보지 않아 '음성 안내'가 꺼진 차(latency.py 가 끈 채 멈춤·설정에서 끔)는
     장면 5·6·9 음성 확인이 MISS 로 끝났다 → 꺼져 있으면 FAIL, 실행 때는 켜고 다시 본다"""
 
     def test_row(self):
@@ -230,6 +230,10 @@ class VoiceSettingTest(unittest.TestCase):
         label, ok = demo.voice_setting_row("B", {"voice": "false"})
         self.assertFalse(ok)
         self.assertIn("voice=false", label)
+        # voice= 는 지금 앱(메모리) 값이다(RB-5) — '저장값'이라 적으면 진행자가 앱을 다시 켜도 그대로라고 오해한다
+        self.assertNotIn("앱 저장값", label)
+        self.assertIn("앱을 다시 켜면", label)
+        self.assertIn("지금 앱 값", label)
         self.assertIsNone(demo.voice_setting_row("A", {})[1], "옛 앱·리시버 무응답은 WARN")
         self.assertIsNone(demo.voice_setting_row("A", None)[1])
         self.assertIn("켰다", demo.voice_setting_row("A", {"voice": "true"}, turned_on=True)[0])

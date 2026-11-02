@@ -58,9 +58,11 @@ class VoiceRouteAskTest {
     /**
      * RA-4 배선(di/SignalsModule): 경로 질문은 무전과 같은 [PttMicGate.usable] 로 마이크를 판정한다(배치 A 의 임시 판정 `routeAskMicUsable` 대체).
      * 판정이 예전과 같은지 고정 — API 30 미만·동행 화면이 보임·서비스에 microphone 타입 → 쓸 수 있음, 그 밖(서비스 없음·타입 모름 포함) → 못 씀.
+     * SignalsModule 을 거치지 않고 그 모듈이 부르는 형태(`startedWhileVisible` 미전달) 그대로 [PttMicGate.usable] 를 본다 — 배선 자체는 SignalsModule 의
+     * 한 줄이다. RB-6(API 30~33 백그라운드 시작) 분기는 그룹 서비스가 `startedWhileVisible` 을 내보낼 때까지 무전·경로 질문 모두 쓰이지 않는다(docs/05 B015).
      */
     @Test
-    fun `RA-4 wiring - the route ask uses the PTT mic gate and its verdict matches the batch A rule`() {
+    fun `RA-4 - PttMicGate called as SignalsModule does (no startedWhileVisible) matches the batch A rule`() {
         val mic = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         val location = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         val dataSync = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC

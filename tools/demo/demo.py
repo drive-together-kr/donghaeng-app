@@ -139,7 +139,8 @@ def tts_path_row(name: str, st: dict, engine_installed: bool):
 
 
 def voice_setting_row(name: str, st: dict, turned_on: bool = False):
-    """preflight '음성 안내 설정' 행 (label, ok) — 디버그 status 의 `voice=true|false`(VoiceAnnouncer 저장값, 앱을 다시 켜도 남는다).
+    """preflight '음성 안내 설정' 행 (label, ok) — 디버그 status 의 `voice=true|false` = **지금 앱의 값**(VoiceAnnouncer 메모리, RB-5).
+    리시버 `voice`·진단 카드로 바꾼 값은 저장되지 않아 앱을 다시 켜면 설정 저장값(UserSettings, 없으면 켬)으로 돌아간다.
     꺼져 있으면 장면 5·6·9 의 `voice: speak …` 가 나지 않아 확인이 MISS 다(배치 B 리뷰 RB — latency.py 가 끈 채 멈췄거나 설정 화면에서 끈 경우).
     ok: True = 켜짐, False = 꺼짐(FAIL), None = 값 없음(옛 앱 — WARN)"""
     v = (st or {}).get("voice")
@@ -148,7 +149,7 @@ def voice_setting_row(name: str, st: dict, turned_on: bool = False):
     if v == "false":
         hint = "켜기를 보냈는데도 꺼짐 — 진단·설정 화면 확인" if turned_on else \
             "장면 5·6·9 음성이 나지 않는다: --dry-run 없이 실행하면 자동으로 켠다(또는 설정 '음성 안내')"
-        return (f"{name} 음성 안내 꺼짐(voice=false, 앱 저장값) — {hint}", False)
+        return (f"{name} 음성 안내 꺼짐(voice=false — 지금 앱 값, 리시버·진단 전환은 앱을 다시 켜면 설정 저장값으로 돌아감) — {hint}", False)
     return (f"{name} 음성 안내 설정 — status 에 voice= 없음(리시버 응답 없음 또는 옛 앱)", None)
 
 
@@ -237,7 +238,7 @@ class Demo:
         # 차 B(fake flavor)는 Pleos SDK 가 없어 Supertonic 이 없으면 화면 표시만 → FAIL 로 알린다
         for name, s in (("A", self.A), ("B", self.B)):
             rows.extend(self.ensure_tts_engine(name, s))
-        # 음성 안내 스위치(앱 저장값) — 꺼져 있으면 경로가 있어도 읽지 않는다. 실행 때는 켜고 다시 확인한다(dry-run 은 바꾸지 않음)
+        # 음성 안내 스위치(지금 앱 값 — 리시버·진단 전환은 저장되지 않음, RB-5) — 꺼져 있으면 경로가 있어도 읽지 않는다. 실행 때는 켜고 다시 확인한다(dry-run 은 바꾸지 않음)
         for name, s in (("A", self.A), ("B", self.B)):
             rows.append(self.ensure_voice_on(name, s))
         # 주행 중 표면(2026-10-28): 플로팅 창 권한 — 없으면 알림 카드 + 음성 모드로 동작하므로 경고만
@@ -295,7 +296,7 @@ class Demo:
         return rows
 
     def ensure_voice_on(self, name: str, serial: str):
-        """차 한 대의 '음성 안내' 저장값 점검 — 꺼져 있으면(실행 때만) 리시버 `voice --ez on true` 로 켜고 status 로 다시 본다. 표 행 하나"""
+        """차 한 대의 '음성 안내' 지금 값 점검 — 꺼져 있으면(실행 때만) 리시버 `voice --ez on true` 로 켜고 status 로 다시 본다(이 켜기도 저장되지 않는다). 표 행 하나"""
         st = status(serial)
         if st.get("voice") == "false" and not self.a.dry_run:
             broadcast(serial, "voice", on=True)

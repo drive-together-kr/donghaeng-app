@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** 화면에 보여 줄 대기 중 제안 */
 data class RouteProposal(
@@ -108,6 +110,8 @@ data class RouteSyncState(
  * RC-3: 그룹 경로에 경유지가 있으면 서버가 `GROUP_JOINED` 직후 이 차에만 `ROUTE_FOLLOW_PROPOSAL` 을 다시 보낸다(C032) — 둘 다 곧바로 읽으면
  * 질문 두 개를 연달아 듣는다. 그래서 합류 제안은 [joinProposalDelayMs](3 s) 늦게 내고, 그 사이 이 그룹의 서버 제안을 받았으면 생략한다
  * (서버 제안이 목적지·경유지를 모두 담는다). 경유지가 없는 그룹은 서버가 보내지 않으므로 3 s 뒤 합류 제안이 나온다.
+ * '서버 제안을 봤나' 확인과 합류 제안 올리기는 서버 제안 올리기와 같은 잠금([offerLock]) 안에서 한 번에 한다 — 3 s 가 끝나는 순간 서버 제안이
+ * 끼어도 합류 제안이 그것을 밀어내지 않는다(ACK false·경유지 사라짐 없음). 서버 제안이 3 s 보다 늦게 오면 그것이 합류 제안을 대체한다(질문 2회, ACK 없음).
  */
 class RouteSyncEngine(
     private val session: StateFlow<GroupSession?>,
@@ -160,6 +164,13 @@ class RouteSyncEngine(
 
     @Volatile
     private var lastServerProposal: ServerProposalSeen? = null
+
+    /**
+     * 제안을 대기 상태로 올리는 부분([offer])을 한 줄로 세운다(RC-3 리뷰). 합류 제안(joinJob)과 서버 제안(proposals 수집)은 둘 다
+     * [dispatcher](Dispatchers.Default) 의 다른 스레드에서 돌 수 있어, 합류 제안의 '서버 제안을 봤나' 확인과 올리기 사이에 서버 제안이 끼면
+     * 합류 제안이 그것을 밀어냈다. 잠금 안은 일시 중단 없이 짧다 — 자동 따라가기의 수락(내비 요청)은 잠금 밖에서 한다.
+     */
+    private val offerLock = Mutex()
 
     private val _state = MutableStateFlow(RouteSyncState())
     val state: StateFlow<RouteSyncState> = _state
@@ -276,7 +287,8 @@ class RouteSyncEngine(
             return
         }
         val now = clock()
-        // RC-3: 합류 직후 서버가 다시 보낸 경로 제안 — 아직 내지 않은 합류 제안은 생략된다([proposeOnJoinIfNoServerProposal])
+        // RC-3: 합류 직후 서버가 다시 보낸 경로 제안 — 아직 내지 않은 합류 제안은 생략된다([proposeOnJoinIfNoServerProposal]).
+        // [offer] 의 잠금을 잡기 **전에** 적는다 — 합류 제안의 확인(잠금 안)이 이 제안보다 뒤면 반드시 보인다
         lastServerProposal = ServerProposalSeen(s.groupId, now)
         val proposal = RouteProposal(
             proposalId = p.cmd.proposalId,
@@ -290,21 +302,29 @@ class RouteSyncEngine(
         offer(proposal)
     }
 
-    /** 제안을 대기 상태로 올리고(이전 제안 대체) 묻는다. 자동 따라가기면 바로 수락 */
-    private suspend fun offer(proposal: RouteProposal) {
-        cancelTimers()
-        val previous = _state.getAndUpdate { it.copy(pending = proposal) }.pending
-        if (previous != null && !previous.local && previous.proposalId != proposal.proposalId) {
-            // A057: 밀려난 서버 제안도 답(ACK false)으로 끝낸다 — 서버 집계가 열린 채 남지 않게
-            val sent = publishAck(Ack(proposalId = previous.proposalId, accepted = false))
-            _state.update { it.copy(superseded = it.superseded + 1) }
-            DhLog.i("routesync: superseded ${TextMasking.maskVehicleId(previous.proposalId)} ack=$sent")
+    /**
+     * 제안을 대기 상태로 올리고(이전 제안 대체) 묻는다. 자동 따라가기면 바로 수락.
+     * [admit] 은 [offerLock] 안에서 올리기 직전에 부른다 — false 면 아무것도 바꾸지 않는다(합류 제안의 '서버 제안을 봤나' 확인, RC-3).
+     */
+    private suspend fun offer(proposal: RouteProposal, admit: () -> Boolean = { true }) {
+        val acceptNow = offerLock.withLock {
+            if (!admit()) return
+            cancelTimers()
+            val previous = _state.getAndUpdate { it.copy(pending = proposal) }.pending
+            if (previous != null && !previous.local && previous.proposalId != proposal.proposalId) {
+                // A057: 밀려난 서버 제안도 답(ACK false)으로 끝낸다 — 서버 집계가 열린 채 남지 않게
+                val sent = publishAck(Ack(proposalId = previous.proposalId, accepted = false))
+                _state.update { it.copy(superseded = it.superseded + 1) }
+                DhLog.i("routesync: superseded ${TextMasking.maskVehicleId(previous.proposalId)} ack=$sent")
+            }
+            if (_state.value.autoFollow) {
+                true
+            } else {
+                if (driving) askWhileDriving(proposal) else askParked(proposal, speakIt = true)
+                false
+            }
         }
-        if (_state.value.autoFollow) {
-            accept()
-            return
-        }
-        if (driving) askWhileDriving(proposal) else askParked(proposal, speakIt = true)
+        if (acceptNow) accept()
     }
 
     /** 정차 중(기존 동작): 읽고 카드 — [autoDeclineMs] 뒤 자동 거절 */
@@ -449,20 +469,25 @@ class RouteSyncEngine(
     /**
      * RC-3: 합류 뒤 [joinProposalDelayMs] 가 지났다 — 그 사이 이 그룹의 서버 제안(경유지 재전송, C032)을 받았으면 질문을 겹치지 않게 생략하고,
      * 아니면 합류 제안을 낸다. 그 사이 그룹이 바뀌었거나 이 차가 방장이 됐으면 묻지 않는다.
+     * '서버 제안을 봤나'는 [offerLock] 안에서 올리기 직전에 본다 — [onProposal] 은 [lastServerProposal] 을 먼저 적고 잠금을 잡으므로,
+     * 서버 제안이 먼저 올라갔으면 반드시 보이고(생략), 아니면 합류 제안이 먼저 올라가고 서버 제안이 그것을 대체한다(로컬 제안이라 ACK 없음).
      */
     private suspend fun proposeOnJoinIfNoServerProposal(joined: GroupSession) {
         val current = session.value
         if (current == null || current.groupId != joined.groupId || current.isLeader) return
-        val seen = lastServerProposal
-        if (seen != null && seen.groupId == joined.groupId && seen.atMs >= joined.joinedAtMs) {
-            DhLog.i("routesync: join ask skipped — the server already proposed the group route")
-            return
+        proposeLeaderDestination(current) {
+            val seen = lastServerProposal
+            val skip = seen != null && seen.groupId == joined.groupId && seen.atMs >= joined.joinedAtMs
+            if (skip) DhLog.i("routesync: join ask skipped — the server already proposed the group route")
+            !skip
         }
-        proposeLeaderDestination(current)
     }
 
-    /** T30: 합류 직후 "선두차 목적지까지 안내할까요?" — 서버 제안이 아니므로 ACK 없이 내비만 요청한다 */
-    private suspend fun proposeLeaderDestination(s: GroupSession) {
+    /**
+     * T30: 합류 직후 "선두차 목적지까지 안내할까요?" — 서버 제안이 아니므로 ACK 없이 내비만 요청한다.
+     * [admit] 은 잠금 안에서 올리기 직전에 부른다(RC-3) — false 면 내지 않고 'join proposal' 로그도 남기지 않는다.
+     */
+    private suspend fun proposeLeaderDestination(s: GroupSession, admit: () -> Boolean = { true }) {
         val now = clock()
         val proposal = RouteProposal(
             proposalId = "local-join-${s.groupId}",
@@ -473,8 +498,11 @@ class RouteSyncEngine(
             expiresAtMs = now + autoDeclineMs,
             local = true,
         )
-        DhLog.i("routesync: join proposal dest=${s.destination.toLogString()} autoFollow=${_state.value.autoFollow}")
-        offer(proposal)
+        offer(proposal) {
+            admit().also { ok ->
+                if (ok) DhLog.i("routesync: join proposal dest=${s.destination.toLogString()} autoFollow=${_state.value.autoFollow}")
+            }
+        }
     }
 
     private fun joinSpeech(name: String): String =
