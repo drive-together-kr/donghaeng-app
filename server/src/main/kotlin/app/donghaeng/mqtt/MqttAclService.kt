@@ -54,8 +54,9 @@ class MqttAclService(private val membership: GroupMembershipApi) {
             if (action != Action.SUBSCRIBE) return deny("vehicle may not publish group topics")
             val leaf = topic.substringAfterLast('/')
             if (leaf != "state" && leaf != "event") return deny("unknown group leaf")
-            val current = membership.activeGroupIdOf(vid)
-            return if (current == gid) allow("member of group") else deny("not a member of that group")
+            if (membership.activeGroupIdOf(vid) == gid) return allow("member of group")
+            // 캐시(Redis)가 옛 값일 수 있다(쓰기 실패·커밋 뒤 순서 역전, C101) — 거부하기 전에 DB 로 한 번 더 보고 캐시를 고친다(거부는 드물어 비용이 작다)
+            return if (membership.verifiedActiveGroupIdOf(vid) == gid) allow("member of group (db)") else deny("not a member of that group")
         }
         return deny("unknown topic")
     }

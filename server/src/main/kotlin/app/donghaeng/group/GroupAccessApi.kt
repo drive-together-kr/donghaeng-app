@@ -35,6 +35,14 @@ interface GroupAccessApi {
      * @return 그룹이 진행 중이면 true, 끝났으면 false(종료 시점 멤버는 끝난 그룹도 볼 수 있다 — 자원의 공개 여부는 호출자가 정한다)
      */
     fun requireViewer(caller: Caller, groupId: String): Boolean
+
+    /**
+     * 차량 이벤트 기록 자격(C107·C101): 차량의 현재 진행 중 그룹을 **DB 에서** 찾아 그 그룹 행을 `FOR SHARE` 로 잡고, 잡은 뒤에도 진행 중·멤버이면 그 ID.
+     * 아니면 null(기록하지 않는다). 종료·나가기(`FOR UPDATE`)와 직렬화되어 `GROUP_ENDED` 뒤에 그 그룹의 차량 이벤트가 기록·팬아웃되지 않고,
+     * Redis 소속 캐시가 옛 값이어도 엉뚱한(끝난·나간) 그룹에 기록하지 않는다. 반드시 트랜잭션 안에서 부른다.
+     * 잠금은 그룹 행 하나뿐이다(차량 advisory·차량 행은 잡지 않는다) — 다른 경로(차량 → 그룹)와 교착하지 않는다.
+     */
+    fun lockActiveGroupOfVehicle(vehicleId: String): String?
 }
 
 @Component
@@ -64,6 +72,14 @@ class DefaultGroupAccessApi(
         }
         if (!allowed) throw GroupErrors.groupNotFound()
         return group.active
+    }
+
+    override fun lockActiveGroupOfVehicle(vehicleId: String): String? {
+        val membership = members.findActiveMembershipOf(vehicleId) ?: return null
+        val group = groups.findByIdForShare(membership.groupId) ?: return null
+        // 잠근 뒤 다시 본다 — 그 사이 종료·나가기가 커밋됐으면 기록하지 않는다
+        if (!group.active || members.findActive(group.groupId, vehicleId) == null) return null
+        return group.groupId
     }
 
     /** `GroupService.requireActiveVehicle` 와 같은 규칙: 없거나 해제됐거나 토큰 발급 뒤 소유자가 바뀐 차량은 403 */

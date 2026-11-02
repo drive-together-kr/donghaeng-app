@@ -30,6 +30,12 @@ class TopicRouter(
             log.warn("inbound dropped: unexpected topic shape topic={}", topic)
             return
         }
+        if (kind == Topics.VehicleTopicKind.CMD) {
+            // 서버 자신이 보낸 cmd 가 공유 구독(`…/vehicle/+/#`)으로 되돌아온 것(공유 구독엔 No Local 을 걸 수 없다, MQTT 5 §3.8.3.1).
+            // 차량은 ACL 상 cmd 에 발행할 수 없으므로 여기 오는 것은 모두 서버 메시지다 — 해석·WARN 없이 버린다(C111: 위조 의심 WARN 이 묻히지 않게)
+            if (log.isTraceEnabled) log.trace("inbound own cmd ignored vid={}", vehicleId)
+            return
+        }
         if (kind == Topics.VehicleTopicKind.PRESENCE) {
             routePresence(vehicleId, payload)
             return

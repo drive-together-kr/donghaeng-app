@@ -122,6 +122,8 @@ services:
       DH_CAR_ID_SALT: ${DH_CAR_ID_SALT:-dev-salt-change-me}
       # EMQX ACL 훅 공유 비밀 (emqx 서비스의 x-internal-token 헤더와 같은 값). 비우면 검사 안 함(로컬).
       DH_INTERNAL_TOKEN: ${DH_INTERNAL_TOKEN:-}
+      # 로그인·디바이스 코드 발급 IP 당 분당 요청 수(docs/03 머리말, 기본 30, 0 = 끔). 로컬 compose 는 모든 클라이언트가 같은 게이트웨이 IP 로 보인다
+      DH_RATE_LIMIT_IP_PER_MINUTE: ${DH_RATE_LIMIT_IP_PER_MINUTE:-30}
     depends_on:
       postgres:
         condition: service_healthy

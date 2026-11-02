@@ -39,6 +39,13 @@ interface MqttPublisher {
      */
     fun <T> publish(topic: String, type: String, data: T, serializer: KSerializer<T>, qos: Int = 1, retain: Boolean = false): Boolean
 
+    /**
+     * [publish] + MQTT 5 Message Expiry Interval [expirySeconds] — 브로커(EMQX retainer 포함)가 그 시간이 지나면 버린다(C071·C109: 그룹 STATE retained 스냅샷).
+     * 기본 구현은 만료 없이 [publish](테스트 대역용).
+     */
+    fun <T> publishExpiring(topic: String, type: String, data: T, serializer: KSerializer<T>, qos: Int, retain: Boolean, expirySeconds: Long): Boolean =
+        publish(topic, type, data, serializer, qos, retain)
+
     /** retained 메시지 삭제(빈 payload, retained). 연결이 없으면 false */
     fun clearRetained(topic: String): Boolean
 }
@@ -172,7 +179,13 @@ class ServerMqttClient(
 
     // ---------------------------------------------------------------- publish
 
-    override fun <T> publish(topic: String, type: String, data: T, serializer: KSerializer<T>, qos: Int, retain: Boolean): Boolean {
+    override fun <T> publish(topic: String, type: String, data: T, serializer: KSerializer<T>, qos: Int, retain: Boolean): Boolean =
+        send(topic, type, data, serializer, qos, retain, expirySeconds = null)
+
+    override fun <T> publishExpiring(topic: String, type: String, data: T, serializer: KSerializer<T>, qos: Int, retain: Boolean, expirySeconds: Long): Boolean =
+        send(topic, type, data, serializer, qos, retain, expirySeconds)
+
+    private fun <T> send(topic: String, type: String, data: T, serializer: KSerializer<T>, qos: Int, retain: Boolean, expirySeconds: Long?): Boolean {
         val c = client
         if (c == null || !c.state.isConnectedOrReconnect) {
             log.warn("mqtt publish skipped (not connected) topic={} type={}", topic, type)
@@ -180,12 +193,13 @@ class ServerMqttClient(
         }
         val envelope = Envelope(type = type, vid = clientId, ts = clock.millis(), seq = seqs.computeIfAbsent(topic) { AtomicLong() }.incrementAndGet(), data = data)
         val payload = DhJson.encode(envelope, serializer).toByteArray(Charsets.UTF_8)
-        c.publishWith()
+        val base = c.publishWith()
             .topic(topic)
             .qos(MqttQos.fromCode(qos) ?: MqttQos.AT_LEAST_ONCE)
             .retain(retain)
             .payload(payload)
-            .send()
+        val builder = if (expirySeconds != null && expirySeconds > 0) base.messageExpiryInterval(expirySeconds) else base
+        builder.send()
             .whenComplete { _, error ->
                 if (error != null) log.warn("mqtt publish failed topic={} type={} cause={}", topic, type, error.message)
                 else if (log.isDebugEnabled) log.debug("mqtt published topic={} type={} bytes={}", topic, type, payload.size)

@@ -55,6 +55,31 @@ class RestDtosTest {
         roundTrip(PassengerMessageRequest("앞에 휴게소 들르자", "veh_01H"))
         roundTrip(LeaderRequest("veh_02H"))
         roundTrip(ErrorEnvelope(ErrorBody("INVITE_EXPIRED", "초대 코드가 만료됐어요.", "abc")))
+        roundTrip(ServerTimeResponse(1_730_000_000_000))
+    }
+
+    @Test
+    fun `GET v1 time 은 protocol 경로·DTO 하나로 server 와 car-app 이 같이 쓴다 (규칙 7)`() {
+        assertEquals("/v1/time", ApiPaths.TIME)
+        assertEquals(ServerTimeResponse(1_730_000_000_000), json.decodeFromString<ServerTimeResponse>("""{ "serverTimeMs": 1730000000000 }"""))
+        assertEquals("/v1/vehicles/me", ApiPaths.VEHICLES_ME)
+        assertEquals("/v1/vehicles/me/group", ApiPaths.VEHICLES_ME_GROUP)
+        assertEquals("/v1/groups/grp_1/voice", ApiPaths.groupVoice("grp_1"))
+    }
+
+    @Test
+    fun `Idempotency-Key 형식 — 8~64자 영문·숫자·_·- (UUID 포함)`() {
+        assertTrue(IdempotencyKey.isValid("123e4567-e89b-12d3-a456-426614174000"))
+        assertTrue(IdempotencyKey.isValid("unsent_voice-01"))
+        assertTrue(IdempotencyKey.isValid("a".repeat(64)))
+        listOf("", "short", "a".repeat(65), "has space", "키값키값키값키값", "a/b/c/d/e").forEach { assertTrue(!IdempotencyKey.isValid(it), it) }
+        assertEquals("Idempotency-Key", ApiHeaders.IDEMPOTENCY_KEY)
+    }
+
+    @Test
+    fun `MEMBER_LEFT reason 값은 docs-03 §5·4 표와 같다`() {
+        assertEquals(listOf("LEFT", "SWITCHED_GROUP", "UNPAIRED", "OWNER_CHANGED"), listOf(MemberLeftReason.LEFT, MemberLeftReason.SWITCHED_GROUP, MemberLeftReason.UNPAIRED, MemberLeftReason.OWNER_CHANGED))
+        assertEquals("RATE_LIMITED", ErrorCodes.RATE_LIMITED)
     }
 
     @Test

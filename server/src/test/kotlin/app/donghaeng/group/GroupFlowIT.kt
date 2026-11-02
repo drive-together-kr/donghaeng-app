@@ -3,7 +3,19 @@ package app.donghaeng.group
 import app.donghaeng.KPostgresContainer
 import app.donghaeng.KRedisContainer
 import app.donghaeng.common.config.DhProperties
+import app.donghaeng.common.idempotency.IdempotencyRetention
 import app.donghaeng.common.security.SecureTokens
+import app.donghaeng.event.EventRetention
+import app.donghaeng.event.VehicleEventService
+import app.donghaeng.protocol.RouteChanged
+import app.donghaeng.protocol.VehicleEventType
+import app.donghaeng.protocol.rest.ApiHeaders
+import app.donghaeng.protocol.rest.MemberLeftReason
+import app.donghaeng.routesync.RouteSyncService
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.support.TransactionTemplate
 import app.donghaeng.protocol.GroupEnded
 import app.donghaeng.protocol.GroupJoined
 import app.donghaeng.protocol.DhJson
@@ -61,6 +73,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -80,11 +93,24 @@ class RecordingVehicleCommandPort : VehicleCommandPort {
     override fun tokenRevoked(vehicleId: String) { revoked += vehicleId }
 }
 
+/** C032: 합류 뒤 발행되는 [VehicleJoinedGroup] 과 그 순간까지 나간 GROUP_JOINED 수 — 경로 재전송이 GROUP_JOINED 뒤인지 본다 */
+class JoinedEventRecorder(private val commands: RecordingVehicleCommandPort) {
+    val events = CopyOnWriteArrayList<Pair<VehicleJoinedGroup, Int>>()
+
+    @org.springframework.context.event.EventListener
+    fun on(e: VehicleJoinedGroup) {
+        events += e to commands.joined.count { it.first == e.vehicleId && it.second.groupId == e.groupId }
+    }
+}
+
 @TestConfiguration
 class RecordingCommandConfig {
     @Bean
     @Primary
     fun recordingVehicleCommandPort() = RecordingVehicleCommandPort()
+
+    @Bean
+    fun joinedEventRecorder(commands: RecordingVehicleCommandPort) = JoinedEventRecorder(commands)
 }
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -121,6 +147,27 @@ class GroupFlowIT {
 
     @Autowired
     lateinit var commands: RecordingVehicleCommandPort
+
+    @Autowired
+    lateinit var joinedEvents: JoinedEventRecorder
+
+    @Autowired
+    lateinit var routeSync: RouteSyncService
+
+    @Autowired
+    lateinit var vehicleEvents: VehicleEventService
+
+    @Autowired
+    lateinit var eventRetention: EventRetention
+
+    @Autowired
+    lateinit var groupRetention: GroupRetention
+
+    @Autowired
+    lateinit var idempotencyRetention: IdempotencyRetention
+
+    @Autowired
+    lateinit var txManager: PlatformTransactionManager
 
     private val json = DhJson.json
 
@@ -642,6 +689,259 @@ class GroupFlowIT {
         val taken = pair(d, "넘겨받은 차", carId = a.carInfoId)
         assertEquals(a.vehicleId, taken.vehicle.vehicleId)
         assertEquals(listOf(b.vehicleId, a.vehicleId), commands.revoked.drop(before))
+    }
+
+    // ---------------------------------------------------------------- 2026-11 점검 반영 (계약 1·2·3, C032·C033·C104·C106·C108)
+
+    private fun vehicleGroup(bearer: String) = call(HttpMethod.GET, ApiPaths.VEHICLES_ME_GROUP, bearer = bearer)
+
+    private fun message(groupId: String, text: String, bearer: String, key: String? = null): ResponseEntity<String> {
+        val headers = HttpHeaders().apply {
+            accept = listOf(MediaType.APPLICATION_JSON)
+            contentType = MediaType.APPLICATION_JSON
+            setBearerAuth(bearer)
+            if (key != null) set(ApiHeaders.IDEMPOTENCY_KEY, key)
+        }
+        return rest.exchange(ApiPaths.groupMessages(groupId), HttpMethod.POST, HttpEntity(json.encodeToString(PassengerMessageRequest(text)), headers), String::class.java)
+    }
+
+    @Test
+    fun `contract 1 - GET v1 vehicles me group returns the current group as GROUP_JOINED or 204, and repairs a stale cache`() {
+        val a = driver("rc-a", "아빠 차")
+        val b = driver("rc-b", "엄마 차")
+        assertEquals(204, vehicleGroup(a.vehicleToken).statusCode.value(), "그룹 전")
+        val created = create(a)
+        val forLeader: GroupJoined = vehicleGroup(a.vehicleToken).assertOk().decode()
+        assertEquals(GroupJoined(created.groupId, "추석 귀성길", a.vehicleId, DEST.copy(address = "광주광역시 …"), created.mqttTopics), forLeader)
+        join(b, created.invite.token).assertOk()
+        assertEquals(forLeader, vehicleGroup(b.vehicleToken).assertOk().decode<GroupJoined>(), "cmd GROUP_JOINED 와 같은 본문")
+        vehicleGroup(b.userToken).assertError(403, ErrorCodes.FORBIDDEN)
+        call(HttpMethod.GET, ApiPaths.VEHICLES_ME_GROUP).assertError(401, ErrorCodes.UNAUTHORIZED)
+
+        // 나간 뒤 204. 캐시에 옛 소속이 남아 있어도(쓰기 실패 흉내) DB 기준으로 답하고 캐시를 고친다
+        leave(created.groupId, b.vehicleToken).assertOk(204)
+        redisTemplate.opsForValue().set(vehicleGroupKey(b.vehicleId), created.groupId)
+        assertEquals(204, vehicleGroup(b.vehicleToken).statusCode.value())
+        assertNull(redisTemplate.opsForValue().get(vehicleGroupKey(b.vehicleId)), "옛 소속 캐시를 지운다(read-repair)")
+        // 캐시가 비어 있으면 채운다
+        redisTemplate.delete(vehicleGroupKey(a.vehicleId))
+        vehicleGroup(a.vehicleToken).assertOk()
+        assertEquals(created.groupId, redisTemplate.opsForValue().get(vehicleGroupKey(a.vehicleId)))
+
+        // 끝난 그룹 → 204
+        call(HttpMethod.POST, ApiPaths.groupEnd(created.groupId), bearer = a.vehicleToken).assertOk(204)
+        assertEquals(204, vehicleGroup(a.vehicleToken).statusCode.value())
+    }
+
+    /**
+     * RC-2: 해제·소유권 이전된 차의 (서명상 아직 유효한) 토큰도 계약 1 대로 204('진행 중 그룹 없음') — 403 이면 차량 앱이 Unknown 으로 보고 옛 세션을 남긴다(T33).
+     * 옛 토큰으로는 새 소유자의 그룹을 보지 못하고, 새 소유자의 소속 캐시도 건드리지 않는다. 자격 증명 정리는 refresh 401 경로가 맡는다.
+     */
+    @Test
+    fun `RC-2 - an unpaired or transferred car token gets 204 from GET v1 vehicles me group, never the new owner's group`() {
+        val a = driver("rc2-a", "아빠 차")
+        val b = driver("rc2-b", "엄마 차")
+        val created = create(a)
+        join(b, created.invite.token).assertOk()
+        assertEquals(created.groupId, vehicleGroup(b.vehicleToken).assertOk().decode<GroupJoined>().groupId)
+
+        // 폰에서 해제 → 그 차의 옛 토큰은 204(차가 세션을 지운다)
+        call(HttpMethod.DELETE, ApiPaths.meVehicle(b.vehicleId), bearer = b.userToken).assertOk(204)
+        assertEquals(204, vehicleGroup(b.vehicleToken).statusCode.value(), "해제된 차")
+
+        // 다른 계정이 a 의 차를 다시 페어링해 새 그룹을 만든다 → a 의 옛 토큰은 204, 새 그룹을 보지 못한다
+        val d = login("rc2-d")
+        val taken = pair(d, "넘겨받은 차", carId = a.carInfoId)
+        assertEquals(a.vehicleId, taken.vehicle.vehicleId)
+        val newGroup: GroupCreateResponse = call(HttpMethod.POST, ApiPaths.GROUPS, json.encodeToString(GroupCreateRequest("새 주인", DEST)), taken.vehicleAccessToken).assertOk(201).decode()
+        val stale = vehicleGroup(a.vehicleToken)
+        assertEquals(204, stale.statusCode.value(), "소유권이 넘어간 차의 옛 토큰")
+        assertNull(stale.body, "본문 없음 — 새 소유자의 그룹을 알려 주지 않는다")
+        assertEquals(newGroup.groupId, redisTemplate.opsForValue().get(vehicleGroupKey(a.vehicleId)), "옛 토큰은 새 소유자의 소속 캐시를 고치지 않는다")
+        assertEquals(newGroup.groupId, vehicleGroup(taken.vehicleAccessToken).assertOk().decode<GroupJoined>().groupId, "새 토큰은 새 그룹")
+        // 다른 그룹 API 는 그대로 403(자격 거절)
+        detail(newGroup.groupId, a.vehicleToken).assertError(403, ErrorCodes.FORBIDDEN)
+    }
+
+    @Test
+    fun `contract 2 - DELETE v1 vehicles me unpairs the car itself through the same path as the phone, idempotently`() {
+        val a = driver("su-a", "아빠 차")
+        val b = driver("su-b", "엄마 차")
+        val created = create(a)
+        join(b, created.invite.token).assertOk()
+        val revokedBefore = commands.revoked.size
+
+        call(HttpMethod.DELETE, ApiPaths.VEHICLES_ME, bearer = b.userToken).assertError(403, ErrorCodes.FORBIDDEN)
+        call(HttpMethod.DELETE, ApiPaths.VEHICLES_ME, bearer = b.vehicleToken).assertOk(204)
+        val left = detailOk(created.groupId, a.vehicleToken).recentEvents.ofType(GroupEventType.MEMBER_LEFT).first()
+        assertEquals(b.vehicleId, left.sourceVehicleId)
+        assertEquals(MemberLeftReason.UNPAIRED, left.payload["reason"]?.jsonPrimitive?.content)
+        assertEquals(listOf(b.vehicleId), commands.revoked.drop(revokedBefore), "폰의 해제와 같이 커밋 뒤 TOKEN_REVOKED")
+        assertNotNull(jdbc.queryForObject("select revoked_at from vehicle where vehicle_id = ?", java.sql.Timestamp::class.java, b.vehicleId))
+        assertEquals(0, jdbc.queryForObject("select count(*) from refresh_token where subject = ? and revoked_at is null", Long::class.javaObjectType, b.vehicleId))
+        // 이미 해제 → 204(멱등), 아무 일도 없다
+        call(HttpMethod.DELETE, ApiPaths.VEHICLES_ME, bearer = b.vehicleToken).assertOk(204)
+        assertEquals(revokedBefore + 1, commands.revoked.size)
+
+        // 소유권이 넘어간 차의 옛 토큰으로는 새 소유자의 연결을 끊지 못한다(204, 변화 없음)
+        val newOwner = login("su-new")
+        val taken = pair(newOwner, "넘겨받은 차", carId = a.carInfoId)
+        call(HttpMethod.DELETE, ApiPaths.VEHICLES_ME, bearer = a.vehicleToken).assertOk(204)
+        assertNull(jdbc.queryForObject("select revoked_at from vehicle where vehicle_id = ?", java.sql.Timestamp::class.java, taken.vehicle.vehicleId))
+    }
+
+    @Test
+    fun `C032 - a leader route change becomes the group route for late joiners, preview and the reconcile endpoint`() {
+        val a = driver("rt-a", "아빠 차")
+        val b = driver("rt-b", "엄마 차")
+        val created = create(a)
+        join(b, created.invite.token).assertOk()
+        val sokcho = Place(38.2070, 128.5918, "속초")
+        val restStop = Place(37.2963, 127.4120, "덕평휴게소")
+
+        assertNull(routeSync.onRouteChanged(b.vehicleId, RouteChanged(sokcho)), "방장이 아니면 무시")
+        assertEquals(DEST.copy(address = "광주광역시 …"), detailOk(created.groupId, a.vehicleToken).destination)
+
+        assertNotNull(routeSync.onRouteChanged(a.vehicleId, RouteChanged(sokcho, listOf(restStop))))
+        assertEquals(sokcho, detailOk(created.groupId, a.vehicleToken).destination, "그룹 목적지가 바뀐다")
+        val routeEvent = detailOk(created.groupId, b.userToken).recentEvents.ofType(GroupEventType.ROUTE_CHANGED).single()
+        assertNull(routeEvent.speech, "RC-1: 그룹 이벤트에는 문구가 없다(피드는 라벨 '경로 변경', 멤버는 제안 cmd 문구만 듣는다)")
+        val previewHeaders = HttpHeaders().apply { accept = listOf(MediaType.APPLICATION_JSON) }
+        val preview: InvitePreviewResponse = rest.exchange(java.net.URI(created.invite.url).path, HttpMethod.GET, HttpEntity<Void>(previewHeaders), String::class.java).decode()
+        assertEquals(sokcho, preview.destination)
+        assertEquals(sokcho, vehicleGroup(b.vehicleToken).assertOk().decode<GroupJoined>().destination)
+
+        // 늦게 합류한 C: GROUP_JOINED 의 목적지가 최신이고, 그 cmd 를 보낸 뒤 경유지 재전송 이벤트가 난다
+        val c = driver("rt-c", "삼촌 차")
+        join(c, created.invite.token).assertOk()
+        assertEquals(sokcho, commands.joined.last { it.first == c.vehicleId }.second.destination)
+        val (joinedEvent, joinedCmdsBefore) = joinedEvents.events.last { it.first.vehicleId == c.vehicleId }
+        assertEquals(listOf(restStop), joinedEvent.waypoints)
+        assertEquals(sokcho, joinedEvent.destination)
+        assertEquals(1, joinedCmdsBefore, "경로 제안은 GROUP_JOINED 를 보낸 뒤에")
+
+        // 그룹이 끝나면 경유지(위치성 데이터)는 지운다
+        call(HttpMethod.POST, ApiPaths.groupEnd(created.groupId), bearer = a.vehicleToken).assertOk(204)
+        assertNull(jdbc.queryForObject("select route_waypoints::text from travel_group where group_id = ?", String::class.java, created.groupId))
+    }
+
+    @Test
+    fun `contract 3 and C106 - passenger messages replay by Idempotency-Key and are limited to one per 2 s per group`() {
+        val a = driver("mi-a", "아빠 차")
+        val b = driver("mi-b", "엄마 차")
+        val created = create(a)
+        join(b, created.invite.token).assertOk()
+        val gid = created.groupId
+
+        val first: GroupEvent = message(gid, "출발할게요", b.userToken, key = "123e4567-e89b-12d3-a456-426614174000").assertOk(201).decode()
+        val replay: GroupEvent = message(gid, "출발할게요", b.userToken, key = "123e4567-e89b-12d3-a456-426614174000").assertOk(201).decode()
+        assertEquals(first, replay, "같은 키 = 첫 응답 그대로(빈도 제한에도 걸리지 않는다)")
+        message(gid, "출발할게요", b.userToken, key = "bad").assertError(400, ErrorCodes.VALIDATION_FAILED)
+
+        // 첫 메시지를 '방금'으로 고정(느린 기계에서도 2초 안) — 같은 그룹의 다음 메시지는 429
+        jdbc.update("update group_event set occurred_at = now() where group_id = ? and type = 'PASSENGER_MESSAGE'", gid)
+        val limited = message(gid, "한 번 더", a.userToken, key = "msg-key-00000002")
+        limited.assertError(429, ErrorCodes.RATE_LIMITED)
+        assertTrue((limited.headers.getFirst(HttpHeaders.RETRY_AFTER)?.toInt() ?: 0) in 1..2, "Retry-After=${limited.headers.getFirst(HttpHeaders.RETRY_AFTER)}")
+        // 실패는 기억하지 않는다 — 간격이 지난 뒤 같은 키로 다시 보내면 처리된다
+        jdbc.update("update group_event set occurred_at = occurred_at - interval '5 seconds' where group_id = ? and type = 'PASSENGER_MESSAGE'", gid)
+        val second: GroupEvent = message(gid, "한 번 더", a.userToken, key = "msg-key-00000002").assertOk(201).decode()
+        assertNotEquals(first.eventId, second.eventId)
+        assertEquals(2, jdbc.queryForObject("select count(*) from group_event where group_id = ? and type = 'PASSENGER_MESSAGE'", Long::class.javaObjectType, gid), "재시도는 저장·팬아웃하지 않는다")
+        assertEquals(2, jdbc.queryForObject("select count(*) from idempotency_record where request_path = ?", Long::class.javaObjectType, ApiPaths.groupMessages(gid)))
+    }
+
+    @Test
+    fun `C104 - an ownership transfer tells the old group the old nickname, not the new owner's`() {
+        val a = driver("on-a", "아빠 차")
+        val b = driver("on-b", "엄마 차")
+        val created = create(a)
+        join(b, created.invite.token).assertOk()
+        val newOwner = login("on-new")
+        pair(newOwner, "넘겨받은 차", carId = a.carInfoId)
+        val left = detailOk(created.groupId, b.userToken).recentEvents.ofType(GroupEventType.MEMBER_LEFT).first()
+        assertEquals(MemberLeftReason.OWNER_CHANGED, left.payload["reason"]?.jsonPrimitive?.content)
+        assertEquals("아빠 차", left.payload["nickname"]?.jsonPrimitive?.content)
+        assertEquals("아빠 차가 그룹에서 나갔어요. 이제 엄마 차가 선두예요.", left.speech)
+    }
+
+    @Test
+    fun `C108 - a join racing an unpair waits for the vehicle lock and sees the revoke, so the unpaired car never becomes a member`() {
+        val a = driver("ru-a", "아빠 차")
+        val b = driver("ru-b", "엄마 차")
+        val created = create(a)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            // 해제 트랜잭션 흉내(MyVehicleService.revoke → evictVehicle): revoked_at 을 쓰고 차량 advisory 를 쥔 채 커밋 전에 합류를 보낸다
+            val pending = TransactionTemplate(txManager).execute {
+                jdbc.update("update vehicle set revoked_at = now(), is_primary = false where vehicle_id = ?", b.vehicleId)
+                jdbc.queryForObject("select pg_advisory_xact_lock(hashtext(?))", Any::class.java, "vehicle:${b.vehicleId}")
+                val inFlight = pool.submit<ResponseEntity<String>> { join(b, created.invite.token) }
+                Thread.sleep(700)
+                assertFalse(inFlight.isDone, "join must wait for the vehicle lock")
+                inFlight
+            }!!
+            pending.get(20, TimeUnit.SECONDS).assertError(404, ErrorCodes.NO_PAIRED_VEHICLE)
+            assertEquals(listOf(a.vehicleId), detailOk(created.groupId, a.vehicleToken).members.map { it.vehicleId })
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `C108 - a join racing a re-pairing does not deadlock - vehicle row before the vehicle advisory lock`() {
+        val a = driver("rp-a", "아빠 차")
+        val b = driver("rp-b", "엄마 차")
+        val created = create(a)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            // 재페어링 흉내(VehicleRegistry.register → evictVehicle): 차량 행 FOR UPDATE → 차량 advisory
+            val pending = TransactionTemplate(txManager).execute {
+                jdbc.execute("set local lock_timeout = '10s'")
+                jdbc.queryForMap("select vehicle_id from vehicle where vehicle_id = ? for update", b.vehicleId)
+                val inFlight = pool.submit<ResponseEntity<String>> { join(b, created.invite.token) }
+                Thread.sleep(700)
+                assertFalse(inFlight.isDone, "join waits on the vehicle row")
+                // 합류가 advisory 를 쥐고 차량 행을 기다리는 순서였다면 여기서 교착(40P01)
+                jdbc.queryForObject("select pg_advisory_xact_lock(hashtext(?))", Any::class.java, "vehicle:${b.vehicleId}")
+                inFlight
+            }!!
+            pending.get(20, TimeUnit.SECONDS).assertOk()
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `C033 - events older than 24 h are purged, an ended group loses waypoint coordinates and route payloads, old invites and retry keys are purged`() {
+        val a = driver("rt2-a", "아빠 차")
+        val b = driver("rt2-b", "엄마 차")
+        val created = create(a)
+        join(b, created.invite.token).assertOk()
+        val gid = created.groupId
+        val wp = assertNotNull(vehicleEvents.handle(b.vehicleId, VehicleEventType.WAYPOINT_ARRIVED, buildJsonObject { put("name", "덕평휴게소"); put("lat", 37.2963); put("lon", 127.412) }))
+        assertNotNull(routeSync.onRouteChanged(a.vehicleId, RouteChanged(Place(38.2070, 128.5918, "속초"), listOf(Place(37.2963, 127.4120, "덕평휴게소")))))
+        // 25시간 전 이벤트 하나
+        jdbc.update("update group_event set occurred_at = now() - interval '25 hours' where group_id = ? and type = 'MEMBER_JOINED'", gid)
+        assertTrue(eventRetention.purgeExpired() >= 1)
+        assertEquals(0, jdbc.queryForObject("select count(*) from group_event where group_id = ? and type = 'MEMBER_JOINED'", Long::class.javaObjectType, gid))
+        assertEquals(1, jdbc.queryForObject("select count(*) from group_event where event_id = ?", Long::class.javaObjectType, wp.eventId), "24시간 안은 남는다")
+
+        call(HttpMethod.POST, ApiPaths.groupEnd(gid), bearer = a.vehicleToken).assertOk(204)
+        val wpPayload = json.parseToJsonElement(jdbc.queryForObject("select payload::text from group_event where event_id = ?", String::class.java, wp.eventId)!!).jsonObject
+        assertEquals(setOf("name"), wpPayload.keys, "좌표는 지우고 이름(피드)만 남긴다")
+        val routePayload = json.parseToJsonElement(jdbc.queryForObject("select payload::text from group_event where group_id = ? and type = 'ROUTE_CHANGED'", String::class.java, gid)!!).jsonObject
+        assertFalse("destination" in routePayload || "waypoints" in routePayload, routePayload.toString())
+
+        // 하루 넘게 만료된 초대·만료된 재시도 키 정리
+        jdbc.update("update group_invite set expires_at = now() - interval '2 days' where group_id = ?", gid)
+        assertTrue(groupRetention.purge() >= 1)
+        assertEquals(0, jdbc.queryForObject("select count(*) from group_invite where group_id = ?", Long::class.javaObjectType, gid))
+        jdbc.update(
+            "insert into idempotency_record (caller_id, request_path, idem_key, status, body, created_at, expires_at) values ('usr_x', '/p', 'old-key-0001', 201, '{}', now() - interval '25 hours', now() - interval '1 hour')",
+        )
+        assertTrue(idempotencyRetention.purgeExpired() >= 1)
+        assertEquals(0, jdbc.queryForObject("select count(*) from idempotency_record where idem_key = 'old-key-0001'", Long::class.javaObjectType))
     }
 
     @Test

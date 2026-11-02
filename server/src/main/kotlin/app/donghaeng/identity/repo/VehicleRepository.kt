@@ -26,6 +26,14 @@ data class VehicleRecord(
 @Repository
 class VehicleRepository(private val jdbc: NamedParameterJdbcTemplate) {
 
+    /**
+     * 사용자 단위 직렬화(C114) — 대표 차량 판정(`hasActivePrimary`)과 쓰기 사이에 같은 사용자의 다른 승인·대표 지정이 끼지 않게.
+     * 트랜잭션이 끝나면 풀리는 advisory lock. 잠금 순서: 사용자 → 차량 행 (승인·대표 지정 모두).
+     */
+    fun lockOwner(ownerId: String) {
+        jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtext(:key))", mapOf("key" to "owner:$ownerId"), Any::class.java)
+    }
+
     fun insert(
         vehicleId: String,
         carInfoIdHash: String,

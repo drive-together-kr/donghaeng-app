@@ -23,6 +23,15 @@ object VoiceRules {
     /** 보관 기간 — 업로드 + 24시간(`expiresAtMs`). 그룹이 끝나면 그 전에 지운다 */
     val RETENTION: Duration = Duration.ofHours(24)
 
+    /**
+     * 보관 상한(C113) — 3초 규칙만으로는 한 차가 하루 약 15 GB(28 800건 × 512 KB)를 PostgreSQL 에 쌓을 수 있었다. 넘으면 429 `VOICE_RATE_LIMITED`.
+     * 같은 차: 최근 [QUOTA_WINDOW](1시간) 업로드 [MAX_UPLOADS_PER_WINDOW]건(정상 무전은 많아야 분에 몇 건).
+     * 같은 그룹: 아직 만료되지 않은 무전 합계 [MAX_GROUP_ACTIVE_BYTES](50 MB ≈ 15 s 무전 약 400건).
+     */
+    val QUOTA_WINDOW: Duration = Duration.ofHours(1)
+    const val MAX_UPLOADS_PER_WINDOW: Int = 60
+    const val MAX_GROUP_ACTIVE_BYTES: Long = 50L * 1024 * 1024
+
     /** 다운로드 응답 `Cache-Control` (docs/03 §2.6) */
     const val CACHE_CONTROL: String = "private, max-age=86400"
 

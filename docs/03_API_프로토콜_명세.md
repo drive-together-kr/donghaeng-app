@@ -8,7 +8,10 @@
   - 허용 스킴: `tcp://`·`mqtt://`(1883) · `ssl://`·`mqtts://`·`tls://`(8883) · `ws://`(80) · `wss://`(443). 베이스 URL 이 https 면 평문(`tcp://`·`ws://`)은 클라이언트가 거부한다. 인증·토픽·ACL 은 1차 주소와 같다(infra/cloud Caddy → EMQX WebSocket).
 - QR·딥링크 URL은 항상 `{DH_PUBLIC_BASE_URL}` + 경로(`/pair?c=…`, `/j/{token}`)로 **서버가 생성**하고, companion 모듈은 호스트가 아니라 **경로로 종류를 판별**한다(07 문서 §5)
 - 직렬화: JSON (UTF-8), 필드명 camelCase, 시간은 epoch milliseconds(`ts`), 좌표는 WGS84 소수점 7자리
-- 시각 기준: 모든 `ts` 는 **서버 시계**가 기준이다. `GET /v1/time`(인증 없음) → 200 `{ "serverTimeMs": 1730000000000 }`. 차량 앱은 3회 호출 중 왕복이 가장 짧은 표본으로 `offset = serverTime − (t0 + rtt/2)` 를 잡아(T31 `ClockSync`, 5분마다) 메시지 지연(ms) 표시와 음성 신선도(5 s) 판정에 쓴다 — 차량 시계가 틀려도 동작한다(에뮬레이터 실측: 호스트보다 1.2~1.9 s 늦어 보정 없이는 지연이 음수).
+- 시각 기준: 모든 `ts` 는 **서버 시계**가 기준이다. `GET /v1/time`(인증 없음, protocol `ApiPaths.TIME`) → 200 `ServerTimeResponse { "serverTimeMs": 1730000000000 }`. 차량 앱은 3회 호출 중 왕복이 가장 짧은 표본으로 `offset = serverTime − (t0 + rtt/2)` 를 잡아(T31 `ClockSync`, 5분마다) 메시지 지연(ms) 표시와 음성 신선도(5 s) 판정에 쓴다 — 차량 시계가 틀려도 동작한다(에뮬레이터 실측: 호스트보다 1.2~1.9 s 늦어 보정 없이는 지연이 음수).
+  - **차량이 보내는 봉투 `ts`(2026-11, 계약 4)**: `ClockSync` 가 동기화돼 있으면 서버 시계(`serverNow`), 아니면 기기 시계. 서버는 이 값을 **참고만** 한다 — 신선도·`OFFLINE`·정차 판정(§5.3)은 **서버 수신 시각**으로 하고, 봉투 `ts` 는 지연 측정과 늦은 위험 이벤트 판정(§5.2)에만 쓴다. 서버가 보내는 봉투 `ts` 는 늘 서버 시계다.
+- 재시도 안전 키(2026-11, 계약 3): `POST /groups/{id}/messages`(사용자)·`POST /groups/{id}/voice`(차량)는 선택 헤더 **`Idempotency-Key`**(`[A-Za-z0-9_-]{8,64}`, protocol `ApiHeaders.IDEMPOTENCY_KEY`·`IdempotencyKey.isValid`, 형식이 틀리면 400 `VALIDATION_FAILED`)를 받는다. 서버는 (호출자 ID, 경로, 키) → **첫 성공(2xx) 응답**(상태·본문)을 24시간 기억하고, 같은 키가 다시 오면 저장·팬아웃 없이 그 응답을 그대로 돌려준다(그 사이 그룹이 끝났어도 같은 응답). 4xx·5xx 는 기억하지 않는다 — 같은 키로 다시 보내면 다시 처리한다(예: 429 뒤 재시도). 같은 키의 동시 요청은 첫 요청이 끝날 때까지 기다렸다가 그 응답을 받는다. 본문이 달라도 첫 응답이다.
+- 빈도 제한(2026-11, C094·C106): `POST /auth/login`·`POST /device/code` 는 **IP 당 분당 30회**, `POST /groups/{id}/messages` 는 **그룹당 2초에 1건** — 넘으면 429 `RATE_LIMITED` + 헤더 `Retry-After`(초). IP 는 서버 앞 프록시(Caddy)가 붙인 `X-Forwarded-For` 의 마지막 값(직접 연결이 사설·루프백 주소일 때만). 폴링(`/device/token`)은 따로 429 `SLOW_DOWN`, 무전은 429 `VOICE_RATE_LIMITED`(§2.6).
 - 인증 헤더: `Authorization: Bearer <JWT>`
 - 오류 형식:
 ```json
@@ -39,7 +42,7 @@ companion 모듈은 제공자와 무관하게 아래 교환 한 가지 경로만
 | 401 `INVALID_TOKEN` | `accessToken` 이 비었거나 검증 실패 (`dev`: 서명·만료·발급자 불일치, `typ ≠ user`, 사용자 없음) |
 | 501 `PROVIDER_NOT_SUPPORTED` | `bluelink` · `myhyundai` · `kia_connect` · `genesis_connected` (MVP 미구현) |
 
-`POST /auth/login` 은 `provider` 가 `dev` 일 때만 200 (그 외 400 `VALIDATION_FAILED`). `provider_sub` 는 소문자 이메일 — 대소문자가 달라도 같은 사용자다.
+`POST /auth/login` 은 `provider` 가 `dev` 일 때만 200 (그 외 400 `VALIDATION_FAILED`). `provider_sub` 는 소문자 이메일 — 대소문자가 달라도 같은 사용자다. 같은 IP 에서 분당 30회를 넘으면 접속 키 검사보다 먼저 429 `RATE_LIMITED`(+`Retry-After`) — 키를 맞히려는 반복도 막는다.
 **접속 키**: 서버에 `DH_DEV_LOGIN_KEY` 가 설정돼 있으면(클라우드 필수, 로컬은 비움) 요청 헤더 `X-Dev-Login-Key`(protocol `ApiHeaders.DEV_LOGIN_KEY`)가 같아야 하고, 없거나 다르면 본문을 보기 전에 **403 `FORBIDDEN`** 이다 — 비밀번호 없는 dev 로그인이 공개 서버에서 이메일만으로 남의 계정을 열지 않게(docs/10 R20).
 demo-host 는 빌드 속성 `dhDevLoginKey`, `tools/demo` 는 환경변수 `DH_DEV_LOGIN_KEY` 로 넣는다. `/auth/exchange`·`/auth/refresh` 는 이 키를 보지 않는다(dev 교환은 로그인이 발급한 토큰만 인정).
 
@@ -86,7 +89,10 @@ refresh 토큰은 불투명 문자열(랜덤 32바이트 Base62, 30일, 서버�
 // res 200 — 승인 시점에 차량 행이 만들어진다(또는 호출자에게 이전된다)
 { "vehicleId": "veh_01H...", "nickname": "홍길동 차", "ownerId": "usr_01H..." }
 ```
-승인 규칙: `car_info_id_hash` 가 처음이면 새 차량(호출자에게 활성 대표 차량이 없으면 `isPrimary = true`). 이미 있으면 **호출자에게 소유권 이전** — 닉네임 갱신, 해제 상태 복원, 이전 소유자가 쥔 차량 refresh 토큰 폐기. 이미 발급된 차량 access token 은 만료까지 서명상 유효하므로, **소유자가 바뀌면** 서버가 승인 트랜잭션 커밋 뒤 이전 vehicleId(같은 차량 행)의 `dh/v1/vehicle/{vid}/cmd` 로 `TOKEN_REVOKED`(QoS 1, retain 없음, §5.5)를 보낸다(T33 구현). 같은 소유자의 재페어링은 보내지 않는다.
+승인 규칙: `car_info_id_hash` 가 처음이면 새 차량(호출자에게 활성 대표 차량이 없으면 `isPrimary = true`). 이미 있으면 **호출자에게 소유권 이전** — 닉네임 갱신, 해제 상태 복원, 이전 소유자가 쥔 차량 refresh 토큰 폐기. 이미 발급된 차량 access token 은 만료까지 서명상 유효하므로, **소유자가 바뀌면** 서버가 승인 트랜잭션 커밋 뒤 이전 vehicleId(같은 차량 행)의 `dh/v1/vehicle/{vid}/cmd` 로 `TOKEN_REVOKED`(QoS 1, retain 없음, §5.5)를 보낸다(T33 구현). 같은 소유자의 재페어링은 보내지 않는다. 소유권 이전이면 그 차는 이전 소유자의 활성 그룹에서 빠진다 — `MEMBER_LEFT` reason **`OWNER_CHANGED`**, 문구·payload 의 `nickname` 은 **이전 별명**(새 소유자가 붙인 별명은 옛 그룹에 나가지 않는다).
+`nickname` 은 제어·서식 문자(양방향 재정렬 U+202E 등)를 공백으로 바꾸고 공백을 접은 뒤 1~30자(`PATCH /me/vehicles` 도 같다). 같은 사용자의 승인·대표 지정은 서버가 사용자 단위로 줄 세운다(동시 승인 두 건도 대표는 하나, 500 없음).
+`POST /device/code` 는 인증이 없으므로 같은 IP 에서 분당 30회를 넘으면 429 `RATE_LIMITED`(+`Retry-After`). 만료된 코드는 만료 1시간 뒤 정리된다.
+**마지막 폴링 응답 유실 재수령(2026-11, C112)**: 토큰을 내준 200 응답이 차량에 닿지 못하면 그 코드는 이미 CONSUMED 다. 처음 내준 지 **60 s 안**에 같은 `deviceCode` 로 다시 폴링하고, 그때 내준 refresh 가 **한 번도 쓰이지 않았고** 차량이 같은 소유자에게 연결돼 있으면 그 refresh 를 폐기하고 **새 토큰 쌍을 다시 준다**(200, 살아 있는 refresh 는 하나). 그 밖(이미 refresh 를 썼음·60 s 지남·해제·이전)은 409 `ALREADY_APPROVED` — 차량 앱은 이 409 를 '새 코드 받기'로 처리한다. 유예는 처음 발급 시각부터 재므로 늘지 않는다.
 차량은 페어링 응답과 refresh 응답의 차량 refresh 토큰으로 `POST /auth/refresh`(§1.1)를 써서 24h 차량 토큰을 갱신한다.
 
 | 엔드포인트 | 상태 | 조건 |
@@ -96,7 +102,9 @@ refresh 토큰은 불투명 문자열(랜덤 32바이트 Base62, 30일, 서버�
 | | 429 `SLOW_DOWN` | 마지막으로 받아 준 폴링 뒤 `interval`(3s) 안에 다시 폴링 (Redis `devcode:poll:{deviceCode}`, 15분 TTL) |
 | | 410 `CODE_EXPIRED` | `expiresIn`(600s) 지남, 또는 승인 뒤 폰에서 그 차량이 해제됨 |
 | | 428 `AUTHORIZATION_PENDING` | 아직 승인 전 |
-| | 409 `ALREADY_APPROVED` | 이미 토큰을 받아 간 코드(CONSUMED) |
+| | 200 `DeviceTokenResponse`(재수령) | CONSUMED 지만 처음 발급 60 s 안 + 그때 준 refresh 미사용 → 새 쌍(이전 refresh 폐기) |
+| | 409 `ALREADY_APPROVED` | 이미 토큰을 받아 간 코드(CONSUMED) — 위 재수령 조건이 아님 |
+| `POST /device/code` | 429 `RATE_LIMITED` | 같은 IP 에서 분당 30회 초과(`Retry-After`) |
 | `POST /device/approve` | 200 `VehicleSummary` | 승인 완료 |
 | | 401 / 403 | 사용자 토큰 없음·무효 / 차량 토큰으로 호출 |
 | | 400 `VALIDATION_FAILED` | `userCode` 비었음, `nickname` 이 1~30자가 아님 |
@@ -109,8 +117,11 @@ refresh 토큰은 불투명 문자열(랜덤 32바이트 Base62, 30일, 서버�
 ### 1.3 내 차 (사용자 JWT)
 `GET /me/vehicles` → 200 `[{ vehicleId, nickname, brand, model, isPrimary }]` — `VehicleDirectory` 조회(MVP: 동행 DB 의 해제되지 않은 차량), 대표 차량이 먼저. 없으면 `[]`.
 `PATCH /me/vehicles/{vehicleId}` `{ nickname?, isPrimary? }` → 200 `MyVehicleDto`. 둘 다 없으면 400. `isPrimary: true` 면 같은 사용자의 다른 대표 차량은 자동 해제된다(사용자당 하나 — DB 부분 유니크 인덱스). 내 차가 아니거나 해제된 차는 404 `NOT_FOUND`.
-`DELETE /me/vehicles/{vehicleId}` → 204 페어링 해제: `vehicle.revoked_at` 기록 + 그 차량의 refresh 토큰 폐기 + 활성 그룹에서 제외. 이미 발급된 차량 access token 은 만료(24h)까지 서명상 유효하지만 그룹 API 는 403 이고, 서버가 커밋 뒤 그 차량에 cmd `TOKEN_REVOKED`(QoS 1, retain 없음)를 보내 차량 앱이 스스로 자격 증명을 지운다(T33 구현). 같은 차를 다시 페어링하면 같은 `vehicleId` 가 복원된다. 없으면 404(이때는 보내지 않는다).
-**한계(T33 리뷰)**: `TOKEN_REVOKED` 는 retain 이 없고 차량 MQTT 영속 세션은 300 s 에 만료되므로, **차가 300 s 넘게 오프라인일 때 해제하면 그 cmd 는 사라진다**. 그 뒤 차는 서명상 유효한 access token 으로 MQTT 에 다시 붙어 '연결됨' 으로 보이고, 해제 때의 `MEMBER_LEFT`/`GROUP_ENDED` 도 놓쳐 옛 그룹 세션이 남을 수 있다(그룹 API 는 403 `FORBIDDEN`). 이 상태는 다음 갱신 시점에 정리된다 — 선제 갱신(만료 2시간 전)의 refresh 가 401 이면 '다시 연결 필요' 배너, access token 만료 뒤 점검·인증 거부에서 자격 증명 삭제(`REFRESH_REJECTED`). 즉 최대 약 24시간 '연결됨' 으로 남을 수 있다. 보완 후보(미구현): 앱 시작·재연결 때 가벼운 REST 확인으로 403(차량 해제 전용 코드 필요) 감지, 또는 EMQX authn 에서 `vehicle.active` 확인으로 해제된 차의 CONNECT 거부.
+`DELETE /me/vehicles/{vehicleId}` → 204 페어링 해제: `vehicle.revoked_at` 기록 + 그 차량의 refresh 토큰 폐기 + 활성 그룹에서 제외(`MEMBER_LEFT` reason **`UNPAIRED`**). 이미 발급된 차량 access token 은 만료(24h)까지 서명상 유효하지만 그룹 API 는 403 이고(재접속 동기화 `GET /v1/vehicles/me/group` 만 204 — §2.3), 서버가 커밋 뒤 그 차량에 cmd `TOKEN_REVOKED`(QoS 1, retain 없음)를 보내 차량 앱이 스스로 자격 증명을 지운다(T33 구현). 같은 차를 다시 페어링하면 같은 `vehicleId` 가 복원된다. 없으면 404(이때는 보내지 않는다).
+
+`DELETE /v1/vehicles/me` (**차량 JWT 전용**, 2026-11 계약 2, protocol `ApiPaths.VEHICLES_ME`) → 204. 차량 설정 '연결 해제'가 **먼저** 부른다 — 차가 스스로 페어링을 해제한다. 폰의 해제와 **같은 서비스 경로**: `revoked_at` 기록, 이 차량의 refresh 전부 폐기, 활성 그룹에서 `MEMBER_LEFT` reason `UNPAIRED`(방장이면 승계·마지막이면 종료), 커밋 뒤 `TOKEN_REVOKED`. 멱등이다 — 이미 해제됐거나, **토큰 발급 뒤 다른 계정으로 소유권이 넘어간 차**(토큰 `owner` ≠ 현재 소유자)는 아무것도 바꾸지 않고 204(옛 토큰으로 새 소유자의 연결을 끊지 못하게). access token 이 만료·무효면 401 — 차량 앱은 **204·401 을 모두 성공**으로 보고 로컬 자격 증명을 지운다(요청이 실패해도 로컬 정리는 한다). 사용자 토큰이면 403.
+
+**한계(T33 리뷰)**: `TOKEN_REVOKED` 는 retain 이 없고 차량 MQTT 영속 세션은 300 s 에 만료되므로, **차가 300 s 넘게 오프라인일 때 해제하면 그 cmd 는 사라진다**. 그 뒤 차는 서명상 유효한 access token 으로 MQTT 에 다시 붙어 '연결됨' 으로 보이고, 해제 때의 `MEMBER_LEFT`/`GROUP_ENDED` 도 놓쳐 옛 그룹 세션이 남을 수 있다(그룹 API 는 403 `FORBIDDEN`). **보완(2026-11)**: 차량 앱은 앱 시작·MQTT 재접속 때 `GET /v1/vehicles/me/group`(§2.3)으로 세션을 서버와 맞춘다 — 해제·소유권 이전된 차의 옛 토큰도, 끝난·나간 그룹도 **204**('진행 중 그룹 없음')라 차가 옛 세션을 지운다(403 이 아니다 — 403 이면 차량 앱이 결과를 모름으로 보고 세션을 남긴다, RC-2). 그 밖의 경로로는 다음 갱신 시점에 정리된다 — 선제 갱신(만료 2시간 전)의 refresh 가 401 이면 '다시 연결 필요' 배너, access token 만료 뒤 점검·인증 거부에서 자격 증명 삭제(`REFRESH_REJECTED`). MQTT 브로커 쪽 구독·세션 회수는 하지 않는다(docs/10 R22).
 
 ## 2. 그룹 (group)
 
@@ -131,7 +142,7 @@ refresh 토큰은 불투명 문자열(랜덤 32바이트 Base62, 30일, 서버�
   "mqttTopics": { "state": "dh/v1/group/grp_01H/state", "event": "dh/v1/group/grp_01H/event" }
 }
 ```
-검증: `name` 1~30자(trim), `maxMembers` 2~10, `destination.name` 1~60자, `lat` -90~90, `lon` -180~180 (그 외 400 `VALIDATION_FAILED`). 토큰의 차량이 페어링 해제 상태면 403 `FORBIDDEN`.
+검증: `name` 1~30자, `maxMembers` 2~10, `destination.name` 1~60자, `lat` -90~90, `lon` -180~180 (그 외 400 `VALIDATION_FAILED`). 이름·장소 문자열은 제어·서식 문자를 공백으로 바꾸고 공백을 접은 뒤(trim 포함) 길이를 본다. 토큰의 차량이 페어링 해제 상태면 403 `FORBIDDEN`.
 생성한 차량은 `LEADER`(색 `#2E7DFF`)가 된다. 이미 다른 활성 그룹에 있었으면 그 그룹에서 자동으로 나간다(§2.5).
 
 `POST /groups/{groupId}/invites` (방장 — 방장 차량 JWT 또는 그 차량 소유자의 사용자 JWT) → 200 `InviteDto` `{ token, url, expiresAt }`. **이전 초대는 즉시 만료**된다. 방장이 아니면 403, 종료된 그룹이면 409 `GROUP_ENDED`.
@@ -163,20 +174,25 @@ refresh 토큰은 불투명 문자열(랜덤 32바이트 Base62, 30일, 서버�
 
 - `GET /groups/{groupId}` (사용자·차량) → 200 `GroupDetailResponse` `{ groupId, name, leaderVehicleId, status: ACTIVE|ENDED, destination, members: [Member], snapshot: GroupState|null, recentEvents: [GroupEvent 최신순 ≤20] }`. `snapshot` 은 presence(T24)가 채우기 전까지 null.
 - `GET /me/groups?active=` (사용자) → 200 `[MyGroupDto]` `{ groupId, name, leaderVehicleId, status, destination, memberCount, myVehicleIds, createdAt, endedAt? }` — 내 활성 차량이 멤버인 그룹. `active` 생략 → 전부(ACTIVE 먼저, 최근 생성순), `true` → 진행 중만, `false` → 종료된 것만.
-- `POST /groups/{groupId}/leave` (차량 또는 사용자) → 204. 본문 선택 `{ vehicleId? }`: 차량 JWT 는 자기 자신(본문 무시), 사용자 JWT 는 `vehicleId`(내 차) 또는 생략 시 이 그룹의 내 차 전부. 멤버가 아니면 404(`NOT_FOUND` / 사용자는 `NO_PAIRED_VEHICLE`), 종료된 그룹 409 `GROUP_ENDED`. 그룹 이벤트 `MEMBER_LEFT`(payload `reason: LEFT | SWITCHED_GROUP`, 방장 승계 시 `newLeaderVehicleId`). **차량 앱은 `sourceVehicleId` 가 자기 자신인 `MEMBER_LEFT` 를 받으면 GROUP_ENDED 와 똑같이 로컬 세션을 지우고 그룹 토픽 구독을 해제한다**(T30 — 폰에서 내보낸 차가 그룹을 계속 보고 있지 않도록). 방장이 나가면 가장 먼저 합류한 남은 멤버가 방장(`LEADER_CHANGED`), 마지막 멤버가 나가면 그룹 종료(reason `ALL_LEFT`).
-- `POST /groups/{groupId}/end` (방장) → 204. 그룹 `ENDED`, 초대 만료, Redis 소속·위치 키 삭제(docs/04 §2), 그룹 이벤트 `GROUP_ENDED`(reason `LEADER_ENDED`), 멤버 차량에 cmd `GROUP_ENDED`(T15). 방장 아니면 403, 이미 종료 409 `GROUP_ENDED`. 멤버 행·이벤트 로그는 남는다(이벤트는 24h 뒤 배치 삭제).
+- `GET /v1/vehicles/me/group` (**차량 JWT 전용**, 2026-11 계약 1, protocol `ApiPaths.VEHICLES_ME_GROUP`) → 차량이 지금 들어가 있는 **진행 중** 그룹이 있으면 200 + `GroupJoined`(cmd `GROUP_JOINED` 본문과 같은 모양: `{ groupId, name, leaderVehicleId, destination, topics }` — `destination` 은 최신 그룹 목적지, §2.5), 없으면 **204**(본문 없음). 해제·소유권 이전된 차량의 (서명상 아직 유효한) 옛 토큰도 **204** — 차가 옛 세션을 지우게 하고(§1.3 한계 보완), 이전된 차의 옛 토큰에는 새 소유자의 그룹을 알려 주지 않는다(자격 증명 정리는 refresh 401 경로). 다른 그룹 API 는 이런 토큰에 403 그대로. 사용자 토큰은 403. DB(진실) 기준으로 답하고 Redis 소속 캐시가 다르면 고친다. 차량 앱은 앱 시작·MQTT 재접속 때 이것으로 로컬 세션을 맞춘다(놓친 `GROUP_ENDED`·`MEMBER_LEFT`·`GROUP_JOINED` 복구). 이 경로를 모르는 옛 서버(404·405)면 차량은 조용히 건너뛰고 `GET /groups/{id}` 의 `status == ENDED` 또는 members 에 내 차가 없음으로 옛 세션만 정리한다.
+- `POST /groups/{groupId}/leave` (차량 또는 사용자) → 204. 본문 선택 `{ vehicleId? }`: 차량 JWT 는 자기 자신(본문 무시), 사용자 JWT 는 `vehicleId`(내 차) 또는 생략 시 이 그룹의 내 차 전부. 멤버가 아니면 404(`NOT_FOUND` / 사용자는 `NO_PAIRED_VEHICLE`), 종료된 그룹 409 `GROUP_ENDED`. 그룹 이벤트 `MEMBER_LEFT`(payload `reason` — §5.4 표: `LEFT`(나가기) | `SWITCHED_GROUP`(다른 그룹 생성·합류, §2.5) | `UNPAIRED`(페어링 해제, §1.3) | `OWNER_CHANGED`(소유권 이전, §1.2), 방장 승계 시 `newLeaderVehicleId`; protocol `MemberLeftReason`. 클라이언트는 모르는 값도 '나감'으로 다룬다). **차량 앱은 `sourceVehicleId` 가 자기 자신인 `MEMBER_LEFT` 를 받으면 GROUP_ENDED 와 똑같이 로컬 세션을 지우고 그룹 토픽 구독을 해제한다**(T30 — 폰에서 내보낸 차가 그룹을 계속 보고 있지 않도록). 방장이 나가면 가장 먼저 합류한 남은 멤버가 방장(`LEADER_CHANGED`), 마지막 멤버가 나가면 그룹 종료(reason `ALL_LEFT`).
+- `POST /groups/{groupId}/end` (방장) → 204. 그룹 `ENDED`, 초대 만료, Redis 소속·위치 키 삭제(docs/04 §2), 그룹 이벤트 `GROUP_ENDED`(reason `LEADER_ENDED`), 멤버 차량에 cmd `GROUP_ENDED`(T15). 방장 아니면 403, 이미 종료 409 `GROUP_ENDED`. 멤버 행·이벤트 로그는 남는다 — 이벤트는 **24h 뒤 배치 삭제**(1시간마다, 진행 중 그룹도 같다), 종료 커밋 뒤 위치성 payload(`WAYPOINT_ARRIVED` 의 `lat`·`lon`, `ROUTE_CHANGED` 의 `destination`·`waypoints`)는 바로 지운다(문구·이름은 남는다). 그룹 경유지(§2.5)도 지운다.
 - `POST /groups/{groupId}/leader` `{ vehicleId }` (방장) → 200 `GroupDetailResponse`. 대상이 현재 멤버가 아니면 404, 이미 방장이면 400. 그룹 이벤트 `LEADER_CHANGED` `{ leaderVehicleId, previousLeaderVehicleId }`.
-- `POST /groups/{groupId}/messages` (사용자 JWT — 멤버 차량 소유자) `{ "text": "앞에 휴게소 들르자", "fromVehicleId": "veh_..." }` → 201 `GroupEvent`(type `PASSENGER_MESSAGE`, `speech` = `{닉네임}에서 온 메시지. {text}`, payload `{ text }`). `fromVehicleId` 생략 시 이 그룹의 내 첫 차, 내 멤버 차가 아니면 404 `NO_PAIRED_VEHICLE`. `text` 는 공백 정리 후 1~60자(아니면 400 `INVALID_MESSAGE`). 멤버가 아니면 404, 종료된 그룹 409 `GROUP_ENDED`.
+- `POST /groups/{groupId}/messages` (사용자 JWT — 멤버 차량 소유자) `{ "text": "앞에 휴게소 들르자", "fromVehicleId": "veh_..." }` → 201 `GroupEvent`(type `PASSENGER_MESSAGE`, `speech` = `{닉네임}에서 온 메시지. {text}`, payload `{ text }`). `fromVehicleId` 생략 시 이 그룹의 내 첫 차, 내 멤버 차가 아니면 404 `NO_PAIRED_VEHICLE`. `text` 는 공백 정리 후 1~60자(아니면 400 `INVALID_MESSAGE`). 멤버가 아니면 404, 종료된 그룹 409 `GROUP_ENDED`. **같은 그룹은 2초에 1건**(보낸 사람·차와 무관) — 넘으면 429 `RATE_LIMITED`(+`Retry-After`, 운전자에게 TTS 연타 방지). 선택 헤더 `Idempotency-Key`(머리말) — companion 은 보내기 한 번(사용자 동작 1회)마다 UUID 를 만들어 재시도에 재사용한다. 같은 키의 재시도는 첫 201 응답(같은 `eventId`)을 받고 다시 저장·팬아웃되지 않는다. 검사 순서: 키 형식(400) → (같은 키 재생) → 본문(400) → 그룹·멤버(404) → 종료(409) → 보낸 차(404) → 빈도(429).
 
 ### 2.6 무전(F16, 녹음형 PTT)
 - `POST /groups/{groupId}/voice` (차량 JWT — 멤버 차량만) `multipart/form-data`: `audio`(파일, `Content-Type` ∈ `audio/mp4`(AAC-LC m4a 16 kHz 모노, 기본) · `audio/aac` · `audio/wav`(디버그 주입)), `durationMs`(정수) → 201 `VoiceUploadResponse { voiceId, eventId, durationMs, expiresAtMs }` + 그룹 이벤트 `VOICE_MESSAGE`(§5.4).
   - 검증: 크기 ≤ 512 KB(아니면 413 `VOICE_TOO_LARGE`), `durationMs` 1~16 000(아니면 400 `INVALID_VOICE`), mime 이 목록 밖이면 415 `UNSUPPORTED_VOICE_TYPE`, 같은 차 3초 안 두 번째 업로드 429 `VOICE_RATE_LIMITED`, 멤버 아님 404, 종료된 그룹 409 `GROUP_ENDED`.
+  - 보관 상한(2026-11, C113): 같은 차 **최근 1시간 60건**, 그룹의 **만료 전 무전 합계 50 MB** — 넘으면 같은 429 `VOICE_RATE_LIMITED`(문구로 구분). 그룹 합계는 서로 다른 차의 동시 업로드만큼 조금 넘을 수 있다.
+  - 재시도 안전(2026-11, 계약 3): 선택 헤더 `Idempotency-Key`(머리말) — 차량은 보내지 못한 무전의 다시 보내기·업로드 재시도에 그 무전의 고정 키(보관 ID 기반)를 보낸다. 같은 키의 재시도는 3초 규칙·종료와 무관하게 첫 201 응답(같은 `voiceId`·`eventId`)을 받고, 무전이 두 번 저장·재생되지 않는다. 키 형식이 틀리면 400 `VALIDATION_FAILED`.
   - 보관: 업로드 + 24시간(`expiresAtMs`), 그룹이 끝나면(`GROUP_ENDED`) 그 그룹 무전을 바로 지운다. 서버는 내용을 해석하지 않는다(음성 인식·변환 없음).
 - `GET /groups/{groupId}/voice/{voiceId}` (차량 JWT — 멤버 차량, 또는 사용자 JWT — 멤버 차량 소유자) → 200 오디오 바이트(`Content-Type` = 올린 mime, `Cache-Control: private, max-age=86400`). 만료·삭제 404, 멤버 아님 404.
 
 ### 2.5 소속 규칙 (T14 확정)
 - 차량 하나는 **활성 그룹 하나**에만 속한다(Redis `veh:{vid}:group` 이 문자열 하나인 이유). 다른 그룹을 만들거나(`POST /groups`) 다른 초대로 합류하면(`POST /groups/join`) 이전 그룹에서 자동으로 나간다(`MEMBER_LEFT` reason `SWITCHED_GROUP`, 방장 승계·그룹 종료 규칙 동일). 같은 그룹 재합류만 409 `ALREADY_MEMBER`.
-- 서버는 합류·생성·나가기를 차량 단위 advisory lock → 그룹 행 잠금(ID 순) → 초대 행 잠금 순서로 직렬화한다.
+- 서버는 합류·생성을 **차량 행(`FOR KEY SHARE`) → 차량 단위 advisory lock** → 그룹 행 잠금(ID 순) → 초대 행 잠금 순서로, 나가기를 advisory → 그룹 행 순서로 직렬화한다. 합류·생성은 잠금 뒤 차량을 다시 읽어 그 사이 커밋된 해제·소유권 이전이면 거부한다(합류 404 `NO_PAIRED_VEHICLE`, 생성 403) — 해제와 엇갈린 합류로 해제된 차가 멤버가 되지 않고, 재페어링과 엇갈려도 교착(500)이 나지 않는다(C108).
+- **그룹 경로(2026-11, C032)**: 그룹 목적지는 생성 때 값으로 고정되지 않는다. 방장의 `ROUTE_CHANGED`(§5.2)를 받으면 서버가 그룹 목적지(`travel_group.dest_*`)와 경유지(`route_waypoints`)를 그 경로로 바꾼다 — 늦게 합류한 차의 `GROUP_JOINED.destination`·초대 미리보기·`GET /v1/vehicles/me/group`·스냅샷 `ARRIVED` 판정(§5.3)이 최신 값을 쓴다. 경유지가 있는 그룹에 합류한 차에는 `GROUP_JOINED` 를 보낸 **뒤** 그 차에만 `ROUTE_FOLLOW_PROPOSAL`(§5.5, 새 `proposalId`)을 다시 보낸다(선두는 같은 경로를 한 번만 보내므로). 경유지는 그룹이 끝나면 지운다.
+  - **합류 직후 두 cmd 가 연달아 온다**(같은 cmd 토픽 QoS 1 — `GROUP_JOINED` 다음 곧바로 `ROUTE_FOLLOW_PROPOSAL`). 차량 앱의 합류 직후 로컬 제안("선두차 목적지 {이름}까지 안내할까요?", T30 — 경유지 없음)과 겹치지 않게 한다: 합류 뒤 짧은 시간(예: 3 s) 안에 서버 제안이 오면 로컬 제안은 말하지 않고 서버 제안(목적지 + 경유지)으로 대체한다. 경유지가 없는 그룹에는 서버가 보내지 않으므로 로컬 제안만 나온다.
 - 멤버 색: 10색 팔레트(`#2E7DFF #FF6B2E #2EC27E #FFC42E #B22EFF #2EC9FF #FF2E7D #8A5A2E #0B8A8A #6B7280`)에서 그룹 안에 비어 있는 첫 색. 나간 차량의 색은 재사용된다.
 - Redis 소속 캐시(`grp:{gid}:members`, `veh:{vid}:group`)와 차량 cmd 는 DB 커밋 뒤에만 갱신·발행한다. 진실은 PostgreSQL.
 
@@ -189,7 +205,7 @@ refresh 토큰은 불투명 문자열(랜덤 32바이트 Base62, 30일, 서버�
 }
 ```
 
-## 3. POI (poi)
+## 3. POI (poi) — P1(T50) 예정, **미구현**(서버 매핑 없음 — 호출하면 404)
 `GET /poi/rest-areas?lat=..&lon=..&heading=..&radiusKm=50` → 진행 방향 앞쪽 휴게소 목록
 ```json
 [{ "poiId": "ra_0012", "name": "OO휴게소(부산방향)", "lat": 0, "lon": 0, "distanceKm": 18.2, "hasEvCharger": true }]
@@ -217,7 +233,9 @@ ACL: 차량 `{vid}`는 자신의 `telemetry/event/ack/presence`에만 publish, �
 **구현(T15):**
 - 인증: EMQX JWT(JWKS) + `verify_claims {sub = "${username}"}` → MQTT username 이 곧 신원이다. 차량은 `username = clientId = veh_…`, password = 차량 JWT. 서버 자신은 `username = clientId = srv_<ULID>`, password = 자기 키로 서명한 서버 토큰(`typ = server`, 12h, 재연결 때마다 새로 발급).
 - 인가: EMQX 의 유일한 authorization 소스는 서버의 HTTP 훅 `POST /internal/mqtt/acl` `{ username, clientid, topic, action: publish|subscribe }` → `{ "result": "allow" | "deny" }`. `no_match = deny`. 판정(`mqtt/MqttAclService`): `veh_…` 는 publish 자기 `telemetry/event/ack/presence`, subscribe 자기 `cmd` + 현재 소속 그룹(Redis `veh:{vid}:group` → DB)의 `state/event`; 와일드카드·`$share`·`$SYS`·남의 토픽은 거부. `srv_…` 는 `dh/v1/` 아래 전부 + 공유 구독. 그 외 username 거부. 훅은 `X-Internal-Token`(`DH_INTERNAL_TOKEN`, 비우면 검사 안 함)으로 보호한다.
-- 서버 수신: 공유 구독 → `TopicRouter` 가 토픽의 `{vid}` 와 봉투 `vid` 가 같을 때만 종류별 핸들러(`MqttInboundHandler`)에 전달한다(불일치·형식 오류는 버리고 WARN). 서버 발행 봉투의 `vid` 는 서버 clientId(`srv_…`), `seq` 는 토픽별 단조 증가.
+- 서버 수신: 공유 구독 → `TopicRouter` 가 토픽의 `{vid}` 와 봉투 `vid` 가 같을 때만 종류별 핸들러(`MqttInboundHandler`)에 전달한다(불일치·형식 오류는 버리고 WARN). 서버 발행 봉투의 `vid` 는 서버 clientId(`srv_…`), `seq` 는 토픽별 단조 증가. 서버 자신이 보낸 `cmd` 가 공유 구독(`…/+/#`, No Local 불가)으로 되돌아온 것은 해석·WARN 없이 버린다(C111 — 차량은 ACL 상 `cmd` 에 발행할 수 없다).
+- ACL 의 그룹 구독 판정은 Redis 소속 캐시를 먼저 보고, '아니다'일 때 DB 로 한 번 더 확인해 캐시를 고친다(C101 read-repair). 인가는 SUBSCRIBE 시점 판정이며 나가기·해제 뒤 브로커에 남은 구독은 서버가 회수하지 않는다(알려진 한계, docs/10 R22).
+- 그룹 STATE retained 스냅샷은 MQTT 5 **Message Expiry 30 s** 로 발행한다(2 s 마다 새로 나가므로 정상 동작은 같다) — 종료 때의 삭제를 놓쳐도(종료와 틱의 경합, 재연결 중, 서버 중단) 끝난 그룹의 좌표가 브로커에 남지 않는다. 종료 뒤에는 그 그룹을 발행 대상에서 빼고, 한 틱(3 s) 뒤 retained 를 한 번 더 지운다(C071·C109).
 - cmd `GROUP_JOINED`/`GROUP_ENDED` 는 그룹 변경이 커밋된 뒤 `dh/v1/vehicle/{vid}/cmd` 에 QoS 1 로, 그룹 이벤트는 저장 커밋 뒤 `dh/v1/group/{gid}/event` 에 QoS 1 로 발행된다(봉투 type `EVENT`).
 
 ## 5. 메시지 스키마
@@ -250,7 +268,16 @@ ACL: 차량 `{vid}`는 자신의 `telemetry/event/ack/presence`에만 publish, �
 | `WAYPOINT_ARRIVED` | `{ name, lat, lon }` | NaviHelper `onWayPointArrived` |
 | `DESTINATION_ARRIVED` | `{ name }` | NaviHelper `onDestinationArrived` |
 | `STOPPED` / `RESUMED` | `{ durationS? }` | 속도 0 지속 60s / 재출발 |
-| `PRESET_MESSAGE` | `{ presetId }` | 정차 중 프리셋 버튼 |
+| `PRESET_MESSAGE` | `{ presetId }` | 정차 중 프리셋 버튼 (T53 예정 — 서버는 아직 그룹 이벤트로 만들지 않는다) |
+
+**서버 검증·정리(2026-11, C105)** — 차량이 보낸 값이 그룹 전원의 음성 문구에 들어가므로:
+- `LOW_ENERGY.pct` 가 0~100 밖이면 버린다(기록하지 않음).
+- `WAYPOINT_ARRIVED`·`DESTINATION_ARRIVED` 의 `name` 은 제어·서식 문자를 공백으로 바꾸고 공백을 접어 **40자**로 자른다(저장되는 payload 도 정리한 값, 비면 문구는 '경유지').
+- `ROUTE_CHANGED` 는 좌표(위도 -90~90·경도 -180~180, NaN 불가)와 경유지 **10개 이하**를 확인하고 아니면 버린다. 장소 이름은 같은 정리 뒤 **60자**(비면 '목적지'/'경유지', 문구에는 40자), `poiId` 64자·`address` 200자를 넘으면 버린다.
+- `ROUTE_CHANGED` 는 방장일 때만 그룹 경로(§2.5)를 바꾸고 멤버별 제안을 만든다.
+
+**늦은 위험 이벤트(2026-11, 계약 4 — C017)**: 망이 끊긴 동안 차량 MQTT 클라이언트가 쌓았다가 재연결 뒤 보낸 `HARD_BRAKE`·`AIRBAG_DEPLOYED` 는 '지금' 경고가 아니다. 서버는 지연 = 서버 수신 시각 − 봉투 `ts` − (그 차의 시계 지연 기준값: 최근 10~20분 텔레메트리 '수신 − ts' 의 최솟값, **양수일 때만**)을 구해 **60 s 를 넘으면 기록만** 한다 — `speech` 없음, `audience: []`(§5.4 — 어느 화면·음성에도 안 나온다), 로그 `vehicle event late`. 늦은 이벤트는 중복 억제(120 s) 창을 잡지 않으므로 재연결 직후의 새 급제동은 평소대로 알린다. 기준값을 빼는 이유: 동기화 안 된 늦은 시계 차의 새 이벤트를 늦다고 오판하지 않게(빠른 시계는 빼지 않는다 — 안전 쪽).
+**기록 시점의 소속 확인(C107)**: 차량 이벤트는 저장 트랜잭션 안에서 DB 의 현재 그룹 행을 `FOR SHARE` 로 잡고 진행 중·멤버인지 다시 본 뒤 기록한다 — 종료가 먼저 커밋됐거나 Redis 소속 캐시가 옛 값이면 기록하지 않는다. 기록이 실패하면 중복 억제 창을 푼다.
 
 ### 5.3 그룹 STATE (서버 → 그룹, 2s, retained)
 ```json
@@ -291,31 +318,32 @@ ACL: 차량 `{vid}`는 자신의 `telemetry/event/ack/presence`에만 publish, �
 - `GET /groups/{id}` 의 `recentEvents` 도 같은 `audience` 를 돌려준다(`group_event.audience` JSONB, docs/04 V5). 같은 이벤트를 다시 받는 경우(QoS1 재전송·재접속 시 브로커가 보관한 메시지)에도 본문이 같으므로 대상이 유지된다.
 **STATE 판정 규칙 (presence, T24 구현):** 서버는 2초마다(`dh.presence.snapshot-interval-ms`) 활성 그룹마다 스냅샷을 **retained·QoS 0** 으로 발행하고, 그룹이 끝나면 빈 payload(retained) 로 지운다.
 - `online`: `…/presence` 토픽 값(접속 시 `{"online":true}`, LWT `{"online":false}`)이 있으면 그 값, 없으면 "15초 안에 텔레메트리가 왔는가". 텔레메트리 수신도 online 으로 친다(retained presence 를 놓친 경우 대비).
-- `ageMs`: 마지막 텔레메트리 봉투 `ts` 기준 경과. 위치 없으면 null. `eta`·`energy` 는 차량이 마지막으로 보낸 값을 유지한다(변화 시에만 오므로).
-- `status`: 위치 없음·`online=false`·`ageMs > 60s` → `OFFLINE`; 목적지 반경 150 m 안 + 속도 < 3 km/h → `ARRIVED`; 속도 < 1 km/h 가 60초 이상 지속 → `STOPPED`; 그 외 `DRIVING`. (판정 기준은 `dh.presence.*`.)
+- `ageMs`: 마지막 텔레메트리를 **서버가 받은 시각** 기준 경과(2026-11 C099 — 예전에는 봉투 `ts` 라 시계가 1분 넘게 늦은 차가 달리는 중에도 OFFLINE, 빠른 차는 끊긴 뒤에도 DRIVING 으로 보였다). 위치 없으면 null. `eta`·`energy` 는 차량이 마지막으로 보낸 값을 유지한다(변화 시에만 오므로).
+- `status`: 위치 없음·`online=false`·`ageMs > 60s` → `OFFLINE`; **그룹의 최신 목적지**(§2.5) 반경 150 m 안 + 속도 < 3 km/h → `ARRIVED`; 속도 < 1 km/h 가 60초 이상 지속(정차 시작도 서버 수신 시각) → `STOPPED`; 그 외 `DRIVING`. (판정 기준은 `dh.presence.*`.)
 - `distanceToLeaderM`: 선두차 자신은 0, 선두차·멤버 위치가 둘 다 있을 때 Haversine, 아니면 null.
 - `GET /groups/{id}` 의 `snapshot` 도 같은 규칙으로 요청 시점에 만든다(활성 그룹만, 끝난 그룹은 null).
 
 그룹 이벤트 봉투의 `type`은 공통값 **`EVENT`**(`MessageTypes.EVENT`)이고, 구체 종류는 `data.type`(문자열, `GroupEventType` 이름)으로 구분한다. STATE 봉투의 `type`은 `STATE`, ACK는 `ACK`, 차량 EVENT·CMD 봉투의 `type`은 각 표의 type 값을 그대로 쓴다.
 
-서버 생성 그룹 이벤트 type: 위 차량 이벤트 전부 + `MEMBER_JOINED`, `MEMBER_LEFT`, `LEADER_CHANGED`, `MEMBER_OFFLINE`, `REST_STOP_PROPOSAL`, `REST_STOP_VOTE_RESULT`, `DEVIATION`, `PASSENGER_MESSAGE`, `VOICE_MESSAGE`, `GROUP_ENDED`
+서버 생성 그룹 이벤트 type: 위 차량 이벤트 전부(`PRESET_MESSAGE` 는 T53 예정) + `MEMBER_JOINED`, `MEMBER_LEFT`, `LEADER_CHANGED`, `PASSENGER_MESSAGE`, `VOICE_MESSAGE`, `GROUP_ENDED` — 그리고 **예정(P1 T50/T51, 아직 발행하지 않음)** `MEMBER_OFFLINE`, `REST_STOP_PROPOSAL`, `REST_STOP_VOTE_RESULT`, `DEVIATION`(지금 오프라인은 STATE `status = OFFLINE` 으로만 보인다)
 
 T14 가 만드는 수명주기 이벤트의 payload:
 | type | payload | speech |
 |---|---|---|
 | `MEMBER_JOINED` | `{ vehicleId, nickname, color, role }` | `{nickname}이 그룹에 들어왔어요.` |
-| `MEMBER_LEFT` | `{ vehicleId, nickname, reason: LEFT\|SWITCHED_GROUP, newLeaderVehicleId? }` | `{nickname}이 그룹에서 나갔어요.` (+ ` 이제 {new}이 선두예요.`) — 마지막 멤버면 null |
+| `MEMBER_LEFT` | `{ vehicleId, nickname, reason: LEFT\|SWITCHED_GROUP\|UNPAIRED\|OWNER_CHANGED, newLeaderVehicleId? }` — `UNPAIRED` = 페어링 해제(폰 `DELETE /me/vehicles/{id}`·차량 `DELETE /vehicles/me`, §1.3), `OWNER_CHANGED` = 다른 계정이 같은 차를 승인(§1.2, `nickname` 은 이전 별명). 값은 protocol `MemberLeftReason` | `{nickname}이 그룹에서 나갔어요.` (+ ` 이제 {new}이 선두예요.`) — 마지막 멤버면 null |
+| `ROUTE_CHANGED` | `{ proposalId, destination, waypoints, targets }` (sourceVehicleId = 방장, 정리된 경로 — §5.2. 그룹이 끝나면 `destination`·`waypoints` 를 지운다) | **null**(피드·companion 은 라벨 '경로 변경'). 멤버가 듣는 말은 멤버별 cmd `ROUTE_FOLLOW_PROPOSAL` 의 `speech` 하나뿐 — 차량 앱은 문구가 있는 그룹 이벤트를 멤버 차에서 읽으므로 여기에 문구를 넣으면 경로 변경 하나를 두 문장으로 듣는다(RC-1) |
 | `LEADER_CHANGED` | `{ leaderVehicleId, previousLeaderVehicleId }` | 위임: `이제 {nickname}이 선두예요.` / 이탈 승계: null(MEMBER_LEFT 문구에 포함) |
 | `PASSENGER_MESSAGE` | `{ text }` (sourceVehicleId = 보낸 차) | `{nickname}에서 온 메시지. {text}` |
 | `VOICE_MESSAGE` | `VoiceMessagePayload { voiceId, durationMs, mime, sizeBytes, expiresAtMs }` (sourceVehicleId = 보낸 차, `audience` 없음 = 그룹 전체, F16 §2.6) | `{nickname} 무전` — 받는 차는 이 짧은 알림 뒤 오디오를 재생한다(문구만 읽고 끝내지 않는다) |
-| `GROUP_ENDED` | `{ groupId, reason: LEADER_ENDED\|ALL_LEFT\|ALL_ARRIVED }` (= cmd `GroupEnded`) | `방장이 그룹을 종료했어요.` / `그룹이 종료됐어요.` — 남은 멤버가 없으면 null |
+| `GROUP_ENDED` | `{ groupId, reason: LEADER_ENDED\|ALL_LEFT }` (= cmd `GroupEnded`; `ALL_ARRIVED` 는 예약값 — 아직 발행하지 않음) | `방장이 그룹을 종료했어요.` / `그룹이 종료됐어요.` — 남은 멤버가 없으면 null |
 
 ### 5.5 CMD (서버 → 차량)
 | type | data |
 |---|---|
-| `GROUP_JOINED` | `{ groupId, name, leaderVehicleId, destination, topics }` |
-| `ROUTE_FOLLOW_PROPOSAL` | `{ proposalId, destination, waypoints, speech }` |
-| `REST_STOP_PROPOSAL` | `{ proposalId, poi:{poiId,name,lat,lon,distanceKm}, reason, speech }` |
+| `GROUP_JOINED` | `{ groupId, name, leaderVehicleId, destination, topics }` — `destination` 은 그룹의 최신 목적지(§2.5). `GET /v1/vehicles/me/group` 응답과 같은 모양 |
+| `ROUTE_FOLLOW_PROPOSAL` | `{ proposalId, destination, waypoints, speech }` — 방장 `ROUTE_CHANGED` 커밋 뒤 방장 외 멤버마다, 그리고 경유지가 있는 그룹에 합류한 차에는 `GROUP_JOINED` 바로 뒤 그 차에만(§2.5 — 합류 직후 로컬 제안과 겹치지 않게) |
+| `REST_STOP_PROPOSAL` | `{ proposalId, poi:{poiId,name,lat,lon,distanceKm}, reason, speech }` (P1 T50 예정 — 아직 보내지 않음) |
 | `GROUP_ENDED` | `{ groupId, reason }` |
 | `TOKEN_REVOKED` | `{}` — 페어링 해제·소유권 이전 커밋 뒤(§1.2·§1.3), retain 없음. 차량은 **봉투 `ts`(epoch ms, 서버 시계)를 초 단위로 내린 값 ≤ 지금 차량 토큰의 `iat`(초)** 이면 재페어링 전 MQTT 영속 세션(같은 clientId)에 남아 있던 것으로 보고 무시한다. 같은 초도 무시(`<=`)하므로 해제 직전 같은 초에 갱신·발급된 토큰은 지워지지 않고 남을 수 있다(그 토큰도 다음 갱신 때 401 로 정리된다). 300 s 넘게 오프라인이면 사라진다(§1.3 한계) |
 
@@ -323,8 +351,10 @@ T14 가 만드는 수명주기 이벤트의 payload:
 ```json
 "data": { "proposalId": "prp_01H...", "accepted": true }
 ```
+서버는 `proposalId` 형식(`prp_` + ULID)이 아니거나, 모르는(없거나 15분이 지난) 제안이거나, 그 제안의 대상이 아닌 차의 ACK 는 버리고 로그만 남긴다(기록·Redis 키를 만들지 않음, C076·C110).
 
-## 6. 규칙 엔진 기본값 (insight)
+## 6. 규칙 엔진 기본값 (insight) — P1(T50/T51) 예정, **미구현**
+아래 규칙은 아직 서버에 없다(이벤트·cmd 를 만들지 않는다). 지금 오프라인은 STATE `status = OFFLINE`(§5.3)으로만, 중복 억제는 차량 이벤트의 `evt:dedup` 120 s(정차·재출발 20 s, 그 사이 같은 종류는 기록하지 않음)로만 동작한다.
 
 | 규칙 | 조건 | 결과 |
 |---|---|---|

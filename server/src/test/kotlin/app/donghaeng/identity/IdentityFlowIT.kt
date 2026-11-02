@@ -41,7 +41,12 @@ import org.springframework.http.ResponseEntity
 import org.springframework.http.client.JdkClientHttpRequestFactory
 import org.springframework.http.converter.json.KotlinSerializationJsonHttpMessageConverter
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter
+import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.support.TransactionTemplate
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
@@ -85,6 +90,15 @@ class IdentityFlowIT {
 
     @Autowired
     lateinit var converters: HttpMessageConverters
+
+    @Autowired
+    lateinit var redisTemplate: StringRedisTemplate
+
+    @Autowired
+    lateinit var txManager: PlatformTransactionManager
+
+    @Autowired
+    lateinit var identityRetention: IdentityRetention
 
     private val json = DhJson.json
 
@@ -347,6 +361,141 @@ class IdentityFlowIT {
         assertTrue(kotlin.canWrite(TokenResponse::class.java, MediaType.APPLICATION_JSON))
         assertTrue(kotlin.canRead(LoginRequest::class.java, MediaType.APPLICATION_JSON))
         assertFalse(kotlin.canWrite(ApiError::class.java, MediaType.APPLICATION_JSON), "ApiError is not @Serializable → Jackson")
+    }
+
+    // ---------------------------------------------------------------- 2026-11 점검 반영 (C102·C105·C112·C114·C033)
+
+    private fun deviceCode(carId: String): DeviceCodeResponse =
+        call(HttpMethod.POST, ApiPaths.DEVICE_CODE, json.encodeToString(DeviceCodeRequest(vehicleId = carId, brand = "KIA", model = "EV9"))).decode()
+
+    private fun refresh(raw: String) = call(HttpMethod.POST, ApiPaths.AUTH_REFRESH, json.encodeToString(RefreshRequest(raw)))
+
+    /** 폴링 간격(3 s)을 기다리지 않도록 그 코드의 폴링 기록을 지운다 */
+    private fun forgetPoll(deviceCode: String) {
+        redisTemplate.delete(DeviceAuthService.POLL_KEY_PREFIX + deviceCode)
+    }
+
+    @Test
+    fun `C112 - a lost final poll response is recovered by re-polling within 60 s, only while the issued refresh is unused`() {
+        val user = login("grace-poll@example.com", "유예")
+        val code = deviceCode("CAR-INFO-ID-GRACE-0101")
+        assertEquals(200, approve(code.userCode, "유예 차", user.accessToken).statusCode.value())
+        val lost: DeviceTokenResponse = pollToken(code.deviceCode).decode() // 이 응답이 차량에 닿지 못했다
+        forgetPoll(code.deviceCode)
+        val again = pollToken(code.deviceCode)
+        assertEquals(200, again.statusCode.value(), again.body)
+        val recovered: DeviceTokenResponse = again.decode()
+        assertEquals(lost.vehicle, recovered.vehicle)
+        assertNotEquals(lost.refreshToken, recovered.refreshToken)
+        refresh(lost.refreshToken).assertError(401, ErrorCodes.INVALID_TOKEN) // 잃어버린 응답의 refresh 는 폐기 — 살아 있는 것은 하나
+        assertEquals(200, refresh(recovered.refreshToken).statusCode.value())
+        // 받은 refresh 를 이미 썼으면 응답 유실이 아니다 → 409
+        forgetPoll(code.deviceCode)
+        pollToken(code.deviceCode).assertError(409, ErrorCodes.ALREADY_APPROVED)
+
+        // 유예(처음 발급 + 60 s)가 지나면 409
+        val code2 = deviceCode("CAR-INFO-ID-GRACE-0102")
+        approve(code2.userCode, "유예 차2", user.accessToken)
+        assertEquals(200, pollToken(code2.deviceCode).statusCode.value())
+        jdbc.update("update device_authorization set consumed_at = consumed_at - interval '2 minutes' where device_code = ?", code2.deviceCode)
+        forgetPoll(code2.deviceCode)
+        pollToken(code2.deviceCode).assertError(409, ErrorCodes.ALREADY_APPROVED)
+    }
+
+    @Test
+    fun `C105 - nicknames lose control and bidi characters before the length check`() {
+        val user = login("nick-clean@example.com", "별명")
+        val code = deviceCode("CAR-INFO-ID-NICK-0201")
+        val res = approve(code.userCode, " 아빠‮ 차\n", user.accessToken)
+        assertEquals(200, res.statusCode.value(), res.body)
+        assertEquals("아빠 차", res.decode<VehicleSummary>().nickname)
+        val code2 = deviceCode("CAR-INFO-ID-NICK-0202")
+        approve(code2.userCode, "​\u0007", user.accessToken).assertError(400, ErrorCodes.VALIDATION_FAILED)
+        val patched = call(HttpMethod.PATCH, ApiPaths.meVehicle(res.decode<VehicleSummary>().vehicleId), json.encodeToString(VehiclePatchRequest(nickname = "엄마\u0000차")), user.accessToken)
+        assertEquals("엄마 차", patched.decode<MyVehicleDto>().nickname)
+    }
+
+    @Test
+    fun `C114 - an approval racing another approval of the same user waits for the user lock and is not 500`() {
+        val user = login("race-primary@example.com", "동시 승인")
+        val code = deviceCode("CAR-INFO-ID-RACE-0301")
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            // 먼저 시작한 다른 승인 흉내: 사용자 잠금을 잡고 대표 차량을 넣은 채(커밋 전) 이 승인을 보낸다
+            val pending = TransactionTemplate(txManager).execute {
+                jdbc.queryForObject("select pg_advisory_xact_lock(hashtext(?))", Any::class.java, "owner:${user.user.userId}")
+                jdbc.update(
+                    "insert into vehicle (vehicle_id, car_info_id_hash, owner_id, nickname, is_primary) values (?, ?, ?, ?, true)",
+                    "veh_RACEFIRST0000000000000000", "f".repeat(64), user.user.userId, "먼저 승인된 차",
+                )
+                val inFlight = pool.submit<ResponseEntity<String>> { approve(code.userCode, "두 번째 차", user.accessToken) }
+                Thread.sleep(700)
+                assertFalse(inFlight.isDone, "approval must wait for the user lock")
+                inFlight
+            }!!
+            val res = pending.get(20, TimeUnit.SECONDS)
+            assertEquals(200, res.statusCode.value(), res.body) // 예전에는 uq_vehicle_owner_primary 위반 → 500
+            val primaries = jdbc.queryForObject("select count(*) from vehicle where owner_id = ? and is_primary and revoked_at is null", Long::class.javaObjectType, user.user.userId)
+            assertEquals(1, primaries)
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `C102 - refresh rotation and revoke-all of the same vehicle are serialized, so no rotated token survives an unpair`() {
+        val user = login("rotate-race@example.com", "회전 경합")
+        val code = deviceCode("CAR-INFO-ID-ROTATE-0401")
+        approve(code.userCode, "회전 차", user.accessToken)
+        val device: DeviceTokenResponse = pollToken(code.deviceCode).decode()
+        val vid = device.vehicle.vehicleId
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            // 해제·이전 흉내: 같은 차의 주체 잠금을 잡은 채 회전을 보낸다 → 회전이 기다렸다가 폐기된 토큰을 보고 401
+            val pending = TransactionTemplate(txManager).execute {
+                jdbc.queryForObject("select pg_advisory_xact_lock(hashtext(?))", Any::class.java, "refresh:$vid")
+                val inFlight = pool.submit<ResponseEntity<String>> { refresh(device.refreshToken) }
+                Thread.sleep(700)
+                assertFalse(inFlight.isDone, "rotation must wait for the subject lock")
+                jdbc.update("update refresh_token set revoked_at = now() where subject = ? and revoked_at is null", vid)
+                inFlight
+            }!!
+            pending.get(20, TimeUnit.SECONDS).assertError(401, ErrorCodes.INVALID_TOKEN)
+            assertEquals(0, jdbc.queryForObject("select count(*) from refresh_token where subject = ? and revoked_at is null", Long::class.javaObjectType, vid))
+
+            // 반대 방향: 회전이 주체 잠금을 쥐고 있으면 폰의 해제(revokeAll)가 기다린다
+            val code2 = deviceCode("CAR-INFO-ID-ROTATE-0402")
+            approve(code2.userCode, "회전 차2", user.accessToken)
+            val device2: DeviceTokenResponse = pollToken(code2.deviceCode).decode()
+            val vid2 = device2.vehicle.vehicleId
+            val unpair = TransactionTemplate(txManager).execute {
+                jdbc.queryForObject("select pg_advisory_xact_lock(hashtext(?))", Any::class.java, "refresh:$vid2")
+                val inFlight = pool.submit<ResponseEntity<String>> { call(HttpMethod.DELETE, ApiPaths.meVehicle(vid2), bearer = user.accessToken) }
+                Thread.sleep(700)
+                assertFalse(inFlight.isDone, "revoke-all must wait for the subject lock")
+                inFlight
+            }!!
+            assertEquals(204, unpair.get(20, TimeUnit.SECONDS).statusCode.value())
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `C033 - the retention job deletes device codes expired over an hour ago and expired refresh tokens`() {
+        jdbc.update(
+            "insert into device_authorization (device_code, user_code, car_info_id_hash, status, expires_at) values (?, ?, ?, 'PENDING', now() - interval '2 hours')",
+            "dc_purge_old_000000000000000000000", "PURGE2", "0".repeat(64),
+        )
+        jdbc.update(
+            "insert into device_authorization (device_code, user_code, car_info_id_hash, status, expires_at) values (?, ?, ?, 'PENDING', now() - interval '10 minutes')",
+            "dc_purge_recent_00000000000000000", "PURGE3", "0".repeat(64),
+        )
+        jdbc.update("insert into refresh_token (token_hash, subject, expires_at) values (?, 'usr_PURGE', now() - interval '1 second')", "e".repeat(64))
+        assertTrue(identityRetention.purge() >= 2)
+        assertEquals(0, jdbc.queryForObject("select count(*) from device_authorization where device_code = 'dc_purge_old_000000000000000000000'", Long::class.javaObjectType))
+        assertEquals(1, jdbc.queryForObject("select count(*) from device_authorization where device_code = 'dc_purge_recent_00000000000000000'", Long::class.javaObjectType))
+        assertEquals(0, jdbc.queryForObject("select count(*) from refresh_token where token_hash = ?", Long::class.javaObjectType, "e".repeat(64)))
     }
 
     @Test

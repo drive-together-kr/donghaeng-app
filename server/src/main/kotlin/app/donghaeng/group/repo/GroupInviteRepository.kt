@@ -48,6 +48,10 @@ class GroupInviteRepository(private val jdbc: NamedParameterJdbcTemplate) {
             mapOf("groupId" to groupId, "now" to now.toDb()),
         )
 
+    /** 정기 정리 — [before] 보다 먼저 만료된 초대(재발급·종료로 만료된 것 포함). 지운 수 */
+    fun deleteExpiredBefore(before: Instant): Int =
+        jdbc.update("DELETE FROM group_invite WHERE expires_at < :before", mapOf("before" to before.toDb()))
+
     private fun mapRow(rs: ResultSet, @Suppress("UNUSED_PARAMETER") rowNum: Int) = InviteRecord(
         tokenHash = rs.getString("token_hash"),
         groupId = rs.getString("group_id"),

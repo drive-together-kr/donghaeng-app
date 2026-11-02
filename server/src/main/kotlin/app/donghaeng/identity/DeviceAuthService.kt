@@ -4,7 +4,9 @@ import app.donghaeng.common.security.SecureTokens
 import app.donghaeng.common.config.DhProperties
 import app.donghaeng.identity.jwt.JwtIssuer
 import app.donghaeng.identity.repo.DeviceAuthStatus
+import app.donghaeng.identity.repo.DeviceAuthorizationRecord
 import app.donghaeng.identity.repo.DeviceAuthorizationRepository
+import app.donghaeng.identity.repo.VehicleRecord
 import app.donghaeng.identity.repo.VehicleRepository
 import app.donghaeng.protocol.rest.ApiPaths
 import app.donghaeng.protocol.rest.DeviceApproveRequest
@@ -80,8 +82,8 @@ class DeviceAuthService(
      */
     @Transactional
     fun approve(userId: String, req: DeviceApproveRequest): VehicleSummary {
-        val nickname = req.nickname.trim()
-        if (nickname.isEmpty() || nickname.length > MAX_NICKNAME_LENGTH) throw IdentityErrors.validation("nickname: 1~${MAX_NICKNAME_LENGTH}자여야 해요")
+        // 별명은 모든 이벤트 문구·화면에 들어간다 — 제어·서식 문자(U+202E 등)를 지운 뒤 길이를 본다(C105)
+        val nickname = MyVehicleService.normalizeNickname(req.nickname)
         if (req.userCode.isBlank()) throw IdentityErrors.validation("userCode: 연결 코드가 비어 있어요")
         val userCode = UserCodes.normalize(req.userCode) ?: throw IdentityErrors.codeNotFound()
 
@@ -97,7 +99,12 @@ class DeviceAuthService(
 
     /**
      * 차량 폴링. 404 CODE_NOT_FOUND → 429 SLOW_DOWN → 410 CODE_EXPIRED → 428 AUTHORIZATION_PENDING / 200 / 409 ALREADY_APPROVED.
-     * 승인된 코드는 한 번만 토큰으로 바꾸고 CONSUMED 가 된다.
+     * 승인된 코드는 토큰으로 바꾸고 CONSUMED 가 된다.
+     *
+     * **마지막 응답 유실 재수령(C112, docs/03 §1.2)**: 토큰을 내준 200 응답이 차량에 닿지 못하면(Wi-Fi 끊김·읽기 타임아웃) 차량은 같은 deviceCode 로
+     * 다시 폴링한다. 처음 내준 지 [CONSUMED_REISSUE_GRACE](60 s) 안이고, 그때 내준 refresh 가 **한 번도 쓰이지 않았고**(회전·폐기되지 않음),
+     * 차량이 여전히 같은 소유자에게 연결돼 있으면 그 refresh 를 폐기하고 새 토큰 쌍을 다시 준다(살아 있는 refresh 는 하나). 아니면 409.
+     * deviceCode 는 차량만 아는 32자 비밀이다. 유예는 처음 발급 시각부터 재므로 늘어나지 않는다.
      */
     @Transactional
     fun poll(req: DeviceTokenRequest): DeviceTokenResponse {
@@ -109,7 +116,7 @@ class DeviceAuthService(
 
         return when (auth.status) {
             DeviceAuthStatus.PENDING -> throw IdentityErrors.authorizationPending()
-            DeviceAuthStatus.CONSUMED -> throw IdentityErrors.alreadyApproved()
+            DeviceAuthStatus.CONSUMED -> reissueWithinGrace(auth) ?: throw IdentityErrors.alreadyApproved()
             DeviceAuthStatus.EXPIRED -> throw IdentityErrors.codeExpired()
             DeviceAuthStatus.APPROVED -> {
                 val vehicle = vehicles.findByCarInfoIdHashForUpdate(auth.carInfoIdHash)
@@ -118,17 +125,37 @@ class DeviceAuthService(
                 if (!vehicle.active) throw IdentityErrors.codeExpired()
                 val accessToken = jwt.vehicleToken(vehicle.vehicleId, vehicle.ownerId)
                 val refreshToken = refreshTokens.issue(vehicle.vehicleId)
-                codes.setStatus(auth.deviceCode, DeviceAuthStatus.CONSUMED)
+                codes.markConsumed(auth.deviceCode, clock.instant(), RefreshTokenService.hash(refreshToken))
                 log.info("vehicle token issued vehicleId={} ownerId={}", vehicle.vehicleId, vehicle.ownerId)
-                DeviceTokenResponse(
-                    vehicleAccessToken = accessToken,
-                    refreshToken = refreshToken,
-                    vehicle = VehicleSummary(vehicle.vehicleId, vehicle.nickname, vehicle.ownerId),
-                    mqtt = MqttInfo(uri = props.mqtt.publicUri, clientId = vehicle.vehicleId, username = vehicle.vehicleId),
-                )
+                tokenResponse(accessToken, refreshToken, vehicle)
             }
         }
     }
+
+    /** C112: CONSUMED 코드의 재폴링이 응답 유실 재시도면 새 토큰 쌍, 아니면 null(→ 409) */
+    private fun reissueWithinGrace(auth: DeviceAuthorizationRecord): DeviceTokenResponse? {
+        val consumedAt = auth.consumedAt ?: return null
+        val issuedHash = auth.issuedRefreshHash ?: return null
+        val since = Duration.between(consumedAt, clock.instant())
+        if (since.isNegative || since > CONSUMED_REISSUE_GRACE) return null
+        val vehicle = vehicles.findByCarInfoIdHashForUpdate(auth.carInfoIdHash) ?: return null
+        // 그사이 해제되었거나 다른 계정으로 넘어갔으면 다시 주지 않는다
+        if (!vehicle.active || vehicle.ownerId != auth.approvedBy) return null
+        // 차량이 그 응답을 받아 refresh 를 이미 썼다(회전) — 응답 유실이 아니다
+        if (!refreshTokens.revokeIfUnused(issuedHash)) return null
+        val accessToken = jwt.vehicleToken(vehicle.vehicleId, vehicle.ownerId)
+        val refreshToken = refreshTokens.issue(vehicle.vehicleId)
+        codes.updateIssuedRefresh(auth.deviceCode, RefreshTokenService.hash(refreshToken))
+        log.info("vehicle token re-issued within grace vehicleId={} sinceConsumedMs={} — 마지막 폴링 응답 유실로 보고 다시 준다", vehicle.vehicleId, since.toMillis())
+        return tokenResponse(accessToken, refreshToken, vehicle)
+    }
+
+    private fun tokenResponse(accessToken: String, refreshToken: String, vehicle: VehicleRecord) = DeviceTokenResponse(
+        vehicleAccessToken = accessToken,
+        refreshToken = refreshToken,
+        vehicle = VehicleSummary(vehicle.vehicleId, vehicle.nickname, vehicle.ownerId),
+        mqtt = MqttInfo(uri = props.mqtt.publicUri, clientId = vehicle.vehicleId, username = vehicle.vehicleId),
+    )
 
     /** `devcode:poll:{deviceCode}` 에 마지막으로 받아 준 폴링 시각(ms)을 둔다 (docs/04 §2). interval 안에 다시 오면 429 — 시각은 갱신하지 않는다. */
     private fun throttle(deviceCode: String) {
@@ -148,6 +175,9 @@ class DeviceAuthService(
         const val POLL_INTERVAL_SECONDS = 3
         const val POLL_KEY_PREFIX = "devcode:poll:"
         val CODE_TTL: Duration = Duration.ofSeconds(600)
+
+        /** CONSUMED 뒤 같은 deviceCode 재폴링을 응답 유실 재시도로 받아 주는 시간(처음 발급 시각부터, C112) */
+        val CONSUMED_REISSUE_GRACE: Duration = Duration.ofSeconds(60)
         val POLL_KEY_TTL: Duration = Duration.ofMinutes(15)
         const val MAX_USER_CODE_ATTEMPTS = 5
         const val MAX_CAR_INFO_ID_LENGTH = 256

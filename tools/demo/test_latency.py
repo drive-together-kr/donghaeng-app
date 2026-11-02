@@ -476,6 +476,62 @@ class SendMessagesTokenTest(unittest.TestCase):
         self.assertIn("메시지 2 HTTP 401", r.warnings)
 
 
+class SendMessagesRateLimitTest(unittest.TestCase):
+    """RC-5: 서버의 동승자 메시지는 그룹당 2 s 1건(C106) — 간격을 짧게 줘서(--msg-gap-s 1 + 왕복) 429 가 나도 표본이 빠지지 않는다.
+    429 면 서버 간격보다 조금 더 기다렸다가 한 번만 다시 보낸다(429 응답은 서버가 저장·팬아웃하지 않으므로 중복이 생기지 않는다)"""
+
+    class FakeHttp:
+        script = []   # 메시지 POST 마다 돌려줄 상태(다 쓰면 201)
+        posts = 0
+
+        def __init__(self, server, timeout=15):
+            pass
+
+        def request(self, method, path, body=None, headers=None):
+            if method == "GET":
+                return 200, b'{"serverTimeMs": 5005.0}', 5000.0, 5010.0, False
+            cls = SendMessagesRateLimitTest.FakeHttp
+            cls.posts += 1
+            st = cls.script.pop(0) if cls.script else 201
+            if st == 429:
+                return 429, b'{"code": "RATE_LIMITED"}', 1.0, 2.0, False
+            return 201, ('{"eventId": "evt_01JTEST%06d"}' % cls.posts).encode(), 10.0 * cls.posts, 10.0 * cls.posts + 5, False
+
+        def close(self):
+            pass
+
+    def run_send(self, script, messages=2):
+        SendMessagesRateLimitTest.FakeHttp.script, SendMessagesRateLimitTest.FakeHttp.posts = list(script), 0
+        a = mock.Mock(server="https://1.2.3.4.sslip.io", label="cloud", car_a="emulator-A", car_b="emulator-B", messages=messages, msg_gap_s=1.0,
+                      settle_s=0, out="unused")
+        r = latency.Runner(a)
+        r.group_id = "grp_01JTESTQZ"
+        r.pc_samples = []
+        r.api = mock.Mock(token="t1")
+        with mock.patch.object(latency, "KeepAliveHttp", SendMessagesRateLimitTest.FakeHttp),                 mock.patch.object(latency.time, "sleep") as sleep, mock.patch("builtins.print"):
+            msgs = r.send_messages()
+        return r, msgs, [c.args[0] for c in sleep.call_args_list]
+
+    def test_429_waits_past_the_server_interval_and_resends_once(self):
+        r, msgs, sleeps = self.run_send([201, 429])
+        self.assertEqual([m["status"] for m in msgs], [201, 201])
+        self.assertTrue(all(m["id"] for m in msgs), "429 뒤 다시 보낸 메시지도 표본이 된다")
+        self.assertEqual(SendMessagesRateLimitTest.FakeHttp.posts, 3)
+        self.assertTrue(any(s > latency.SERVER_MSG_INTERVAL_S for s in sleeps), sleeps)
+        self.assertEqual(r.warnings, [f"메시지 2 HTTP 429 → {latency.RATE_LIMIT_RETRY_S}s 뒤 한 번 더 보냄"])
+
+    def test_429_does_not_loop(self):
+        r, msgs, _ = self.run_send([429, 429, 201], messages=1)
+        self.assertEqual([m["status"] for m in msgs], [429])
+        self.assertFalse(msgs[0]["id"])
+        self.assertEqual(SendMessagesRateLimitTest.FakeHttp.posts, 2, "메시지마다 한 번만 다시 보낸다")
+        self.assertIn("메시지 1 HTTP 429", r.warnings)
+
+    def test_default_gap_is_longer_than_the_server_interval(self):
+        args = latency.build_parser().parse_args(["run"])
+        self.assertGreater(args.msg_gap_s, latency.SERVER_MSG_INTERVAL_S)
+
+
 def json_text(body):
     import json
     return json.loads(body.decode("utf-8"))

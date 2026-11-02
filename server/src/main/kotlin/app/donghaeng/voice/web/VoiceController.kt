@@ -1,5 +1,6 @@
 package app.donghaeng.voice.web
 
+import app.donghaeng.protocol.rest.ApiHeaders
 import app.donghaeng.protocol.rest.ApiPaths
 import app.donghaeng.protocol.rest.VoiceUploadResponse
 import app.donghaeng.voice.VoiceAudioPart
@@ -15,6 +16,7 @@ import org.springframework.security.oauth2.jwt.Jwt
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.ResponseStatus
@@ -34,16 +36,20 @@ import org.springframework.web.bind.annotation.RestController
 @RequestMapping(ApiPaths.GROUPS)
 class VoiceController(private val voices: VoiceService) {
 
-    /** 차량 JWT, multipart(`audio` 파일 + `durationMs`) → 201 VoiceUploadResponse / 400·403·404·409·413·415·429 */
+    /**
+     * 차량 JWT, multipart(`audio` 파일 + `durationMs`) → 201 VoiceUploadResponse / 400·403·404·409·413·415·429.
+     * 선택 헤더 `Idempotency-Key` — 같은 키의 재시도는 첫 201 응답을 그대로 받는다(다시 저장·팬아웃 안 함, 계약 3).
+     */
     @PostMapping("/{groupId}/voice")
     @ResponseStatus(HttpStatus.CREATED)
     fun upload(
         @AuthenticationPrincipal jwt: Jwt,
         @PathVariable groupId: String,
+        @RequestHeader(name = ApiHeaders.IDEMPOTENCY_KEY, required = false) idempotencyKey: String?,
         @RequestParam("audio", required = false) audio: Part?,
         @RequestParam("durationMs", required = false) durationMs: String?,
     ): VoiceUploadResponse =
-        voices.upload(jwt.requireVehicle(), groupId, audio?.let(::ServletPartAudio), durationMs)
+        voices.upload(jwt.requireVehicle(), groupId, audio?.let(::ServletPartAudio), durationMs, idempotencyKey)
 
     /** 멤버 차량 또는 멤버 차량 소유자 → 200 오디오 바이트(Content-Type = 올린 mime) / 404 */
     @GetMapping("/{groupId}/voice/{voiceId}")

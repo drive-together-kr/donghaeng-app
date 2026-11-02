@@ -2,7 +2,10 @@ package app.donghaeng.group
 
 import app.donghaeng.common.config.DhProperties
 import app.donghaeng.common.id.Ids
+import app.donghaeng.common.idempotency.Idempotency
+import app.donghaeng.common.text.TextSanitizer
 import app.donghaeng.common.tx.afterCommit
+import app.donghaeng.common.web.RateLimitedException
 import app.donghaeng.event.GroupEventReader
 import app.donghaeng.event.GroupEventSink
 import app.donghaeng.event.SpeechComposer
@@ -36,11 +39,13 @@ import app.donghaeng.protocol.rest.InviteDto
 import app.donghaeng.protocol.rest.InvitePreviewResponse
 import app.donghaeng.protocol.rest.LeaderRequest
 import app.donghaeng.protocol.rest.MemberDto
+import app.donghaeng.protocol.rest.MemberLeftReason
 import app.donghaeng.protocol.rest.MyGroupDto
 import app.donghaeng.protocol.rest.PassengerMessageRequest
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
+import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.Clock
@@ -55,7 +60,10 @@ import java.time.Instant
  *   같은 그룹에 다시 합류하면 409 `ALREADY_MEMBER`.
  * - 방장이 나가면 가장 먼저 합류한 남은 멤버가 방장이 된다(`LEADER_CHANGED`). 마지막 멤버가 나가면 그룹은 종료된다(reason `ALL_LEFT`).
  * - 초대 토큰은 10분, 사용 횟수 `3 × (maxMembers - 1)`(정원은 GROUP_FULL 이 지킨다). 재발급하면 이전 초대는 즉시 만료된다. 그룹이 끝나면 초대도 끝난다.
- * - 잠금 순서: 차량 advisory lock → 그룹 행(FOR UPDATE, 여러 개면 ID 순) → 초대 행. 모든 경로가 이 순서를 지켜 교착을 피한다.
+ * - 잠금 순서: 차량 행(`FOR KEY SHARE`, 생성·합류) → 차량 advisory lock → 그룹 행(FOR UPDATE, 여러 개면 ID 순) → 초대 행.
+ *   차량 행을 먼저 잡는 이유(C108): 재페어링(`VehicleRegistry.register`)이 차량 행 `FOR UPDATE` → `evictVehicle`(차량 advisory) 순서라, 합류·생성이
+ *   advisory 를 쥔 채 `group_member`/`travel_group` INSERT 의 FK 검사(차량 행 KEY SHARE)로 차량 행을 기다리면 교착(40P01 → 500)이었다.
+ *   또 잠금 뒤 차량을 **다시 읽어** 그 사이 커밋된 해제·이전을 본다(해제된 차가 그룹에 들어가지 않게). 나가기·해제의 축출은 차량 행을 잡지 않는다.
  * - Redis 소속 캐시·차량 CMD 는 커밋 뒤에만 내보낸다([afterCommit]).
  */
 @Service
@@ -71,6 +79,8 @@ class GroupService(
     private val commands: VehicleCommandPort,
     private val presence: PresenceApi,
     private val props: DhProperties,
+    private val idempotency: Idempotency,
+    private val appEvents: ApplicationEventPublisher,
     private val clock: Clock,
 ) {
 
@@ -78,14 +88,18 @@ class GroupService(
 
     @Transactional
     fun create(caller: Caller.Vehicle, req: GroupCreateRequest): GroupCreateResponse {
-        val name = req.name.trim()
+        // 그룹 이름은 모든 차의 화면·음성에 나간다 — 제어·서식 문자를 지운 뒤 길이를 본다(C105)
+        val name = TextSanitizer.normalize(req.name)
         if (name.isEmpty() || name.length > MAX_NAME_LENGTH) throw GroupErrors.validation("name: 1~${MAX_NAME_LENGTH}자여야 해요")
         if (req.maxMembers !in MIN_MEMBERS..MAX_MEMBERS) throw GroupErrors.validation("maxMembers: ${MIN_MEMBERS}~${MAX_MEMBERS} 사이여야 해요")
         val destination = validDestination(req.destination)
+        requireActiveVehicle(caller) // 잠그기 전 빠른 거절(해제된 차량 403)
+
+        // C108: 차량 행(KEY SHARE) → 차량 advisory → 다시 읽어 확인 (클래스 설명의 잠금 순서)
+        identity.lockVehicleForShare(caller.vehicleId)
+        members.lockVehicle(caller.vehicleId)
         val vehicle = requireActiveVehicle(caller)
         val now = clock.instant()
-
-        members.lockVehicle(vehicle.vehicleId)
         leavePreviousGroupIfAny(vehicle, now, reason = LEFT_REASON_SWITCHED)
 
         val group = groups.insert(Ids.group(), name, vehicle.vehicleId, destination, req.maxMembers)
@@ -138,10 +152,14 @@ class GroupService(
     @Transactional
     fun join(caller: Caller.User, req: GroupJoinRequest): GroupJoinResponse {
         // 1) 합류할 내 차 (vehicleId 생략 시 대표 차량) — docs/03 §2.2 검사 순서: 차량(404) → 토큰(410)
-        val vehicle = resolveJoinVehicle(caller.userId, req.vehicleId)
+        val candidate = resolveJoinVehicle(caller.userId, req.vehicleId)
         val token = InviteTokens.normalize(req.inviteToken) ?: throw GroupErrors.inviteExpired()
         val tokenHash = InviteTokens.hash(token)
-        members.lockVehicle(vehicle.vehicleId)
+        // C108: 차량 행(KEY SHARE) → 차량 advisory 를 잡은 뒤 **다시 읽는다** — 그 사이 커밋된 해제·소유권 이전이면 404(해제된 차가 멤버가 되지 않게)
+        identity.lockVehicleForShare(candidate.vehicleId)
+        members.lockVehicle(candidate.vehicleId)
+        val vehicle = identity.vehicle(candidate.vehicleId)?.takeIf { it.active && it.ownerId == caller.userId }
+            ?: throw GroupErrors.notMyVehicle()
 
         // 2) 초대를 잠금 없이 읽어 그룹을 알아낸 뒤, 그룹 행(이전 그룹 포함, ID 순) → 초대 행 순서로 잠근다
         val peek = invites.findByHash(tokenHash) ?: throw GroupErrors.inviteExpired()
@@ -179,16 +197,12 @@ class GroupService(
                 put("role", MemberRole.MEMBER.name)
             },
         )
-        val joinedCmd = GroupJoined(
-            groupId = group.groupId,
-            name = group.name,
-            leaderVehicleId = group.leaderVehicleId,
-            destination = checkNotNull(group.destination) { "그룹에 목적지가 없어요" },
-            topics = topicsOf(group.groupId),
-        )
+        val joinedCmd = joinedCmdOf(group)
         afterCommit {
             cache.joined(group.groupId, vehicle.vehicleId)
             commands.groupJoined(vehicle.vehicleId, joinedCmd)
+            // C032: GROUP_JOINED 를 보낸 **뒤** — 그룹 경로에 경유지가 있으면 routesync 가 이 차에만 경로 제안을 다시 보낸다
+            appEvents.publishEvent(VehicleJoinedGroup(group.groupId, vehicle.vehicleId, group.leaderVehicleId, joinedCmd.destination, group.waypoints))
         }
         log.info("member joined groupId={} vehicleId={} members={} switchedFrom={}", group.groupId, vehicle.vehicleId, current.size + 1, previous?.groupId)
         return GroupJoinResponse(groupId = group.groupId, name = group.name, members = memberDtos(members.listActive(group.groupId)))
@@ -203,6 +217,28 @@ class GroupService(
         val current = members.listActive(groupId)
         requireViewer(caller, current)
         return detailOf(group, current)
+    }
+
+    /**
+     * `GET /v1/vehicles/me/group` (계약 1, docs/03 §2.3) — 차량 JWT 의 차가 **지금** 들어가 있는 진행 중 그룹을 cmd `GROUP_JOINED` 본문과 같은 모양으로.
+     * 없으면 null(→ 204). 차량 앱이 앱 시작·MQTT 재접속 때 로컬 세션을 서버와 맞춘다(놓친 GROUP_ENDED·MEMBER_LEFT·GROUP_JOINED 복구).
+     * 진실(DB) 기준으로 답하고, Redis 소속 캐시가 다르면 커밋 뒤 고친다(C101 read-repair).
+     *
+     * 해제·소유권 이전된 차량의 (서명상 아직 유효한) 토큰도 **null(204 '진행 중 그룹 없음')** — 계약 1. 다른 그룹 API 처럼 403 을 주면 차량 앱이
+     * 결과를 모름(Unknown)으로 보고 옛 그룹 세션을 남긴다(RC-2, T33: 오프라인 중 해제돼 TOKEN_REVOKED·MEMBER_LEFT 를 놓친 차). 204 를 받은 차는 세션을 지우고,
+     * 자격 증명은 refresh 401 경로가 정리한다. 이전된 차의 옛 토큰에는 새 소유자의 그룹을 알려 주지 않고, 그 차의 소속 캐시(새 소유자 것)도 건드리지 않는다.
+     */
+    @Transactional(readOnly = true)
+    fun currentGroupOf(caller: Caller.Vehicle): GroupJoined? {
+        val vehicle = activeVehicleOrNull(caller) ?: run {
+            log.info("vehicle group reconcile: revoked or transferred token → none vehicleId={}", caller.vehicleId)
+            return null
+        }
+        val membership = members.findActiveMembershipOf(vehicle.vehicleId)
+        val group = membership?.let { groups.findById(it.groupId) }?.takeIf { it.active }
+        val cached = cache.activeGroupOf(vehicle.vehicleId)
+        if (cached != group?.groupId) afterCommit { cache.repair(vehicle.vehicleId, cached, group?.groupId) }
+        return group?.let(::joinedCmdOf)
     }
 
     /** `GET /me/groups?active=` — 내 활성 차량이 멤버인 그룹. ACTIVE 먼저, 그다음 최근 생성순 */
@@ -295,9 +331,23 @@ class GroupService(
 
     // ---------------------------------------------------------------- §2.3 동승자 메시지 (사용자 JWT)
 
-    /** `POST /groups/{id}/messages` → `PASSENGER_MESSAGE` 그룹 이벤트. 보낸 차 = `fromVehicleId`(내 멤버 차) 또는 이 그룹의 내 첫 차 */
+    /**
+     * `POST /groups/{id}/messages` → `PASSENGER_MESSAGE` 그룹 이벤트. 보낸 차 = `fromVehicleId`(내 멤버 차) 또는 이 그룹의 내 첫 차.
+     *
+     * - 재시도 안전(계약 3): [idempotencyKey](`Idempotency-Key` 헤더)가 있으면 같은 (사용자, 경로, 키)의 첫 201 응답을 24시간 기억해 다시 오면 그대로 돌려준다
+     *   (다시 저장·팬아웃하지 않는다 — 운전자가 같은 메시지를 두 번 듣지 않게).
+     * - 빈도 제한(C106): 같은 그룹의 동승자 메시지는 `dh.rate-limit.passenger-message-interval-ms`(2 s)에 한 건 — 넘으면 429 `RATE_LIMITED`(+`Retry-After`).
+     *   그룹 행 `FOR UPDATE` 뒤 마지막 메시지 시각(DB)과 비교하므로 동시에 보내도 한 건만 통과한다.
+     */
     @Transactional
-    fun postMessage(caller: Caller.User, groupId: String, req: PassengerMessageRequest): GroupEvent {
+    fun postMessage(caller: Caller.User, groupId: String, req: PassengerMessageRequest, idempotencyKey: String? = null): GroupEvent {
+        val key = Idempotency.parseKey(idempotencyKey)
+        return idempotency.run(caller.userId, ApiPaths.groupMessages(groupId), key, 201, GroupEvent.serializer()) {
+            recordMessage(caller, groupId, req)
+        }
+    }
+
+    private fun recordMessage(caller: Caller.User, groupId: String, req: PassengerMessageRequest): GroupEvent {
         val text = normalizeMessage(req.text)
         val group = groups.findByIdForUpdate(groupId) ?: throw GroupErrors.groupNotFound()
         val current = members.listActive(groupId)
@@ -306,6 +356,7 @@ class GroupService(
         if (!group.active) throw GroupErrors.groupEnded()
         val from = req.fromVehicleId?.trim()?.takeIf { it.isNotEmpty() }
         val sender = if (from == null) mine.first() else mine.firstOrNull { it.vehicleId == from } ?: throw GroupErrors.notMyMemberVehicle()
+        requireMessageInterval(groupId)
         val event = events.record(
             groupId = groupId,
             type = GroupEventType.PASSENGER_MESSAGE,
@@ -323,10 +374,12 @@ class GroupService(
 
     /**
      * 페어링 해제·소유권 이전된 차량을 활성 그룹에서 뺀다 ([VehicleLifecycleListener]). 방장이면 승계, 마지막이면 종료.
-     * identity 의 트랜잭션 안에서 불리므로 별도 트랜잭션을 열지 않는다(REQUIRED 전파). 그룹이 없으면 null
+     * identity 의 트랜잭션 안에서 불리므로 별도 트랜잭션을 열지 않는다(REQUIRED 전파). 그룹이 없으면 null.
+     *
+     * @param previousNickname 해제·이전 **전** 별명(C104) — 이전이면 차량 행이 이미 새 소유자의 별명이라 옛 그룹의 `MEMBER_LEFT` 문구·payload 에 이 값을 쓴다
      */
     @Transactional
-    fun evictVehicle(vehicleId: String, reason: String): String? {
+    fun evictVehicle(vehicleId: String, reason: String, previousNickname: String? = null): String? {
         members.lockVehicle(vehicleId)
         val membership = members.findActiveMembershipOf(vehicleId) ?: return null
         val group = groups.findByIdForUpdate(membership.groupId) ?: return null
@@ -336,7 +389,7 @@ class GroupService(
         val vehicle = VehicleInfo(
             vehicleId = vehicleId,
             ownerId = info?.ownerId ?: membership.joinedBy.orEmpty(),
-            nickname = info?.nickname ?: vehicleId,
+            nickname = previousNickname ?: info?.nickname ?: vehicleId,
             brand = info?.brand,
             model = info?.model,
             isPrimary = false,
@@ -349,32 +402,59 @@ class GroupService(
     // ---------------------------------------------------------------- 내부
 
     private fun validDestination(place: Place): Place {
-        val name = place.name.trim()
+        // 목적지 이름은 음성 문구·화면에 들어간다 — 제어·서식 문자를 지운 뒤 길이를 본다(C105)
+        val name = TextSanitizer.normalize(place.name)
         if (name.isEmpty() || name.length > MAX_PLACE_NAME_LENGTH) throw GroupErrors.validation("destination.name: 1~${MAX_PLACE_NAME_LENGTH}자여야 해요")
         if (place.lat.isNaN() || place.lat !in -90.0..90.0) throw GroupErrors.validation("destination.lat: -90~90 사이여야 해요")
         if (place.lon.isNaN() || place.lon !in -180.0..180.0) throw GroupErrors.validation("destination.lon: -180~180 사이여야 해요")
-        val poiId = place.poiId?.trim()?.takeIf { it.isNotEmpty() }
+        val poiId = TextSanitizer.normalize(place.poiId).takeIf { it.isNotEmpty() }
         if (poiId != null && poiId.length > MAX_POI_ID_LENGTH) throw GroupErrors.validation("destination.poiId: 너무 길어요")
-        val address = place.address?.trim()?.takeIf { it.isNotEmpty() }
+        val address = TextSanitizer.normalize(place.address).takeIf { it.isNotEmpty() }
         if (address != null && address.length > MAX_ADDRESS_LENGTH) throw GroupErrors.validation("destination.address: 너무 길어요")
         return Place(lat = place.lat, lon = place.lon, name = name, poiId = poiId, address = address)
     }
 
     private fun normalizeMessage(raw: String): String {
-        val text = raw.replace(CONTROL_CHARS, " ").replace(WHITESPACE, " ").trim()
+        val text = TextSanitizer.normalize(raw)
         if (text.isEmpty()) throw GroupErrors.invalidMessage("text: 비어 있어요")
         if (text.length > MAX_MESSAGE_LENGTH) throw GroupErrors.invalidMessage("text: ${MAX_MESSAGE_LENGTH}자까지 보낼 수 있어요")
         return text
     }
 
+    /** 같은 그룹의 마지막 동승자 메시지가 간격 안이면 429 (C106). 그룹 행을 잠근 뒤 부른다 */
+    private fun requireMessageInterval(groupId: String) {
+        val intervalMs = props.rateLimit.passengerMessageIntervalMs
+        if (intervalMs <= 0) return
+        val last = eventReader.lastOccurredAt(groupId, GroupEventType.PASSENGER_MESSAGE) ?: return
+        val sinceMs = Duration.between(last, clock.instant()).toMillis()
+        if (sinceMs in 0 until intervalMs) {
+            val retryAfterS = ((intervalMs - sinceMs + 999) / 1000).coerceAtLeast(1)
+            log.info("passenger message rate-limited groupId={} sinceLastMs={}", groupId, sinceMs)
+            throw RateLimitedException(retryAfterS, "메시지는 그룹에 ${(intervalMs + 999) / 1000}초에 한 번 보낼 수 있어요. 잠시 뒤 다시 보내 주세요.")
+        }
+    }
+
+    /** cmd `GROUP_JOINED` 본문 = `GET /v1/vehicles/me/group` 응답 — 그룹의 **최신** 목적지(C032) */
+    private fun joinedCmdOf(group: GroupRecord) = GroupJoined(
+        groupId = group.groupId,
+        name = group.name,
+        leaderVehicleId = group.leaderVehicleId,
+        destination = checkNotNull(group.destination) { "그룹에 목적지가 없어요" },
+        topics = topicsOf(group.groupId),
+    )
+
     /**
      * 차량 토큰의 차량이 아직 연결(페어링)된 상태이고, 토큰의 `owner` 클레임이 현재 소유자와 같은지 — 아니면 403.
      * (다른 계정이 같은 차를 다시 페어링하면 이전 소유자 때 발급된 24h 토큰은 서명은 유효해도 여기서 막힌다)
      */
-    private fun requireActiveVehicle(caller: Caller.Vehicle): VehicleInfo {
-        val vehicle = identity.vehicle(caller.vehicleId) ?: throw GroupErrors.vehicleRevoked()
-        if (!vehicle.active) throw GroupErrors.vehicleRevoked()
-        if (caller.ownerId != null && caller.ownerId != vehicle.ownerId) throw GroupErrors.vehicleRevoked()
+    private fun requireActiveVehicle(caller: Caller.Vehicle): VehicleInfo =
+        activeVehicleOrNull(caller) ?: throw GroupErrors.vehicleRevoked()
+
+    /** [requireActiveVehicle] 와 같은 판정 — 없거나 해제됐거나 토큰의 `owner` 가 현재 소유자와 다르면 null */
+    private fun activeVehicleOrNull(caller: Caller.Vehicle): VehicleInfo? {
+        val vehicle = identity.vehicle(caller.vehicleId) ?: return null
+        if (!vehicle.active) return null
+        if (caller.ownerId != null && caller.ownerId != vehicle.ownerId) return null
         return vehicle
     }
 
@@ -556,13 +636,10 @@ class GroupService(
         /** 초대 사용 횟수 = 이 값 × (maxMembers - 1). 정원은 GROUP_FULL 이 지키고, 이 한도는 재사용(나가고 다시 들어오기) 여유를 둔 재생 상한 */
         const val INVITE_USES_PER_SEAT = 3
 
-        /** `MEMBER_LEFT.payload.reason` */
-        const val LEFT_REASON_LEFT = "LEFT"
-        const val LEFT_REASON_SWITCHED = "SWITCHED_GROUP"
-        const val LEFT_REASON_UNPAIRED = "UNPAIRED"
-        const val LEFT_REASON_TRANSFERRED = "OWNER_CHANGED"
-
-        private val CONTROL_CHARS = Regex("[\\p{Cntrl}\\p{Cf}]")
-        private val WHITESPACE = Regex("\\s+")
+        /** `MEMBER_LEFT.payload.reason` — 값은 protocol [MemberLeftReason] (docs/03 §5.4, CLAUDE.md 규칙 7) */
+        const val LEFT_REASON_LEFT = MemberLeftReason.LEFT
+        const val LEFT_REASON_SWITCHED = MemberLeftReason.SWITCHED_GROUP
+        const val LEFT_REASON_UNPAIRED = MemberLeftReason.UNPAIRED
+        const val LEFT_REASON_TRANSFERRED = MemberLeftReason.OWNER_CHANGED
     }
 }

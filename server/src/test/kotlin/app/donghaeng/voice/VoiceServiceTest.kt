@@ -1,6 +1,8 @@
 package app.donghaeng.voice
 
 import app.donghaeng.common.api.ApiException
+import app.donghaeng.common.idempotency.Idempotency
+import app.donghaeng.common.idempotency.InMemoryIdempotencyStore
 import app.donghaeng.event.GroupEventSink
 import app.donghaeng.event.SpeechComposer
 import app.donghaeng.group.Caller
@@ -53,6 +55,8 @@ class VoiceServiceTest {
             if (!ok) throw ApiException(HttpStatus.NOT_FOUND, ErrorCodes.NOT_FOUND, "그룹을 찾을 수 없어요.")
             return active
         }
+
+        override fun lockActiveGroupOfVehicle(vehicleId: String): String? = throw UnsupportedOperationException("차량 이벤트 경로 — 무전은 쓰지 않는다")
     }
 
     private class InMemoryStore : VoiceStore {
@@ -61,6 +65,9 @@ class VoiceServiceTest {
         var findCalls = 0
         override fun lockSender(vehicleId: String) { locked += vehicleId }
         override fun lastCreatedAt(vehicleId: String): Instant? = rows.filter { it.meta.senderVehicleId == vehicleId }.maxOfOrNull { it.meta.createdAt }
+        override fun countSince(vehicleId: String, since: Instant): Int = rows.count { it.meta.senderVehicleId == vehicleId && it.meta.createdAt.isAfter(since) }
+        override fun activeBytesOfGroup(groupId: String, now: Instant): Long =
+            rows.filter { it.meta.groupId == groupId && it.meta.expiresAt.isAfter(now) }.sumOf { it.meta.sizeBytes.toLong() }
         override fun insert(meta: VoiceMeta, audio: ByteArray) { rows += StoredVoice(meta, audio) }
         override fun find(groupId: String, voiceId: String, now: Instant): StoredVoice? {
             findCalls++
@@ -97,7 +104,8 @@ class VoiceServiceTest {
     private val access = FakeAccess(setOf(A, B), nicknames = mapOf(A to "아빠 차", B to "엄마 차"))
     private val store = InMemoryStore()
     private val sink = RecordingSink()
-    private val service = VoiceService(access, store, sink, SpeechComposer(), clock)
+    private val idempotencyStore = InMemoryIdempotencyStore()
+    private val service = VoiceService(access, store, sink, SpeechComposer(), Idempotency(idempotencyStore, clock), clock)
 
     private fun vehicle(vid: String) = Caller.Vehicle(vid, "usr_$vid")
     private fun audio(size: Int = 12_000, mime: String? = "audio/mp4") = Part(mime, ByteArray(size) { (it % 251).toByte() })
@@ -205,5 +213,66 @@ class VoiceServiceTest {
         clock.now = t0
         access.active = false
         assertApiError(404, ErrorCodes.NOT_FOUND) { service.download(vehicle(A), GID, res.voiceId) }
+    }
+
+    // ---------------------------------------------------------------- 보관 상한 (C113)
+
+    @Test
+    fun `보관 상한 — 같은 차 1시간 60건, 그룹 만료 전 합계 50 MB 를 넘으면 429 VOICE_RATE_LIMITED`() {
+        // 한 시간 안에 60건(3초 간격) — 61번째는 3초 규칙을 지켜도 429
+        repeat(VoiceRules.MAX_UPLOADS_PER_WINDOW) { i ->
+            clock.now = t0.plusSeconds(3L * i)
+            service.upload(vehicle(A), GID, audio(size = 1_000), "1000")
+        }
+        clock.now = t0.plusSeconds(3L * VoiceRules.MAX_UPLOADS_PER_WINDOW)
+        assertApiError(429, ErrorCodes.VOICE_RATE_LIMITED) { service.upload(vehicle(A), GID, audio(size = 1_000), "1000") }
+        assertEquals(VoiceRules.MAX_UPLOADS_PER_WINDOW, store.rows.size, "거절은 저장하지 않는다")
+        // 1시간이 지나 처음 것들이 창 밖으로 나가면 다시 된다
+        clock.now = t0.plus(VoiceRules.QUOTA_WINDOW).plusSeconds(1)
+        service.upload(vehicle(A), GID, audio(size = 1_000), "1000")
+
+        // 그룹 합계: 남은 무전이 50 MB 에 가까우면 다른 차도 막힌다
+        val big = VoiceRules.MAX_GROUP_ACTIVE_BYTES - store.rows.sumOf { it.meta.sizeBytes.toLong() } - 10
+        store.rows += StoredVoice(
+            VoiceMeta("vce_FILLER", GID, A, "evt_x", "audio/mp4", 1000, big.toInt(), clock.now, clock.now.plus(Duration.ofHours(24))),
+            ByteArray(0),
+        )
+        assertApiError(429, ErrorCodes.VOICE_RATE_LIMITED) { service.upload(vehicle(B), GID, audio(size = 1_000), "1000") }
+        service.upload(vehicle(B), GID, audio(size = 10), "1000") // 딱 맞으면 통과
+    }
+
+    // ---------------------------------------------------------------- 재시도 안전 키 (계약 3)
+
+    @Test
+    fun `Idempotency-Key — 같은 키 재시도는 첫 응답 그대로, 저장·이벤트는 한 번, 다른 키는 새 업로드`() {
+        val first = service.upload(vehicle(B), GID, audio(), "4000", idempotencyKey = "unsent-voice-0001")
+        // 응답이 유실돼 3초 안에 같은 키로 다시 보냄 — 429 가 아니라 같은 201 본문
+        clock.now = t0.plusMillis(500)
+        val again = service.upload(vehicle(B), GID, audio(), "4000", idempotencyKey = "unsent-voice-0001")
+        assertEquals(first, again)
+        assertEquals(1, store.rows.size, "다시 저장하지 않는다")
+        assertEquals(1, sink.recorded.size, "다시 팬아웃하지 않는다")
+        // 그룹이 끝난 뒤의 재시도도 같은 응답(이미 보낸 무전)
+        access.active = false
+        assertEquals(first, service.upload(vehicle(B), GID, audio(), "4000", idempotencyKey = "unsent-voice-0001"))
+        access.active = true
+        // 다른 차의 같은 키는 별개(호출자별)
+        val other = service.upload(vehicle(A), GID, audio(), "4000", idempotencyKey = "unsent-voice-0001")
+        assertTrue(other.voiceId != first.voiceId)
+        // 형식이 틀린 키는 400
+        assertApiError(400, ErrorCodes.VALIDATION_FAILED) { service.upload(vehicle(B), GID, audio(), "4000", idempotencyKey = "short") }
+        assertApiError(400, ErrorCodes.VALIDATION_FAILED) { service.upload(vehicle(B), GID, audio(), "4000", idempotencyKey = "has space in it") }
+    }
+
+    @Test
+    fun `Idempotency-Key — 실패한 응답은 기억하지 않아 같은 키로 다시 보내면 다시 처리한다`() {
+        service.upload(vehicle(A), GID, audio(), "1000")
+        clock.now = t0.plusMillis(1_000)
+        assertApiError(429, ErrorCodes.VOICE_RATE_LIMITED) { service.upload(vehicle(A), GID, audio(), "1000", idempotencyKey = "retry-key-0001") }
+        assertEquals(0, idempotencyStore.size)
+        clock.now = t0.plusMillis(3_000)
+        val ok = service.upload(vehicle(A), GID, audio(), "1000", idempotencyKey = "retry-key-0001")
+        assertEquals(2, store.rows.size)
+        assertEquals(ok, service.upload(vehicle(A), GID, audio(), "1000", idempotencyKey = "retry-key-0001"))
     }
 }

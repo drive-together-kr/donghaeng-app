@@ -30,6 +30,22 @@ class RefreshTokenRepository(private val jdbc: NamedParameterJdbcTemplate) {
         )
     }
 
+    /**
+     * 주체(usr_/veh_) 단위 직렬화(C102) — 회전(rotate)과 전체 폐기(revokeAll: 해제·소유권 이전)가 엇갈려 회전으로 막 만든(아직 커밋 전) 토큰이
+     * 폐기를 피해 살아남지 않게. 트랜잭션 끝에 풀린다. 잠금 순서: 이 잠금 → refresh_token 행.
+     */
+    fun lockSubject(subject: String) {
+        jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtext(:key))", mapOf("key" to "refresh:$subject"), Any::class.java)
+    }
+
+    /** 잠금 없는 조회 — 주체를 먼저 알아내 [lockSubject] 를 잡기 위해 */
+    fun findByHash(tokenHash: String): RefreshTokenRecord? =
+        jdbc.query(
+            "SELECT token_hash, subject, expires_at, revoked_at, replaced_by FROM refresh_token WHERE token_hash = :hash",
+            mapOf("hash" to tokenHash),
+            ::mapRow,
+        ).firstOrNull()
+
     fun findByHashForUpdate(tokenHash: String): RefreshTokenRecord? =
         jdbc.query(
             "SELECT token_hash, subject, expires_at, revoked_at, replaced_by FROM refresh_token WHERE token_hash = :hash FOR UPDATE",
@@ -63,6 +79,10 @@ class RefreshTokenRepository(private val jdbc: NamedParameterJdbcTemplate) {
             "UPDATE refresh_token SET revoked_at = :now WHERE subject = :subject AND revoked_at IS NULL",
             mapOf("subject" to subject, "now" to now.toDb()),
         )
+
+    /** 정기 정리 — 만료된 토큰(재사용 판정은 만료 전까지만 필요하다). 지운 수 */
+    fun deleteExpired(now: Instant): Int =
+        jdbc.update("DELETE FROM refresh_token WHERE expires_at <= :now", mapOf("now" to now.toDb()))
 
     private fun mapRow(rs: ResultSet, @Suppress("UNUSED_PARAMETER") rowNum: Int) = RefreshTokenRecord(
         tokenHash = rs.getString("token_hash"),

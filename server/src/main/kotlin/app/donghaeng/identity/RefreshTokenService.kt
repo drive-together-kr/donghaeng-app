@@ -36,11 +36,17 @@ class RefreshTokenService(
     /**
      * 회전: 유효한 토큰이면 폐기하고 같은 주체의 새 토큰을 돌려준다(재사용 유예는 클래스 설명). 무효·폐기·만료는 모두 401 INVALID_TOKEN (구분하지 않음).
      * 같은 행을 `FOR UPDATE` 로 잡으므로 같은 토큰의 동시 회전은 줄 선다.
+     *
+     * C102: 행을 잡기 **전에** 주체 잠금([RefreshTokenRepository.lockSubject])을 잡는다 — [revokeAll](해제·소유권 이전)도 같은 잠금을 먼저 잡으므로
+     * 둘이 엇갈려도 한쪽이 끝난 뒤 다른 쪽이 진행한다. 예전에는 회전이 막 INSERT 한(커밋 전) 새 토큰을 READ COMMITTED 의 `UPDATE … WHERE subject` 가
+     * 보지 못해 폐기를 피했고, 그 토큰으로 새 소유자 명의 차량 토큰이 발급될 수 있었다.
      */
     @Transactional
     fun rotate(rawToken: String): Rotation {
         val raw = rawToken.trim()
         if (raw.isEmpty() || raw.length > MAX_TOKEN_LENGTH || !SecureTokens.isBase62(raw)) throw IdentityErrors.invalidToken()
+        val peek = repo.findByHash(hash(raw)) ?: throw IdentityErrors.invalidToken()
+        repo.lockSubject(peek.subject)
         val row = repo.findByHashForUpdate(hash(raw)) ?: throw IdentityErrors.invalidToken()
         val now = clock.instant()
         if (!row.expiresAt.isAfter(now)) {
@@ -72,8 +78,20 @@ class RefreshTokenService(
         return Rotation(row.subject, next)
     }
 
-    /** 주체의 살아 있는 refresh 토큰 전부 폐기 (페어링 해제, 소유자 이전) */
-    fun revokeAll(subject: String): Int = repo.revokeAllBySubject(subject, clock.instant())
+    /** 주체의 살아 있는 refresh 토큰 전부 폐기 (페어링 해제, 소유자 이전). 회전과 직렬화한다([rotate] C102) — 호출자 트랜잭션 안에서 부른다 */
+    fun revokeAll(subject: String): Int {
+        repo.lockSubject(subject)
+        return repo.revokeAllBySubject(subject, clock.instant())
+    }
+
+    /**
+     * 한 번도 쓰이지 않은(살아 있는) 토큰 하나만 폐기 — 페어링 마지막 응답 유실 재수령(C112, `DeviceAuthService.poll`).
+     * 이미 회전됐거나 폐기됐으면 false(= 차량이 그 응답을 받아 이미 썼다).
+     */
+    fun revokeIfUnused(tokenHash: String): Boolean = repo.revoke(tokenHash, clock.instant()) == 1
+
+    /** 정기 정리(`IdentityRetention`) — 만료된 토큰 삭제 */
+    fun deleteExpired(): Int = repo.deleteExpired(clock.instant())
 
     companion object {
         private val log = LoggerFactory.getLogger(RefreshTokenService::class.java)

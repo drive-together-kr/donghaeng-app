@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Component
 import java.time.Clock
+import java.time.Instant
 
 /**
  * 그룹 이벤트를 남기는 창구 (docs/06 §2 `event` 패키지의 `GroupEventPublisher` 자리).
@@ -41,6 +42,9 @@ interface GroupEventReader {
 
     /** 최신순, 최대 [limit] 개 */
     fun recent(groupId: String, limit: Int = 20): List<GroupEvent>
+
+    /** 그룹의 [type] 이벤트 가운데 가장 최근 기록 시각(서버 시계). 없으면 null — 동승자 메시지 빈도 제한(C106) */
+    fun lastOccurredAt(groupId: String, type: GroupEventType): Instant? = null
 }
 
 /** 커밋 뒤 발행되는 Spring 애플리케이션 이벤트 — T15 의 MQTT 발행기가 `@TransactionalEventListener`/`@EventListener` 로 받는다 */
@@ -79,6 +83,8 @@ class DbGroupEventStore(
     }
 
     override fun recent(groupId: String, limit: Int): List<GroupEvent> = repo.listRecent(groupId, limit)
+
+    override fun lastOccurredAt(groupId: String, type: GroupEventType): Instant? = repo.lastOccurredAt(groupId, type.name)
 
     companion object {
         private val log = LoggerFactory.getLogger(DbGroupEventStore::class.java)

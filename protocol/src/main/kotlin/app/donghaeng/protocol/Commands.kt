@@ -79,7 +79,7 @@ data class RestAreaPoi(
     val hasEvCharger: Boolean = false,
 )
 
-/** `GROUP_ENDED` 본문. [reason] 예: LEADER_ENDED, ALL_ARRIVED */
+/** `GROUP_ENDED` 본문. [reason] = `LEADER_ENDED`(방장 종료) | `ALL_LEFT`(마지막 멤버가 나감). `ALL_ARRIVED` 는 예약값(아직 발행하지 않음, docs/03 §5.4) */
 @Serializable
 data class GroupEnded(
     val groupId: String,

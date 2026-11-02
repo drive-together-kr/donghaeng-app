@@ -25,7 +25,8 @@ class VehicleLifecycleListener(
             VehicleUnpaired.Reason.REVOKED -> GroupService.LEFT_REASON_UNPAIRED
             VehicleUnpaired.Reason.TRANSFERRED -> GroupService.LEFT_REASON_TRANSFERRED
         }
-        val groupId = groups.evictVehicle(event.vehicleId, reason)
+        // 소유권 이전이면 옛 그룹에는 옛 별명으로 알린다(C104)
+        val groupId = groups.evictVehicle(event.vehicleId, reason, event.previousNickname)
         if (groupId != null) log.info("vehicle evicted from group vehicleId={} groupId={} reason={}", event.vehicleId, groupId, reason)
         // 이미 발급된 차량 access token 은 만료(24h)까지 서명상 유효 — 차량이 스스로 지우게 알린다(그 차가 지금 재페어링 중이면 iat 비교로 무시한다)
         afterCommit { commands.tokenRevoked(event.vehicleId) }

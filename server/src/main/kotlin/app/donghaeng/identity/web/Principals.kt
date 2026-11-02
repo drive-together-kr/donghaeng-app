@@ -16,3 +16,11 @@ internal fun Jwt.requireUserId(): String {
     }
     return subject
 }
+
+/** 차량 토큰의 (`sub` = veh_…, `owner` 클레임 = 발급 시점 소유자). `SecurityConfig` 가 `/v1/vehicles/me` 를 ROLE_VEHICLE 로 먼저 막는다 */
+internal fun Jwt.requireVehicleClaims(): Pair<String, String?> {
+    if (getClaimAsString(JwtIssuer.CLAIM_TYP) != JwtIssuer.TYP_VEHICLE) {
+        throw ApiException(HttpStatus.FORBIDDEN, ErrorCodes.FORBIDDEN, "차량 토큰이 필요해요.")
+    }
+    return subject to getClaimAsString(JwtIssuer.CLAIM_OWNER)
+}

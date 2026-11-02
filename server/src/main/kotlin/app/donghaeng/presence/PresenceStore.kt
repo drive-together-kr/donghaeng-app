@@ -20,7 +20,7 @@ data class VehicleState(
     val speedKph: Float?,
     val gear: String?,
     val locSource: LocSource?,
-    /** 마지막 텔레메트리 봉투 ts(epoch ms) */
+    /** 마지막 텔레메트리를 **서버가 받은** 시각(epoch ms, 서버 시계 — C099) */
     val ts: Long,
     val eta: Eta?,
     /** ETA 를 마지막으로 받은 시각 */
@@ -34,7 +34,7 @@ data class VehicleState(
  * presence 의 실시간 상태 저장소 (docs/04 §2, 모두 TTL). 구현은 Redis([RedisPresenceStore]); 테스트는 메모리 구현으로 바꿔 끼운다.
  */
 interface PresenceStore {
-    /** 텔레메트리 한 건 반영. ETA·에너지는 **있을 때만** 덮어쓴다(차량은 변화 시에만 보낸다) */
+    /** 텔레메트리 한 건 반영. [tsMs] = 서버 수신 시각. ETA·에너지는 **있을 때만** 덮어쓴다(차량은 변화 시에만 보낸다) */
     fun recordTelemetry(vehicleId: String, telemetry: Telemetry, tsMs: Long)
 
     /** 그룹 GEO 인덱스 `grp:{gid}:geo` 갱신 (insight 가 근접 조회에 쓴다) */
