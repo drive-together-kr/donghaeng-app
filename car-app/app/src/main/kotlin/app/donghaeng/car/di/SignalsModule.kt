@@ -93,15 +93,14 @@ object SignalsModule {
     /** T27: 그룹 이벤트 → 음성 큐(우선순위·신선도 5s·내 이벤트 생략·대상 아님 생략) */
     @Provides
     @Singleton
-    fun provideVoiceAnnouncer(@ApplicationContext context: Context, sessionManager: MqttSessionManager, voice: VoiceAdapter, clockSync: ClockSync): VoiceAnnouncer =
+    fun provideVoiceAnnouncer(sessionManager: MqttSessionManager, voice: VoiceAdapter, clockSync: ClockSync): VoiceAnnouncer =
         // 신선도(5s) 판정은 서버 시계 기준(T31 ClockSync) — 차량 시계가 틀려도 옛 이벤트만 생략한다.
         // 급제동 대상(audience)이 없으면 최신 스냅샷으로 앞뒤를 본다(EventAudience)
-        // 그룹이 끝나거나 바뀌면 옛 그룹 문장을 버리고(B060), '음성 안내' 스위치는 저장한다(B066)
         VoiceAnnouncer(
             events = sessionManager.groupEventsReceived, myVehicleId = { sessionManager.myVehicleId }, voice = voice,
             groupState = { sessionManager.groupState.value }, clock = { clockSync.serverNow() },
+            // 그룹이 끝나거나 바뀌면 옛 그룹 문장을 버린다(B060)
             groupIds = kotlinx.coroutines.flow.flow { sessionManager.session.collect { emit(it?.groupId) } },
-            settings = app.donghaeng.car.domain.voice.SharedPrefsVoiceSettingsStore(context),
         )
 
     /** T31: 서버 시각 동기화 — 시작 직후·5분마다 `GET /v1/time` 3회, 왕복 최소 표본 */

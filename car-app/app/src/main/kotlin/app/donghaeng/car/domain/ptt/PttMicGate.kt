@@ -11,17 +11,25 @@ import android.content.pm.ServiceInfo
  *
  * - API 30 미만 → 제한 없음(true)
  * - 동행 화면이 보임 → true
- * - 붙은 포그라운드 타입에 microphone 비트가 있음 → true
- * - 그 밖(서비스 없음·타입 모름 포함) → false
+ * - 붙은 포그라운드 타입에 microphone 비트가 없음(서비스 없음·타입 모름 포함) → false
+ * - **API 30~33** 에서 서비스를 백그라운드에서 시작했음([startedWhileVisible] = false) → false (RB-6) — 이 버전은 백그라운드 `startForeground` 에도
+ *   microphone 타입이 예외 없이 붙지만 while-in-use 마이크는 막혀 있다(API 34 부터는 막히면 `SecurityException` 이라 붙은 타입만 보면 된다).
+ *   null(모름 — 서비스가 아직 그 값을 알려 주지 않음)은 예전처럼 타입만 본다.
+ * - 그 밖 → true
  */
 object PttMicGate {
     /** `Build.VERSION_CODES.R` */
     const val SDK_WHILE_IN_USE = 30
 
-    fun usable(sdk: Int, appVisible: Boolean, attachedFgsType: Int?): Boolean = when {
+    /** `Build.VERSION_CODES.UPSIDE_DOWN_CAKE` — 포그라운드 서비스 타입을 시작할 때 검사(막히면 SecurityException) */
+    const val SDK_FGS_TYPE_ENFORCED = 34
+
+    fun usable(sdk: Int, appVisible: Boolean, attachedFgsType: Int?, startedWhileVisible: Boolean? = null): Boolean = when {
         sdk < SDK_WHILE_IN_USE -> true
         appVisible -> true
         attachedFgsType == null -> false
-        else -> attachedFgsType and ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE != 0
+        attachedFgsType and ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE == 0 -> false
+        sdk < SDK_FGS_TYPE_ENFORCED && startedWhileVisible == false -> false
+        else -> true
     }
 }

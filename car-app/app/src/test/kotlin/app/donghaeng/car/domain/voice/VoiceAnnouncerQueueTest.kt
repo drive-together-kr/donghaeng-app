@@ -33,7 +33,7 @@ import org.junit.Test
 
 /**
  * 음성 큐와 어댑터 사이 — 한 번에 한 문장(끝 신호를 기다림, B011), 녹음 시작 때 넘긴 NORMAL·LOW 를 멈추고 다시 줄 세움(B013),
- * 그룹이 끝나면 옛 그룹 문장 버림(B060), '음성 안내' 스위치 저장(B066).
+ * 그룹이 끝나면 옛 그룹 문장 버림(B060), '음성 안내' 스위치는 메모리 값만(저장은 A120 UserSettings — RB-5).
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class VoiceAnnouncerQueueTest {
@@ -104,10 +104,10 @@ class VoiceAnnouncerQueueTest {
     private fun TestScope.event(id: String, type: GroupEventType, speech: String, severity: Severity = Severity.INFO, source: String? = "veh_A") =
         ReceivedGroupEvent(GroupEvent(id, type.name, source, severity, speech, JsonObject(emptyMap())), envelopeTsMs = testScheduler.currentTime, receivedAtMs = testScheduler.currentTime)
 
-    private fun TestScope.announcer(voice: VoiceAdapter, groupIds: kotlinx.coroutines.flow.Flow<String?> = kotlinx.coroutines.flow.emptyFlow(), settings: VoiceSettingsStore = InMemoryVoiceSettingsStore()) =
+    private fun TestScope.announcer(voice: VoiceAdapter, groupIds: kotlinx.coroutines.flow.Flow<String?> = kotlinx.coroutines.flow.emptyFlow()) =
         VoiceAnnouncer(
             events, { "veh_ME" }, voice, dispatcher = StandardTestDispatcher(testScheduler), clock = { testScheduler.currentTime },
-            groupIds = groupIds, settings = settings,
+            groupIds = groupIds,
         )
 
     @Test
@@ -225,16 +225,17 @@ class VoiceAnnouncerQueueTest {
     }
 
     @Test
-    fun `the voice switch is saved and restored, a temporary debug switch is not saved (B066)`() = runTest {
-        val store = InMemoryVoiceSettingsStore()
-        val a = announcer(RecordingVoice(), settings = store)
-        a.setEnabled(false)
-        assertFalse(store.value)
-        val restarted = announcer(RecordingVoice(), settings = store)
-        assertFalse("프로세스를 다시 시작해도 꺼짐 유지", restarted.state.value.enabled)
-        restarted.setEnabled(true, persist = false)
-        assertFalse("디버그 일시 전환은 저장하지 않는다", store.value)
-        assertTrue(restarted.state.value.enabled)
-        assertEquals(1, store.saves)
+    fun `the voice switch is memory only - a diagnostic toggle does not survive a restart, saving is UserSettings' job (RB-5)`() = runTest {
+        val a = announcer(RecordingVoice())
+        a.setEnabled(false)                       // 진단 카드 [음성 안내 끄기]·디버그 리시버 voice
+        assertFalse(a.state.value.enabled)
+        val restarted = announcer(RecordingVoice())
+        assertTrue("앱을 다시 시작하면 켜진 채 시작 — 설정 화면에서 끈 값만 A120 UserSettings 가 다시 넣는다", restarted.state.value.enabled)
+        // 저장 경로가 둘이 되지 않게(설정 화면 저장 dh_settings 와 따로 dh_voice 에 진단 토글까지 저장하던 B066 판) — 음성 엔진 쪽은 SharedPreferences 를 쓰지 않는다
+        val base = listOf(java.io.File("src"), java.io.File("app/src")).first { java.io.File(it, "main/kotlin").isDirectory }
+        val voiceDomain = java.io.File(base, "main/kotlin/app/donghaeng/car/domain/voice")
+        assertTrue(voiceDomain.isDirectory)
+        val offenders = voiceDomain.walkTopDown().filter { it.isFile && it.extension == "kt" && it.readText().contains("getSharedPreferences") }.map { it.name }.toList()
+        assertEquals("domain/voice 는 음성 안내 스위치를 저장하지 않는다", emptyList<String>(), offenders)
     }
 }

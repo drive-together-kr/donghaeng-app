@@ -30,7 +30,9 @@ import java.util.Locale
  * 2. `pleos.car.permission.STT_SERVICE`(normal) 승인 — 없으면 SDK 의 모든 호출이 SecurityException.
  * 3. `initialize` 가 [INIT_TIMEOUT_MS] 안에 onSuccess. onFailure·예외는 영구 실패로 돌려 앱이 사는 동안 다시 시도하지 않는다.
  *    **시간 초과는 이번만 실패**(B045 — 차량 부팅 직후 CaaS 콜드 스타트로 3 s 를 넘겨도 프로세스 내내 음성 확인이 빠지지 않게): 다음 녹음 때 다시 시도하고,
- *    [PleosSttInitPolicy.MAX_TIMEOUTS]번 연달아 넘길 때만 영구 실패로 굳힌다(TTS 의 `PleosTtsInitPolicy` 와 같은 생각).
+ *    [PleosSttInitPolicy.MAX_TIMEOUTS] 사이클 연달아 넘길 때만 영구 실패로 굳힌다(TTS 의 `PleosTtsInitPolicy` 와 같은 생각). 시간 초과는 **녹음 사이클마다 한 번만**
+ *    세고, 녹음 중 [prepare] 가 이미 시간 초과로 끝난 사이클의 [listen] 은 새 초기화(또 3 s)를 시작하지 않고 바로 이번만 실패("init-slow")로 다음 단계에
+ *    시간을 넘긴다(RB-4 — 확인 5 s 중 3 s 를 아무것도 듣지 않은 채 보내지 않게, [PleosSttCycleTimeouts]).
  *
  * **판정(B014)**: 부분 결과(`isFinal=false` — SDK `UpdateSttResult`)로는 **아니만** 바로 끝내고, **네는 최종 결과**(`isFinal=true` — 끝점 검출 뒤
  * `UpdateSttCompleted`)에서만 확정한다([YesNoParser.streamVerdict]) — "어… 아니 보내지 마"의 첫 부분 결과 "어"로 무전이 나가지 않게.
@@ -58,8 +60,8 @@ class PleosSttYesNoRecognizer(context: Context) : YesNoRecognizer {
     /** 초기화 영구 실패 사유 — 있으면 앱이 사는 동안 이 단계를 건너뛴다 */
     @Volatile private var initFailure: String? = null
 
-    /** 연달아 난 초기화 시간 초과 수(성공하면 0) — [PleosSttInitPolicy] */
-    @Volatile private var initTimeouts = 0
+    /** 녹음 사이클별 초기화 시간 초과(연달아 난 수 — 성공하면 0, 사이클마다 한 번만 센다) — [PleosSttCycleTimeouts] */
+    private val timeouts = PleosSttCycleTimeouts()
 
     private val idleRelease = Runnable { releaseReady("idle") }
 
@@ -82,20 +84,27 @@ class PleosSttYesNoRecognizer(context: Context) : YesNoRecognizer {
     /** 녹음하는 동안 CaaS 연결·초기화를 미리 해 둔다(실패는 [initFailure] 로 남는다) */
     override suspend fun prepare() {
         if (unavailableReason() != null) return
-        ensureReady()
+        // 새 녹음 사이클 — 이번 사이클의 시간 초과는 아직 없다
+        timeouts.beginCycle()
+        ensureReady(inListen = false)
         withContext(Dispatchers.Main) { scheduleIdleRelease() }
     }
 
     /**
-     * 초기화된 인스턴스 — 없으면 만들고 `initialize` 를 기다린다(최대 [INIT_TIMEOUT_MS]). 영구 실패면 null.
+     * 초기화된 인스턴스 — 없으면 만들고 `initialize` 를 기다린다(최대 [INIT_TIMEOUT_MS]). 영구 실패·시간 초과면 null.
+     * [inListen] 이고 이번 사이클에 이미 시간 초과가 났으면(녹음 중 prepare) 새로 만들지 않고 바로 null(RB-4).
      * 기다리는 중에 취소되면 만든 인스턴스를 놓고(release) 실패로 남기지 않는다 — 다음 확인에서 다시 시도한다.
      */
-    private suspend fun ensureReady(): SpeechToText? = initLock.withLock {
+    private suspend fun ensureReady(inListen: Boolean): SpeechToText? = initLock.withLock {
         if (initFailure != null) return@withLock null
         withContext(Dispatchers.Main) {
             // 곧 쓴다 — 쉬는 동안 놓기 타이머를 멈춘다(listen 이 끝나면 다시 건다)
             main.removeCallbacks(idleRelease)
             ready?.let { return@withContext it }
+            if (inListen && !timeouts.mayStartInListen()) {
+                DhLog.i("ptt: pleos stt init-slow — 이번 녹음에서 이미 시간 초과 → 새 초기화 없이 다음 단계")
+                return@withContext null
+            }
             val stt = try {
                 SpeechToText(appContext, Mode.ON_DEVICE)
             } catch (e: Throwable) {
@@ -117,16 +126,17 @@ class PleosSttYesNoRecognizer(context: Context) : YesNoRecognizer {
                 val result = withTimeoutOrNull(INIT_TIMEOUT_MS) { initialized.await() }
                 when {
                     !initialized.isCompleted -> {
-                        // 시간 초과는 이번만 — 연달아 [MAX_TIMEOUTS]번이면 굳힌다(B045)
-                        val n = ++initTimeouts
-                        if (PleosSttInitPolicy.permanentAfter(n)) initFailure = "init-timeout x$n"
+                        // 시간 초과는 이번만 — 사이클마다 한 번 세어 연달아 [MAX_TIMEOUTS] 사이클이면 굳힌다(B045·RB-4)
+                        val permanent = timeouts.onTimeout()
+                        val n = timeouts.consecutiveTimeouts
+                        if (permanent) initFailure = "init-timeout x$n"
                         else DhLog.i("ptt: pleos stt init-timeout ${INIT_TIMEOUT_MS}ms ($n/${PleosSttInitPolicy.MAX_TIMEOUTS}) → 이번만 건너뜀, 다음 녹음 때 다시")
                     }
                     result != null -> initFailure = "init $result"
                     else -> {
                         ok = true
                         ready = stt
-                        initTimeouts = 0
+                        timeouts.onSuccess()
                         DhLog.i("ptt: pleos stt initialized ${SystemClock.elapsedRealtime() - started}ms")
                     }
                 }
@@ -143,8 +153,19 @@ class PleosSttYesNoRecognizer(context: Context) : YesNoRecognizer {
     }
 
     override suspend fun listen(timeoutMs: Long): ListenResult {
+        // prepare 없이 듣는 호출(경로 제안 질문 등)은 이 듣기 하나가 사이클이다. 끝나면 사이클을 닫는다
+        timeouts.beginListen()
+        try {
+            return listenInCycle(timeoutMs)
+        } finally {
+            timeouts.endCycle()
+        }
+    }
+
+    private suspend fun listenInCycle(timeoutMs: Long): ListenResult {
         val t0 = SystemClock.elapsedRealtime()
-        val stt = ensureReady() ?: return ListenResult.Failed(initFailure ?: if (initTimeouts > 0) "init-timeout" else "init-unavailable", permanent = initFailure != null)
+        // 영구 실패가 아니면 시간 초과(이번 호출 또는 이번 녹음의 prepare) — 이번만 실패로 다음 단계에 시간을 넘긴다
+        val stt = ensureReady(inListen = true) ?: return ListenResult.Failed(initFailure ?: "init-slow", permanent = initFailure != null)
         // 연결을 여기서 기다렸으면 그만큼 듣기를 줄인다 — 체인의 남은 시간(확인 5초)을 넘지 않게
         val budget = timeoutMs - (SystemClock.elapsedRealtime() - t0)
         if (budget < MIN_LISTEN_MS) {
@@ -240,4 +261,62 @@ internal object PleosSttInitPolicy {
 
     /** 연달아 [consecutiveTimeouts]번 시간 초과 → 영구 실패로 굳힐까 */
     fun permanentAfter(consecutiveTimeouts: Int): Boolean = consecutiveTimeouts >= MAX_TIMEOUTS
+}
+
+/**
+ * 녹음 사이클별 initialize 시간 초과 기록(순수 — testPleos, RB-4). 사이클 = [beginCycle](녹음 중 prepare) ~ [endCycle](listen 끝).
+ * 사이클이 열려 있지 않을 때의 듣기(prepare 없는 경로 제안 질문 등)는 [beginListen] 으로 그 듣기 하나가 사이클이 된다.
+ *
+ * - 시간 초과는 **사이클마다 한 번만** 센다 — prepare 가 3 s 를 넘긴 뒤 같은 사이클의 listen 이 또 3 s 를 기다려 수가 한 사이클에 2씩 오르지 않게
+ *   (전에는 녹음 1.5회 만에 영구 실패가 됐다).
+ * - 이번 사이클에 이미 시간 초과가 났으면 listen 은 새 초기화를 시작하지 않는다([mayStartInListen] = false) — 확인 5 s 중 3 s 를 아무것도 듣지 않은 채
+ *   듣는 중으로 보내지 않고 바로 다음 단계(Android STT → Vosk → 카운트다운)로.
+ * - 성공하면 0. 연달아 [PleosSttInitPolicy.MAX_TIMEOUTS] 사이클 시간 초과면 영구 실패([onTimeout] = true).
+ */
+internal class PleosSttCycleTimeouts {
+    private var consecutive = 0
+    private var cycleOpen = false
+    private var timedOutThisCycle = false
+
+    /** 녹음 중 prepare — 새 사이클 */
+    @Synchronized
+    fun beginCycle() {
+        cycleOpen = true
+        timedOutThisCycle = false
+    }
+
+    /** listen 시작 — 열린 사이클(같은 녹음의 prepare)이 없으면 이 듣기가 새 사이클 */
+    @Synchronized
+    fun beginListen() {
+        if (!cycleOpen) beginCycle()
+    }
+
+    /** listen 끝 — 사이클을 닫는다 */
+    @Synchronized
+    fun endCycle() {
+        cycleOpen = false
+        timedOutThisCycle = false
+    }
+
+    /** listen 이 새 초기화를 시작해도 되나 — 이번 사이클에 이미 시간 초과가 났으면 아니다 */
+    @Synchronized
+    fun mayStartInListen(): Boolean = !timedOutThisCycle
+
+    /** 시간 초과 한 번 — 이번 사이클의 첫 번째만 센다. 영구 실패로 굳힐 때 true */
+    @Synchronized
+    fun onTimeout(): Boolean {
+        if (!timedOutThisCycle) {
+            timedOutThisCycle = true
+            consecutive++
+        }
+        return PleosSttInitPolicy.permanentAfter(consecutive)
+    }
+
+    @Synchronized
+    fun onSuccess() {
+        consecutive = 0
+    }
+
+    val consecutiveTimeouts: Int
+        @Synchronized get() = consecutive
 }

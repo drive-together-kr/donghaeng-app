@@ -150,8 +150,13 @@ data class PttTimings(
     val noticeMs: Long = 3_000,
     /** 녹음 남은 초·파형 갱신 */
     val tickMs: Long = 100,
-    /** "보낼까요?" 를 다 읽기를 기다리는 상한 */
+    /** "보낼까요?"·"5초 뒤 보낼게요…" 가 **시작한 뒤** 다 읽기를 기다리는 상한 */
     val promptTimeoutMs: Long = 6_000,
+    /**
+     * 그 안내가 **시작되기**(소리 시작·화면만)를 기다리는 상한(RB-3) — Pleos 부하에서 요청 → 시작이 5~9 s 라 한 개의 상한(6 s)이면 질문이 시작도 못 하고
+     * 버려졌다. 이 안에 시작하지 않으면 그 문장을 버리고 다음으로(듣기·카운트다운) 간다.
+     */
+    val promptStartTimeoutMs: Long = 12_000,
     /** 인식기가 정리(stop 뒤 마지막 결과)하는 여유 — 확인 5초 + 이만큼 지나면 무응답 */
     val listenGraceMs: Long = 1_500,
     /**

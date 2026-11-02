@@ -36,7 +36,8 @@ import java.util.concurrent.atomic.AtomicReference
  * - [cancel](꼬리표 하나만 버림, B012·B013): Android TTS 는 큐에서 문장 하나만 지울 수 없다 → 그 문장이 **재생 차례가 되는 순간**(묵음·본문 onStart)
  *   엔진을 멈추고, 그 뒤에 줄 서 있던 문장은 같은 꼬리표·요청 시각으로 다시 넣는다(이미 읽는 중이면 바로 멈추고 같은 방법). 그 문장에는 바로 Dropped("cancelled").
  * - F16: [speakAndWait] 는 같은 큐에 넣고 그 utterance 의 onDone/onError 를 기다린다(엔진 없음 → 즉시 [SpeakResult.FALLBACK], [stop] → 실패로 풀림).
- *   CRITICAL(`QUEUE_FLUSH`)이 큐를 비우면 지워진 문장에는 onDone·onError 가 오지 않고 **onStop** 만 온다 → 그때도 실패로 풀어 준다.
+ *   CRITICAL(`QUEUE_FLUSH`)이 큐를 비우면 지워진 문장에는 onDone·onError 가 오지 않고 **onStop** 만 온다 → 그때도 실패로 풀어 준다
+ *   (재생 차례 전에 지워진 선행 묵음에는 그 onStop 도 없다 — 큐가 미리 뺀다, RB-2).
  *   앱이 쓰는 체인([ChainedVoiceAdapter])은 경로와 무관하게 [signals] 로 같은 일을 한다.
  * - 오디오 포커스는 '콜백을 기다리는 utterance' 가 하나도 없을 때 반납한다(B050·B063 — speak·묵음이 ERROR 를 돌려주면 그 몫은 바로 뺀다,
  *   엔진이 재생 도중 죽어 콜백이 끝내 오지 않으면 [AndroidTtsQueue.STALE_MS] 뒤 정리).
@@ -209,6 +210,7 @@ internal interface TtsEnginePort {
  * - 문장 한 개 = 선행 묵음 utterance(`dh-N-s`) + 본문(`dh-N`). id 는 잠금 안에서 매긴다(B065 — 동시 speak 에서 id 가 겹쳐 신호를 잃지 않게).
  * - **포커스**: 콜백을 기다리는 utterance([entries])가 생길 때 요청하고, 하나도 없으면 반납한다. `playSilentUtterance`·`speak` 가 ERROR 를 돌려주면
  *   그 utterance 는 콜백이 오지 않으므로 바로 뺀다(B050 — 전에는 묵음 몫 1 이 남아 음악이 줄어든 채였다). onStop 도 뺀다(CRITICAL 의 QUEUE_FLUSH·stop).
+ *   CRITICAL 의 QUEUE_FLUSH 는 재생 차례 전 묵음에 콜백을 주지 않으므로 그 몫은 보내기 전에 미리 뺀다(RB-2, [forgetQueuedSilencesLocked]).
  *   [STALE_MS] 넘게 콜백이 없는 utterance(엔진이 재생 도중 죽음)는 [purgeStale] 이 정리한다(B063).
  * - [cancel]: 위 클래스 설명.
  */
@@ -260,8 +262,25 @@ internal class AndroidTtsQueue(
 
     fun enqueue(text: String, priority: Priority, tag: String?, waiter: CompletableDeferred<Boolean>? = null): Enqueued {
         purgeStale()
-        val s = synchronized(lock) { Sentence(seq++, text, priority, tag, clock(), waiter) }
-        return submit(s, if (priority == Priority.CRITICAL) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD, fresh = true)
+        val critical = priority == Priority.CRITICAL
+        val s = synchronized(lock) {
+            if (critical) forgetQueuedSilencesLocked()
+            Sentence(seq++, text, priority, tag, clock(), waiter)
+        }
+        return submit(s, if (critical) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD, fresh = true)
+    }
+
+    /**
+     * CRITICAL 의 `QUEUE_FLUSH` 직전(잠금 안) — 줄 서 있던 문장들의 **선행 묵음** 몫을 미리 뺀다(RB-2). AOSP 는 재생 차례 전에 지워진 묵음
+     * (`SilenceSpeechItem.stopImpl` 은 빈 함수, `SilencePlaybackQueueItem.stop` 은 condvar 만 연다)에 onStop 도 onDone 도 보내지 않아, 남겨 두면
+     * 포커스(덕킹)가 60 s 정리([purgeStale])까지 풀리지 않는다. 본문은 onStop 이 오므로(NOT_RUN → dispatchEndStatus) 그대로 두어 Dropped 를 낸다.
+     * 재생 중이던 묵음의 늦은 onStop 은 모르는 id 라 무시된다([stopAndRefill] 과 같은 방식).
+     */
+    private fun forgetQueuedSilencesLocked() {
+        if (silences.isEmpty()) return
+        silences.keys.forEach { entries.remove(it) }
+        silences.values.forEach { it.silenceId = null }
+        silences.clear()
     }
 
     /** 문장 하나를 엔진에 넣는다(묵음 + 본문). [fresh] = 처음 넣음(다시 넣기면 실패 로그만 다르다) */

@@ -186,4 +186,45 @@ class AndroidTtsQueueTest {
         assertEquals(0, q.outstanding)
         assertEquals(1, focus.abandons)
     }
+
+    @Test
+    fun `QUEUE_FLUSH - silences flushed before their turn get no callback, the focus is still given back when the critical sentence ends (RB-2)`() {
+        // 엔진 큐 = [문장1 재생 중, 문장2 묵음 대기, 문장2 본문 대기] — PTT 안내·○○ 무전 알림이 줄 선 상태
+        q.enqueue("보냈어요.", Priority.NORMAL, "evt_1")
+        q.enqueue("아빠 차 무전", Priority.NORMAL, "evt_2")
+        val (s1, b1, s2, b2) = engine.calls.toList()
+        q.onStart(s1.id); q.onDone(s1.id)
+        q.onStart(b1.id); q.onAudio(b1.id)
+        q.enqueue("에어백이 터졌어요.", Priority.CRITICAL, "evt_airbag")
+        val critical = engine.calls.drop(4)
+        assertEquals(TextToSpeech.QUEUE_FLUSH, critical[0].queueMode)
+        // AOSP(android-37): 지워진 본문에는 onStop 이 온다(SynthesisPlaybackQueueItem.stop NOT_RUN → dispatchEndStatus, 합성 전이면 SpeechItem.stop →
+        // dispatchOnStop). 아직 재생 차례가 아니던 묵음에는 아무 콜백도 없다(SilenceSpeechItem.stopImpl 은 빈 함수, SilencePlaybackQueueItem.stop 은
+        // condvar 만 연다) — 그래서 s2 에는 onStop 을 넣지 않는다
+        q.onStop(b1.id); q.onStop(b2.id)
+        assertEquals(listOf("evt_1", "evt_2"), signals.filterIsInstance<UtteranceSignal.Dropped>().map { it.tag })
+        assertFalse("에어백이 아직 남았다", q.outstanding == 0)
+        q.onStart(critical[0].id); q.onDone(critical[0].id)
+        q.onStart(critical[1].id); q.onAudio(critical[1].id); q.onDone(critical[1].id)
+        assertEquals("지워진 묵음 몫이 남지 않는다", 0, q.outstanding)
+        assertEquals("에어백 문장이 끝나면 바로 포커스(덕킹)를 놓는다 — 60 s 정리를 기다리지 않는다", 1, focus.abandons)
+        // 늦게 오는 옛 묵음 콜백(재생 중이던 묵음의 onStop 등)은 무시된다
+        q.onStop(s2.id)
+        assertEquals(1, focus.abandons)
+        assertEquals(0, q.outstanding)
+    }
+
+    @Test
+    fun `QUEUE_FLUSH while a silence is playing - its onStop is harmless and the focus is counted once (RB-2)`() {
+        q.enqueue("저잔량", Priority.NORMAL, "evt_low")
+        val (s1, b1) = engine.calls.toList()
+        q.onStart(s1.id)                      // 선행 묵음 재생 중
+        q.enqueue("에어백", Priority.CRITICAL, "evt_airbag")
+        val critical = engine.calls.drop(2)
+        q.onStop(s1.id); q.onStop(b1.id)      // 재생 중이던 묵음(condvar 열림 → dispatchOnStop)·본문 모두 onStop
+        assertEquals(UtteranceSignal.Dropped(VoicePath.ANDROID_TTS, "evt_low", 0, "interrupted"), signals.single())
+        critical.forEach { q.onDone(it.id) }
+        assertEquals(0, q.outstanding)
+        assertEquals(1, focus.abandons)
+    }
 }

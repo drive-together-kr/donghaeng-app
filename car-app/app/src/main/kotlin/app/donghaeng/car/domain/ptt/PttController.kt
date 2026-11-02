@@ -58,12 +58,15 @@ import kotlinx.coroutines.withTimeoutOrNull
  * IDLE 로 끝났는지(보냄·취소·보관·짧음·실패 어느 쪽이든) 가려 끊긴 무전을 처음부터 다시 틀게 한다.
  *
  * **음성 안내와 마이크가 섞이지 않게(B012·B013)**: 녹음을 열기 직전 [micOpening](기기: VoiceAnnouncer.yieldToMic — 이미 넘긴 NORMAL·LOW 안내를 멈추고
- * 무전 뒤 다시)을 부르고, 이 상태 기계가 낸 안내("보냈어요."·"취소했어요." 등 — 꼬리표 `ptt-N`)도 아직 남았으면 버린다. "보낼까요?"·"5초 뒤 보낼게요"를
- * 상한 안에 다 읽지 못하면(TIMEOUT) 체인이 그 문장을 버린다 — 늦게 나와 열린 마이크와 겹치지 않게.
+ * 무전 뒤 다시)을 부르고, 이 상태 기계가 낸 안내("보냈어요."·"취소했어요." 등 — 꼬리표 `ptt-N`)도 아직 남았으면 버린다. "보낼까요?"·"5초 뒤 보낼게요"는
+ * 시작까지 [PttTimings.promptStartTimeoutMs](12 s), 시작한 뒤 [PttTimings.promptTimeoutMs](6 s)를 기다리고(RB-3 — Pleos 부하의 늦은 시작에도 들리게),
+ * 그 상한을 넘기면(TIMEOUT) 체인이 그 문장을 버린다 — 늦게 나와 열린 마이크와 겹치지 않게. 카운트다운 5초는 그 안내가 들리기 시작한 때부터 센다.
  * **마이크를 쓸 수 없는 백그라운드(B015)**: [micUsable] 이 false(API 30+ 에서 동행 화면이 안 보이고 포그라운드 서비스에 microphone 타입이 없음 —
  * 녹음이 무음이 된다)면 녹음하지 않고 [PttPrompts.MIC_BACKGROUND] + NOTICE RECORD_FAILED. 디버그 주입 녹음은 이 검사를 건너뛴다.
  * **멱등 키(B073, docs/03 계약 3)**: 녹음 한 개마다 키 하나(`u<시각>-<순번>` — '보내지 않은 무전' id 와 같다)를 만들어 첫 전송과 다시 보내기에 같은 키를
- * `Idempotency-Key` 로 보낸다 — 서버가 커밋했는데 응답을 잃은 뒤 다시 보내도 그룹에 두 번 나가지 않는다.
+ * `Idempotency-Key` 로 보낸다 — 서버가 커밋했는데 응답을 잃은 뒤 다시 보내도 그룹에 두 번 나가지 않는다. 실패 사유(네트워크·429·5xx)와 무관하게 같은 키다 —
+ * 계약 3 은 서버가 **성공(2xx) 응답만** 기억하고 4xx·5xx 는 기억하지 않는다(같은 키로 다시 보내면 다시 처리, RB-1). 키를 바꾸면 서버가 커밋했을 수 있는 실패
+ * (커밋 뒤 500·프록시 502/504)에서 같은 무전이 두 번 나간다.
  *
  * @param recipients 받는 차 수(나 제외, 모르면 null → 0)
  * @param micGranted 마이크 권한을 다시 읽는다(누를 때마다)
@@ -451,8 +454,9 @@ class PttController(
             it.copy(stage = PttStage.CONFIRMING, remainingS = confirmS, totalS = confirmS, level = 0f, listening = false, countdownMode = false, notice = null)
         }
         DhLog.i("ptt: confirm mode=voice")
-        // 질문을 다 읽은 뒤에만 마이크를 연다(질문이 인식에 섞이지 않게). 읽는 동안 누르면 취소
-        when (race(timeoutMs = null) { voice.speakAndWait(PttPrompts.ASK, Priority.NORMAL, timings.promptTimeoutMs) }) {
+        // 질문을 다 읽은 뒤에만 마이크를 연다(질문이 인식에 섞이지 않게). 읽는 동안 누르면 취소.
+        // 시작까지 [PttTimings.promptStartTimeoutMs], 시작한 뒤 [PttTimings.promptTimeoutMs](RB-3 — Pleos 부하의 늦은 시작에 질문이 버려지지 않게)
+        when (race(timeoutMs = null) { voice.speakAndWaitStaged(PttPrompts.ASK, Priority.NORMAL, timings.promptStartTimeoutMs, timings.promptTimeoutMs) }) {
             Race.Pressed -> return cancel(holder, "press-during-prompt")
             else -> Unit
         }
@@ -493,12 +497,36 @@ class PttController(
             )
         }
         drainPresses()
-        if (race(timeoutMs = null) { voice.speakAndWait(PttPrompts.COUNTDOWN, Priority.NORMAL, timings.promptTimeoutMs) } is Race.Pressed) {
-            return cancel(holder, "press-during-countdown-prompt")
+        // 5초는 "5초 뒤 보낼게요…" 가 **들리기 시작한 때**부터 센다(RB-3) — 안내는 그동안 이어서 읽는다. 시작 상한 안에 소리가 나지 않으면(체인이 그 문장을
+        // 버림) 그때부터 센다(화면만 경로와 같다 — 화면 원형 카운트다운). 안내를 기다리는 동안·카운트다운 중 누르면 취소
+        val r: Race<YesNo>? = coroutineScope {
+            val heard = CompletableDeferred<Unit>()
+            val prompt = launch {
+                try {
+                    voice.speakAndWaitStaged(PttPrompts.COUNTDOWN, Priority.NORMAL, timings.promptStartTimeoutMs, timings.promptTimeoutMs) { heard.complete(Unit) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    DhLog.w("ptt: countdown prompt 실패 ${e.javaClass.simpleName}")
+                } finally {
+                    heard.complete(Unit)   // 시작 없이 끝남(실패·상한) — 그때부터 센다
+                }
+            }
+            try {
+                if (race(timeoutMs = null) { heard.await() } is Race.Pressed) {
+                    null
+                } else {
+                    val deadline = clock() + timings.countdownMs
+                    // 카운트다운 중에도 디버그 주입 답(ptt_answer)은 받는다 — 네 = 바로 보냄, 아니 = 취소, 무응답 = 보관
+                    race(timeoutMs = timings.countdownMs, tickerDeadline = deadline) { listener.awaitInjected() }
+                }
+            } finally {
+                // 결정이 났다 — 아직 읽는 중이면 그 안내만 버린다(보냄·취소 안내와 겹치지 않게)
+                prompt.cancel()
+            }
         }
-        val deadline = clock() + timings.countdownMs
-        // 카운트다운 중에도 디버그 주입 답(ptt_answer)은 받는다 — 네 = 바로 보냄, 아니 = 취소, 무응답 = 보관
-        when (val r = race(timeoutMs = timings.countdownMs, tickerDeadline = deadline) { listener.awaitInjected() }) {
+        when (r) {
+            null -> cancel(holder, "press-during-countdown-prompt")
             Race.Pressed -> cancel(holder, "press-during-countdown")
             is Race.Done -> {
                 _state.update { it.copy(lastAnswer = r.value, lastRecognizer = RecognizerKind.INJECTED) }

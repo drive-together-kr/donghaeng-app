@@ -340,6 +340,65 @@ class ChainedVoiceAdapterTest {
     }
 
     @Test
+    fun `speakAndWaitStaged waits for a slow start (Pleos 7 s) then for the end - the question is not dropped (RB-3)`() = runTest {
+        val c = chain(pleos)
+        pleos.ready(); runCurrent()
+        var started = 0
+        val r = async { c.speakAndWaitStaged("보낼까요?", Priority.NORMAL, startTimeoutMs = 12_000, doneTimeoutMs = 6_000) { started++ } }
+        runCurrent()
+        val tag = pleos.spoken.single().third!!
+        advanceTimeBy(7_000); runCurrent()
+        assertFalse("예전 상한(6 s)을 넘겨도 시작 전이면 기다린다", r.isCompleted)
+        assertTrue(pleos.cancelled.isEmpty())
+        pleos.out.emit(UtteranceSignal.Started(VoicePath.PLEOS_TTS, tag, testScheduler.currentTime, 7_000)); runCurrent()
+        assertEquals("시작 신호 때 한 번", 1, started)
+        advanceTimeBy(900); runCurrent()
+        pleos.out.emit(UtteranceSignal.Done(VoicePath.PLEOS_TTS, tag, testScheduler.currentTime)); runCurrent()
+        assertEquals(SpeakResult.SPOKEN, r.await())
+        assertTrue("끝까지 읽은 문장은 버리지 않는다", pleos.cancelled.isEmpty())
+    }
+
+    @Test
+    fun `speakAndWaitStaged drops the sentence when it never starts or does not end after starting (RB-3)`() = runTest {
+        val c = chain(pleos)
+        pleos.ready(); runCurrent()
+        var started = 0
+        val neverStarts = async { c.speakAndWaitStaged("보낼까요?", Priority.NORMAL, 12_000, 6_000) { started++ } }
+        runCurrent()
+        val tag1 = pleos.spoken.last().third!!
+        advanceTimeBy(12_001); runCurrent()
+        assertEquals(SpeakResult.TIMEOUT, neverStarts.await())
+        assertEquals(0, started)
+        assertEquals(listOf(tag1), pleos.cancelled)
+
+        val neverEnds = async { c.speakAndWaitStaged("5초 뒤 보낼게요.", Priority.NORMAL, 12_000, 6_000) { started++ } }
+        runCurrent()
+        val tag2 = pleos.spoken.last().third!!
+        advanceTimeBy(2_000); runCurrent()
+        pleos.out.emit(UtteranceSignal.Started(VoicePath.PLEOS_TTS, tag2, testScheduler.currentTime, 2_000)); runCurrent()
+        advanceTimeBy(5_900); runCurrent()
+        assertFalse("시작 뒤 상한은 시작한 때부터 센다", neverEnds.isCompleted)
+        advanceTimeBy(200); runCurrent()
+        assertEquals(SpeakResult.TIMEOUT, neverEnds.await())
+        assertEquals(1, started)
+        assertEquals(listOf(tag1, tag2), pleos.cancelled)
+
+        // 시작 없이 끝 신호(실패)가 오면 그것으로 끝 — onStarted 는 부르지 않는다
+        val failed = async { c.speakAndWaitStaged("문장", Priority.NORMAL, 12_000, 6_000) { started++ } }
+        runCurrent()
+        pleos.out.emit(UtteranceSignal.Failed(VoicePath.PLEOS_TTS, pleos.spoken.last().third, testScheduler.currentTime, "onError")); runCurrent()
+        assertEquals(SpeakResult.FAILED, failed.await())
+        assertEquals(1, started)
+
+        // 화면만(NoAudio)은 시작으로 보고 FALLBACK
+        pleos.unavailable("CaaS 없음"); runCurrent()
+        val display = async { c.speakAndWaitStaged("문장", Priority.NORMAL, 12_000, 6_000) { started++ } }
+        runCurrent()
+        assertEquals(SpeakResult.FALLBACK, display.await())
+        assertEquals(2, started)
+    }
+
+    @Test
     fun `cancel goes to every route and the chain reports an end signal for tagged sentences`() = runTest {
         val c = chain(android, pleos)
         c.cancel("evt_9")

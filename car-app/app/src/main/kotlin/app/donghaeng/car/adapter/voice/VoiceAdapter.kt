@@ -118,6 +118,20 @@ interface VoiceAdapter {
         return SpeakResult.UNKNOWN
     }
 
+    /**
+     * [speakAndWait] 의 두 단계 상한판(RB-3) — 소리가 **시작될 때까지**(Started·화면만 NoAudio) 최대 [startTimeoutMs], 시작한 뒤 **끝날 때까지**
+     * 최대 [doneTimeoutMs]. Pleos 부하(요청 → 시작 5~9 s)에서 짧은 질문("보낼까요?")이 시작도 하기 전에 한 개의 상한(6 s)에 걸려 버려지지 않게 한다.
+     * [onStarted] 는 시작 신호(또는 화면만) 때 한 번 — 시작 없이 끝나면(실패·상한) 부르지 않는다. 상한을 넘기면 [speakAndWait] 처럼 그 문장을 버린다.
+     * 기본 구현(신호 없는 대역) = 두 상한을 더한 [speakAndWait] 가 끝난 뒤 [onStarted].
+     */
+    suspend fun speakAndWaitStaged(
+        text: String,
+        priority: Priority,
+        startTimeoutMs: Long,
+        doneTimeoutMs: Long,
+        onStarted: () -> Unit = {},
+    ): SpeakResult = speakAndWait(text, priority, startTimeoutMs + doneTimeoutMs).also { onStarted() }
+
     /** 재생 중인 안내를 즉시 멈춘다. */
     fun stop()
 

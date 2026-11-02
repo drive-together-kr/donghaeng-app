@@ -80,7 +80,8 @@ data class VoiceAnnouncerState(
  *   큐에 다시 세운다(무전이 끝나면 처음부터 다시 읽는다) — 붙잡기는 새로 꺼낼 문장에만 걸리므로, Pleos 처럼 시작이 5~9 s 늦는 경로에서 넘긴 문장이 녹음 한가운데
  *   나와 그룹에 보내는 무전에 섞이지 않게. 같은 순간부터 [micYieldMs] 동안은 붙잡기와 같다(상태 기계가 붙잡기를 걸기 전의 틈을 메운다).
  * - **그룹이 끝나거나 바뀌면**([groupIds], B060) 옛 그룹에서 들어와 기다리던 문장(정차·도착·합류·경로 제안…)을 버린다 — '그룹 종료' 안내는 남긴다.
- * - 설정 '음성 안내' 스위치는 [settings] 에 저장한다(B066 — 프로세스가 다시 시작돼도 유지). 디버그 리시버의 일시 전환은 저장하지 않는다(`setEnabled(…, persist = false)`).
+ * - '음성 안내' 스위치([setEnabled])는 이 엔진의 메모리 값이다 — **저장은 하지 않는다**(RB-5). 설정 화면 값의 저장·앱 시작 때 적용은 A120 `UserSettings`
+ *   (`dh_settings`, 설정 화면에서 바꿀 때만) 한 곳이 맡는다 — 진단 카드·디버그 리시버의 일시 전환이 재시작 뒤까지 남아 시연 음성이 조용히 빠지지 않게.
  */
 class VoiceAnnouncer(
     private val events: Flow<ReceivedGroupEvent>,
@@ -97,8 +98,6 @@ class VoiceAnnouncer(
     private val clock: () -> Long = System::currentTimeMillis,
     /** 지금 그룹 id(세션) — 바뀌면 옛 그룹 문장을 버린다. 기본 = 모름(버리지 않음) */
     private val groupIds: Flow<String?> = emptyFlow(),
-    /** '음성 안내' 스위치 저장소. 기본 = 메모리(테스트) — 기기 DI 는 SharedPreferences */
-    private val settings: VoiceSettingsStore = InMemoryVoiceSettingsStore(),
     /** 끝 신호를 기다리는 상한 = 길이 추정 + 이 값(Pleos 시작 5~9 s + 읽기) */
     private val endWaitExtraMs: Long = END_WAIT_EXTRA_MS,
     /** [yieldToMic] 뒤 이 시간 동안은 붙잡기와 같다 */
@@ -128,7 +127,7 @@ class VoiceAnnouncer(
     private val recentSpeech = ArrayDeque<Pair<String, Long>>()
     private val localSeq = AtomicLong(0)
 
-    private val _state = MutableStateFlow(VoiceAnnouncerState(enabled = runCatching { settings.loadEnabled() }.getOrDefault(true)))
+    private val _state = MutableStateFlow(VoiceAnnouncerState())
     val state: StateFlow<VoiceAnnouncerState> = _state
 
     @Volatile
@@ -173,15 +172,14 @@ class VoiceAnnouncer(
         DhLog.i("voice: yield to mic — ${f.type} priority=${f.priority} 멈춤, 무전 뒤 다시")
     }
 
-    /** 설정 화면의 "음성 안내" 스위치 — [persist] 면 저장한다(디버그 리시버의 일시 전환은 false) */
-    fun setEnabled(enabled: Boolean, persist: Boolean = true) {
-        if (persist) runCatching { settings.saveEnabled(enabled) }.onFailure { DhLog.w("voice: enabled 저장 실패 ${it.javaClass.simpleName}") }
+    /** 설정 화면의 "음성 안내" 스위치(진단 카드·디버그 리시버 포함) — 메모리 값만 바꾼다. 저장은 A120 `UserSettings` 가 설정 화면에서만(RB-5) */
+    fun setEnabled(enabled: Boolean) {
         _state.update { it.copy(enabled = enabled) }
         if (!enabled) {
             voice.stop()
             scope.launch { mutex.withLock { queue.clear() }; _state.update { it.copy(queued = 0) } }
         }
-        DhLog.i("voice: enabled=$enabled${if (persist) " (saved)" else ""}")
+        DhLog.i("voice: enabled=$enabled")
     }
 
     @Synchronized
