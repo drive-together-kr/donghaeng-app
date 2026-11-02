@@ -191,6 +191,19 @@ class StatusTest(unittest.TestCase):
         self.assertFalse(ptt.fgs_has_mic(ptt.parse_status(STATUS + " fgs=none")))
         self.assertIsNone(ptt.fgs_has_mic(ptt.parse_status(STATUS)), "옛 빌드는 fgs 를 안 낸다")
 
+    def test_mic_gate_row(self):
+        """배치 B(B015): microphone 타입이 없으면 앱은 실마이크 무전을 녹음하지 않고 안내만 — preflight 는 WARN 으로 알린다"""
+        self.assertIsNone(ptt.mic_gate_row("A", {"mic": "true", "fgs": "location+microphone"}))
+        self.assertIsNone(ptt.mic_gate_row("A", {"mic": "false", "fgs": "dataSync"}), "권한이 없으면 권한 행이 알린다")
+        self.assertIsNone(ptt.mic_gate_row("A", {"mic": "true"}), "옛 빌드(fgs 없음)")
+        label, ok = ptt.mic_gate_row("A", {"mic": "true", "fgs": "location"})
+        self.assertIsNone(ok, "WARN — 주입 녹음은 상관없다")
+        self.assertIn("녹음하지 않고 안내만", label)
+        self.assertIn("주입 녹음", label)
+        label_b, ok_b = ptt.mic_gate_row("B", {"mic": "true", "fgs": "dataSync"}, injected=False)
+        self.assertIsNone(ok_b)
+        self.assertIn("ptt: mic not usable in background", label_b)
+
 
 class PreflightWithoutAdbTest(unittest.TestCase):
     """adb 가 없는 PC 에서 `run --dry-run` 이 FileNotFoundError 트레이스백 대신 FAIL 행으로 끝난다"""

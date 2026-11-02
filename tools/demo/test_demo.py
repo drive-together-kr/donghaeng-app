@@ -221,6 +221,63 @@ class EnsureTtsEngineTest(unittest.TestCase):
         self.assertFalse(rows[-1][1])
 
 
+class VoiceSettingTest(unittest.TestCase):
+    """배치 B 리뷰 RB: preflight 가 status 의 voice= 를 보지 않아 '음성 안내' 저장값이 꺼진 차(latency.py 가 끈 채 멈춤·설정에서 끔)는
+    장면 5·6·9 음성 확인이 MISS 로 끝났다 → 꺼져 있으면 FAIL, 실행 때는 켜고 다시 본다"""
+
+    def test_row(self):
+        self.assertTrue(demo.voice_setting_row("A", {"voice": "true"})[1])
+        label, ok = demo.voice_setting_row("B", {"voice": "false"})
+        self.assertFalse(ok)
+        self.assertIn("voice=false", label)
+        self.assertIsNone(demo.voice_setting_row("A", {})[1], "옛 앱·리시버 무응답은 WARN")
+        self.assertIsNone(demo.voice_setting_row("A", None)[1])
+        self.assertIn("켰다", demo.voice_setting_row("A", {"voice": "true"}, turned_on=True)[0])
+
+    def run_ensure(self, statuses, dry_run=False):
+        """status 응답을 차례로 돌려주고 보낸 브로드캐스트를 모은다"""
+        sent = []
+        replies = iter(statuses)
+        d = demo.Demo(args(dry_run=dry_run))
+        with mock.patch.object(demo, "status", side_effect=lambda serial: next(replies)), \
+                mock.patch.object(demo, "broadcast", side_effect=lambda serial, action, **ex: sent.append((serial, action, ex)) or "ok"):
+            row = d.ensure_voice_on("B", "emulator-B")
+        return row, sent
+
+    def test_off_is_turned_on_and_rechecked(self):
+        row, sent = self.run_ensure([{"voice": "false"}, {"voice": "true"}])
+        self.assertEqual([("emulator-B", "voice", {"on": True})], sent)
+        self.assertTrue(row[1])
+        self.assertIn("켰다", row[0])
+
+    def test_still_off_after_turning_on_fails(self):
+        row, _ = self.run_ensure([{"voice": "false"}, {"voice": "false"}])
+        self.assertFalse(row[1])
+
+    def test_dry_run_does_not_change_it(self):
+        row, sent = self.run_ensure([{"voice": "false"}], dry_run=True)
+        self.assertEqual([], sent)
+        self.assertFalse(row[1])
+
+    def test_on_sends_nothing(self):
+        row, sent = self.run_ensure([{"voice": "true"}])
+        self.assertEqual([], sent)
+        self.assertTrue(row[1])
+
+
+class JoinOfferPatternTest(unittest.TestCase):
+    """RC-3: 장면 3 은 합류 뒤 제안(로컬 합류 제안 또는 서버 경로 제안)이 뜬 것을 보고 수락한다 — 예약·생략 줄에는 맞지 않는다"""
+
+    def test_matches_both_offers_only(self):
+        import re
+        rx = re.compile(demo.JOIN_OFFER_RX)
+        self.assertTrue(rx.search("I/DongHaeng( 123): routesync: join proposal dest=Place(경*, (37.77*,128.94*), poi=-) autoFollow=false"))
+        self.assertTrue(rx.search("I/DongHaeng( 123): routesync: proposal prp_…QZ dest=Place(광*, (35.15*,126.85*), poi=-) waypoints=1 autoFollow=false driving=false"))
+        self.assertFalse(rx.search("I/DongHaeng( 123): routesync: joined → destination ask in 3000ms unless the server re-sends the route"))
+        self.assertFalse(rx.search("I/DongHaeng( 123): routesync: join ask skipped — the server already proposed the group route"))
+        self.assertFalse(rx.search("I/DongHaeng( 123): routesync: proposal prp_…QZ ignored (this car is the leader)"))
+
+
 class AdbDevicesTest(unittest.TestCase):
     """adb 가 없는 PC 에서 preflight 가 트레이스백 대신 FAIL 행으로 끝나야 한다(ptt.py run --dry-run·demo.py)"""
 

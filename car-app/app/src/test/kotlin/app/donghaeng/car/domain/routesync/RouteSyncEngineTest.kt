@@ -68,6 +68,8 @@ class RouteSyncEngineTest {
         val e = engine(testScheduler, joinProposal = true); e.start(); runCurrent()
         try {
             session.value = memberSession.copy(joinedAtMs = testScheduler.currentTime); runCurrent()
+            assertNull("RC-3: 합류 제안은 바로 내지 않는다(서버 제안을 기다림)", e.state.value.pending)
+            advanceTimeBy(RouteSyncEngine.JOIN_PROPOSAL_DELAY_MS); runCurrent()
             val pending = e.state.value.pending
             assertNotNull(pending)
             assertTrue(pending!!.local)
@@ -82,10 +84,12 @@ class RouteSyncEngineTest {
 
             // 같은 그룹의 세션 갱신(초대 갱신 등)에는 다시 묻지 않는다
             session.value = memberSession.copy(joinedAtMs = testScheduler.currentTime, name = "renamed"); runCurrent()
+            advanceTimeBy(RouteSyncEngine.JOIN_PROPOSAL_DELAY_MS); runCurrent()
             assertNull(e.state.value.pending)
 
             // 새 그룹에 합류하면 다시 제안, 30초 무응답 → 자동 거절(ACK 없음)
             session.value = memberSession.copy(groupId = "grp_2", joinedAtMs = testScheduler.currentTime); runCurrent()
+            advanceTimeBy(RouteSyncEngine.JOIN_PROPOSAL_DELAY_MS); runCurrent()
             assertNotNull(e.state.value.pending)
             advanceTimeBy(30_001); runCurrent()
             assertNull(e.state.value.pending)
@@ -103,8 +107,96 @@ class RouteSyncEngineTest {
             runCurrent()
             assertNull(e.state.value.pending)
             session.value = leaderSession.copy(groupId = "grp_lead", joinedAtMs = testScheduler.currentTime); runCurrent()
+            advanceTimeBy(RouteSyncEngine.JOIN_PROPOSAL_DELAY_MS * 2); runCurrent()
             assertNull(e.state.value.pending)
             assertTrue(spoken.isEmpty())
+        } finally { e.stop() }
+    }
+
+    // ---------------------------------------------------------------- RC-3 합류 제안 vs 서버 경유지 재전송
+
+    /** RC-3: 경유지가 있는 그룹 — 서버가 GROUP_JOINED 직후 경로 제안을 다시 보낸다(C032) → 합류 제안은 생략, 질문은 하나 */
+    @Test
+    fun `RC-3 - a server proposal right after joining replaces the local join proposal (one question, no superseded ack)`() = runTest {
+        val e = engine(testScheduler, joinProposal = true); e.start(); runCurrent()
+        try {
+            session.value = memberSession.copy(joinedAtMs = testScheduler.currentTime); runCurrent()
+            advanceTimeBy(500); runCurrent()
+            proposals.emit(proposal("prp_join")); runCurrent()
+            assertEquals("prp_join", e.state.value.pending?.proposalId)
+            advanceTimeBy(RouteSyncEngine.JOIN_PROPOSAL_DELAY_MS * 2); runCurrent()
+            val pending = e.state.value.pending
+            assertEquals("서버 제안이 그대로 대기 중", "prp_join", pending?.proposalId)
+            assertTrue(!pending!!.local)
+            assertEquals("읽은 질문은 서버 제안 하나", listOf("선두차가 덕평휴게소를 경유지로 추가했어요. 따라갈까요?" to Priority.NORMAL), spoken)
+            assertTrue("밀어낸 제안이 없으니 ACK 없음", acks.isEmpty())
+            assertEquals(0, e.state.value.superseded)
+            // 수락하면 경유지까지 — 합류 제안(목적지만)이 뒤에서 덮어쓰지 않는다
+            e.accept(); runCurrent()
+            assertEquals(listOf(Ack("prp_join", true)), acks)
+            advanceTimeBy(RouteSyncEngine.JOIN_PROPOSAL_DELAY_MS * 2); runCurrent()
+            assertNull(e.state.value.pending)
+            assertEquals(1, e.state.value.accepted)
+        } finally { e.stop() }
+    }
+
+    /** RC-3: 서버 제안이 엔진의 세션 처리보다 먼저 도착해도(같은 순간) 합류 제안을 내지 않는다 */
+    @Test
+    fun `RC-3 - a server proposal handled before the join is noticed still suppresses the join proposal`() = runTest {
+        val e = engine(testScheduler, joinProposal = true); e.start(); runCurrent()
+        try {
+            session.value = memberSession.copy(joinedAtMs = testScheduler.currentTime)
+            e.onProposal(proposal("prp_early"))   // 세션 collector 가 돌기 전
+            runCurrent()
+            advanceTimeBy(RouteSyncEngine.JOIN_PROPOSAL_DELAY_MS * 2); runCurrent()
+            assertEquals("prp_early", e.state.value.pending?.proposalId)
+            assertEquals(1, spoken.size)
+            assertTrue(acks.isEmpty())
+        } finally { e.stop() }
+    }
+
+    /** RC-3: 경유지가 없는 그룹 — 서버가 보내지 않는다 → 약 3 s 뒤 합류 제안(그 전에는 아무것도 읽지 않는다) */
+    @Test
+    fun `RC-3 - without a server proposal the join proposal follows after the delay`() = runTest {
+        val e = engine(testScheduler, joinProposal = true); e.start(); runCurrent()
+        try {
+            session.value = memberSession.copy(joinedAtMs = testScheduler.currentTime); runCurrent()
+            advanceTimeBy(RouteSyncEngine.JOIN_PROPOSAL_DELAY_MS - 1); runCurrent()
+            assertNull(e.state.value.pending)
+            assertTrue(spoken.isEmpty())
+            advanceTimeBy(1); runCurrent()
+            assertTrue(e.state.value.pending!!.local)
+            assertEquals(listOf("선두차 목적지 광주송정역까지 안내할까요?" to Priority.NORMAL), spoken)
+        } finally { e.stop() }
+    }
+
+    /** RC-3: 기다리는 사이 그룹이 끝나거나 방장이 되면 합류 제안을 내지 않는다. 옛 그룹의 서버 제안은 새 그룹의 합류 제안을 막지 않는다 */
+    @Test
+    fun `RC-3 - the delayed join proposal is dropped when the group ends or this car becomes the leader`() = runTest {
+        val e = engine(testScheduler, joinProposal = true); e.start(); runCurrent()
+        try {
+            session.value = memberSession.copy(joinedAtMs = testScheduler.currentTime); runCurrent()
+            advanceTimeBy(1_000); runCurrent()
+            session.value = null; runCurrent()
+            advanceTimeBy(RouteSyncEngine.JOIN_PROPOSAL_DELAY_MS * 2); runCurrent()
+            assertNull(e.state.value.pending)
+
+            session.value = memberSession.copy(groupId = "grp_2", joinedAtMs = testScheduler.currentTime); runCurrent()
+            advanceTimeBy(1_000); runCurrent()
+            session.value = memberSession.copy(groupId = "grp_2", joinedAtMs = testScheduler.currentTime, isLeader = true); runCurrent()
+            advanceTimeBy(RouteSyncEngine.JOIN_PROPOSAL_DELAY_MS * 2); runCurrent()
+            assertNull(e.state.value.pending)
+            assertTrue(spoken.isEmpty())
+
+            // 같은 그룹이라도 지난 합류 때 받은 서버 제안은 다시 합류했을 때의 합류 제안을 막지 않는다(시각 비교)
+            session.value = memberSession.copy(groupId = "grp_3", joinedAtMs = testScheduler.currentTime); runCurrent()
+            proposals.emit(proposal("prp_g3")); runCurrent()
+            e.decline(); runCurrent()
+            session.value = null; runCurrent()
+            advanceTimeBy(60_000); runCurrent()
+            session.value = memberSession.copy(groupId = "grp_3", joinedAtMs = testScheduler.currentTime); runCurrent()
+            advanceTimeBy(RouteSyncEngine.JOIN_PROPOSAL_DELAY_MS); runCurrent()
+            assertTrue(e.state.value.pending!!.local)
         } finally { e.stop() }
     }
 

@@ -105,6 +105,9 @@ data class RouteSyncState(
  *
  * 합류 직후(T30, docs/09 §4 장면 3): 멤버로 그룹에 막 들어오면 같은 카드·음성으로 "선두차 목적지 OO까지 안내할까요?" 를 묻고,
  * 수락 시 `requestRoute(그룹 목적지)`. 서버 제안이 아니므로 ACK 는 없다. 앱 재시작으로 복원된 세션([joinWindowMs] 이 지난 것)에는 다시 묻지 않는다.
+ * RC-3: 그룹 경로에 경유지가 있으면 서버가 `GROUP_JOINED` 직후 이 차에만 `ROUTE_FOLLOW_PROPOSAL` 을 다시 보낸다(C032) — 둘 다 곧바로 읽으면
+ * 질문 두 개를 연달아 듣는다. 그래서 합류 제안은 [joinProposalDelayMs](3 s) 늦게 내고, 그 사이 이 그룹의 서버 제안을 받았으면 생략한다
+ * (서버 제안이 목적지·경유지를 모두 담는다). 경유지가 없는 그룹은 서버가 보내지 않으므로 3 s 뒤 합류 제안이 나온다.
  */
 class RouteSyncEngine(
     private val session: StateFlow<GroupSession?>,
@@ -119,6 +122,8 @@ class RouteSyncEngine(
     /** 합류 직후 선두 목적지 안내 제안(T30). 테스트에서 끈다 */
     private val proposeDestinationOnJoin: Boolean = true,
     private val joinWindowMs: Long = JOIN_WINDOW_MS,
+    /** 합류 제안을 늦추는 시간(RC-3) — 그 안에 서버 제안(경유지 재전송)이 오면 합류 제안을 생략한다 */
+    private val joinProposalDelayMs: Long = JOIN_PROPOSAL_DELAY_MS,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val clock: () -> Long = System::currentTimeMillis,
     /** 주행 여부(DrivingStateMonitor). null = 늘 정차(기존 동작) */
@@ -145,6 +150,16 @@ class RouteSyncEngine(
     @Volatile
     private var parkJob: Job? = null
     private var debounceJob: Job? = null
+
+    /** 합류 제안 대기 타이머(RC-3) — 그룹이 끝나거나 바뀌거나 엔진이 멈추면 취소 */
+    @Volatile
+    private var joinJob: Job? = null
+
+    /** 마지막으로 받은 서버 제안의 그룹·시각(RC-3) — 합류 뒤 이 그룹의 서버 제안이 왔으면 합류 제안을 생략한다 */
+    private data class ServerProposalSeen(val groupId: String, val atMs: Long)
+
+    @Volatile
+    private var lastServerProposal: ServerProposalSeen? = null
 
     private val _state = MutableStateFlow(RouteSyncState())
     val state: StateFlow<RouteSyncState> = _state
@@ -199,6 +214,7 @@ class RouteSyncEngine(
                     if (s == null) {
                         // 그룹이 끝나면 대기 중 제안은 의미 없다(ACK 없음)
                         cancelTimers()
+                        joinJob?.cancel(); joinJob = null
                         _state.update { it.copy(pending = null, activeWaypoint = null, followedDestination = null) }
                         lastSent = null
                         lastGroupId = null
@@ -213,9 +229,16 @@ class RouteSyncEngine(
                         naviHadFollowed = false
                     }
                     lastGroupId = s.groupId
-                    // T30: 멤버로 막 합류했으면(복원된 세션 제외) 선두 목적지 안내를 제안한다
+                    joinJob?.cancel(); joinJob = null
+                    // T30: 멤버로 막 합류했으면(복원된 세션 제외) 선두 목적지 안내를 제안한다 — RC-3: [joinProposalDelayMs] 뒤, 서버 제안이 없을 때만
                     val justJoined = (clock() - s.joinedAtMs) in 0..joinWindowMs
-                    if (proposeDestinationOnJoin && !s.isLeader && justJoined) proposeLeaderDestination(s)
+                    if (proposeDestinationOnJoin && !s.isLeader && justJoined) {
+                        DhLog.i("routesync: joined → destination ask in ${joinProposalDelayMs}ms unless the server re-sends the route")
+                        joinJob = launch {
+                            delay(joinProposalDelayMs)
+                            proposeOnJoinIfNoServerProposal(s)
+                        }
+                    }
                 }
             }
         }
@@ -224,6 +247,7 @@ class RouteSyncEngine(
     @Synchronized
     fun stop() {
         job?.cancel(); job = null
+        joinJob?.cancel(); joinJob = null
         cancelTimers(); debounceJob?.cancel()
         _state.update { it.copy(running = false, pending = null) }
     }
@@ -252,6 +276,8 @@ class RouteSyncEngine(
             return
         }
         val now = clock()
+        // RC-3: 합류 직후 서버가 다시 보낸 경로 제안 — 아직 내지 않은 합류 제안은 생략된다([proposeOnJoinIfNoServerProposal])
+        lastServerProposal = ServerProposalSeen(s.groupId, now)
         val proposal = RouteProposal(
             proposalId = p.cmd.proposalId,
             destination = p.cmd.destination,
@@ -418,6 +444,21 @@ class RouteSyncEngine(
         DhLog.i("routesync: parked → held proposal ${TextMasking.maskVehicleId(r.proposalId)} re-exposed read=$readIt")
         expiryJob?.cancel()
         askParked(r, speakIt = readIt)
+    }
+
+    /**
+     * RC-3: 합류 뒤 [joinProposalDelayMs] 가 지났다 — 그 사이 이 그룹의 서버 제안(경유지 재전송, C032)을 받았으면 질문을 겹치지 않게 생략하고,
+     * 아니면 합류 제안을 낸다. 그 사이 그룹이 바뀌었거나 이 차가 방장이 됐으면 묻지 않는다.
+     */
+    private suspend fun proposeOnJoinIfNoServerProposal(joined: GroupSession) {
+        val current = session.value
+        if (current == null || current.groupId != joined.groupId || current.isLeader) return
+        val seen = lastServerProposal
+        if (seen != null && seen.groupId == joined.groupId && seen.atMs >= joined.joinedAtMs) {
+            DhLog.i("routesync: join ask skipped — the server already proposed the group route")
+            return
+        }
+        proposeLeaderDestination(current)
     }
 
     /** T30: 합류 직후 "선두차 목적지까지 안내할까요?" — 서버 제안이 아니므로 ACK 없이 내비만 요청한다 */
@@ -609,6 +650,9 @@ class RouteSyncEngine(
         const val DEBOUNCE_MS = 2_000L
         /** 합류 뒤 이 시간 안의 세션만 "막 합류"로 본다(앱 재시작 복원 세션 제외) */
         const val JOIN_WINDOW_MS = 60_000L
+
+        /** 합류 제안을 늦추는 시간(RC-3) — 서버의 경유지 재전송(GROUP_JOINED 직후)이 이 안에 온다 */
+        const val JOIN_PROPOSAL_DELAY_MS = 3_000L
 
         /** 주행 중 보류한 제안의 상한 — 처음 보류한 때부터(A006, RA-2) */
         const val HOLD_MAX_MS = 10 * 60_000L
