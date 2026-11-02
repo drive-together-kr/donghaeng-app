@@ -80,6 +80,40 @@ class HostTokenCacheTest {
     }
 
     @Test
+    fun `RD-3 - 만료됐고 서버 일시 오류(502)면 IOException - 다시 로그인 안내에서 멈추지 않고 모듈이 백오프로 다시 시도한다`() = runTest {
+        val cache = cache { throw DevAuthClient.DevAuthException("로그인에 실패했어요 (HTTP 502)", status = 502) }
+        now += oneHour + 1_000L
+        val error = runCatching { cache.accessToken() }.exceptionOrNull()
+        assertTrue("$error", error is IOException)
+    }
+
+    @Test
+    fun `RD-3 - 만료됐고 요청 제한(429)·서버 오류(503)도 일시 오류, 접속 키 거부(403)·형식(400)은 거부`() = runTest {
+        for (status in listOf(429, 500, 503)) {
+            val cache = HostTokenCache(tokens(first), reissue = { throw DevAuthClient.DevAuthException("x", status = status) }, clock = { now + oneHour + 1_000L })
+            assertTrue("HTTP $status", runCatching { cache.accessToken() }.exceptionOrNull() is IOException)
+        }
+        for (status in listOf(400, 403, 404)) {
+            val cache = HostTokenCache(tokens(first), reissue = { throw DevAuthClient.DevAuthException("x", status = status) }, clock = { now + oneHour + 1_000L })
+            assertEquals("HTTP $status", "", cache.accessToken())
+        }
+    }
+
+    @Test
+    fun `RD-3 - 일시 오류 뒤 서버가 살아나면 다음 호출에서 새 토큰을 받는다`() = runTest {
+        var fail = true
+        val cache = cache {
+            if (fail) throw DevAuthClient.DevAuthException("로그인에 실패했어요 (HTTP 502)", status = 502)
+            reissues++
+            tokens(second)
+        }
+        now += oneHour + 1_000L
+        assertTrue(runCatching { cache.accessToken() }.exceptionOrNull() is IOException)
+        fail = false
+        assertEquals(second, cache.accessToken())
+    }
+
+    @Test
     fun `로그아웃(clear) 뒤에는 빈 문자열`() = runTest {
         val cache = cache()
         cache.clear()

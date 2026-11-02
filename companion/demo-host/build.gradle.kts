@@ -129,4 +129,6 @@ dependencies {
     // 순수 로직 단위 테스트(무전 목록 VoiceItems·시연 신호음 FakeVoiceTone·그룹 관찰 재시도·호스트 토큰 갱신·합류 차 고르기·스토어)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    // dev 로그인(DevAuthClient)의 HTTP 상태 → 일시 오류 판정(RD-3)
+    testImplementation(libs.okhttp.mockwebserver)
 }

@@ -33,8 +33,18 @@ class DevAuthClient(
         .build(),
 ) {
 
-    /** 사용자에게 그대로 보여 줄 수 있는 한국어 문구를 담는다 */
-    class DevAuthException(message: String, cause: Throwable? = null) : Exception(message, cause)
+    /**
+     * 사용자에게 그대로 보여 줄 수 있는 한국어 문구를 담는다.
+     * @param status 서버가 응답한 HTTP 상태(2xx 아님). 연결 실패·응답 해석 실패면 null(연결 실패는 [cause] 가 [IOException])
+     */
+    class DevAuthException(message: String, cause: Throwable? = null, val status: Int? = null) : Exception(message, cause) {
+        /**
+         * 잠시 뒤 다시 하면 될 실패인지 — 연결 실패·타임아웃, 서버 일시 오류(5xx — 재배포 중 Caddy 502 등), 요청 제한(429).
+         * 나머지(403 접속 키·400 형식·404 경로 없음·본문 해석 실패)는 다시 해도 같다(RD-3).
+         */
+        val transient: Boolean
+            get() = cause is IOException || (status != null && (status >= 500 || status == 429))
+    }
 
     private val baseUrl = publicBaseUrl.trim().trimEnd('/')
 
@@ -66,6 +76,7 @@ class DevAuthClient(
                     envelope != null -> "${envelope.message} [${envelope.code}]"
                     else -> "로그인에 실패했어요 (HTTP $code)"
                 },
+                status = code,
             )
         }
         val tokens = try {

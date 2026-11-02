@@ -103,7 +103,10 @@ internal class HttpDongHaengApi(
     @Volatile
     private var cached: Cached? = null
 
-    /** 이 프로세스에서 합류할 때 쓴 내 차(groupId → vehicleId) — 동승자 메시지에 fromVehicleId 가 없을 때 보낸 차로 쓴다 */
+    /**
+     * 이 프로세스에서 **마지막으로** 합류할 때 쓴 내 차(groupId → vehicleId) — 동승자 메시지에 fromVehicleId 가 없을 때 보낸 차로 쓴다.
+     * vehicleId 를 생략한 합류가 새로 성공하면 그 그룹의 항목을 지운다(어느 차인지 모름 → 서버 기본값에 맡김). 409 복구는 찾아낸 차(대표 차)를 기억한다
+     */
     private val joinedVehicles = ConcurrentHashMap<String, String>()
 
     /**
@@ -170,7 +173,9 @@ internal class HttpDongHaengApi(
             if (e.code != ErrorCodes.ALREADY_MEMBER) throw e
             recoverAlreadyMember(vehicleId) ?: throw e
         }
-        joinedVehicle?.let { joinedVehicles[result.groupId] = it }
+        // 합류에 쓴 차를 기억한다. 생략(서버가 대표 차량을 고름)이면 예전 기억을 지운다 — 예전에 고른 차가 그 사이 그룹을 나갔으면
+        // 그 차가 보낸 차로 실려 NO_PAIRED_VEHICLE 로 거부된다(RD-1). 지우면 서버 기본값(이 그룹의 내 첫 차, 대표 차 우선)으로 간다
+        if (joinedVehicle != null) joinedVehicles[result.groupId] = joinedVehicle else joinedVehicles.remove(result.groupId)
         return result
     }
 

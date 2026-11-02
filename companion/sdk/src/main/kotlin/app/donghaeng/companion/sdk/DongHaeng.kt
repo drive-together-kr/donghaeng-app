@@ -129,7 +129,8 @@ public object DongHaeng {
      *
      * @param text 메시지 본문(공백만이면 [DongHaengException.Api] `INVALID_MESSAGE`)
      * @param fromVehicleId 동승자가 탄 내 차(이 그룹의 멤버). 차량에서 "{그 차 이름}에서 온 메시지"로 읽힌다.
-     *   생략하면 이 프로세스에서 그 그룹에 [joinGroup] 할 때 고른 차, 그것도 없으면 서버 기본(이 그룹의 내 첫 차 — 대표 차량 우선).
+     *   생략하면 이 프로세스에서 그 그룹에 마지막으로 [joinGroup] 할 때 고른 차, 차를 생략하고 합류했거나 기억이 없으면
+     *   서버 기본(이 그룹의 내 첫 차 — 대표 차량 우선).
      *   한 계정에 차가 여러 대면 넘기는 것이 맞다. 내 멤버 차가 아니면 `Api("NO_PAIRED_VEHICLE")`
      * @param idempotencyKey 사용자 동작 한 번(같은 메시지 보내기)마다 호스트가 만든 키(`[A-Za-z0-9_-]{8,64}`, 예: UUID).
      *   응답이 사라져 다시 보낼 때 **같은 키**를 주면 서버가 한 번만 처리해 차에서 두 번 읽히지 않는다(헤더 `Idempotency-Key`, docs/03).

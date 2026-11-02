@@ -29,7 +29,7 @@ companion/
 | `suspend DongHaeng.listMyVehicles(): List<MyVehicle>` | 계정에 연결된 내 차 (`GET /me/vehicles`) |
 | `suspend DongHaeng.joinGroup(qrPayload: String, vehicleId: String? = null): GroupJoinResult` | 그룹 QR(`{base}/j/{token}`)로 합류 (`POST /groups/join`). vehicleId 생략 시 대표 차량. **멱등**: 그 차가 이미 이 그룹이면(409 `ALREADY_MEMBER`) `GET /me/groups?active=true` → `GET /groups/{id}` 로 지금 그룹을 성공으로 돌려준다(못 찾으면 409 그대로) |
 | `suspend DongHaeng.pairVehicle(qrPayload: String, nickname: String): PairResult` | **대체 수단**: 계정에 차가 없을 때 차 화면 QR(`{base}/pair?c=CODE`)로 등록 (Device Authorization Grant 승인, `POST /device/approve`) |
-| `suspend DongHaeng.sendPassengerMessage(groupId: String, text: String, fromVehicleId: String? = null, idempotencyKey: String? = null)` | 동승자 메시지 → 그룹 차량에서 "{보낸 차}에서 온 메시지"로 읽힘 (`POST /groups/{id}/messages`). `fromVehicleId` = 동승자가 탄 내 차(생략 시 이 프로세스에서 합류할 때 고른 차 → 서버 기본 '그룹의 내 첫 차'). `idempotencyKey` = 사용자 동작 한 번의 키(`[A-Za-z0-9_-]{8,64}`, 헤더 `Idempotency-Key` — 다시 보내기에 같은 키면 서버가 한 번만 처리, 생략 시 호출마다 새 키, 형식이 틀리면 `IllegalArgumentException`) |
+| `suspend DongHaeng.sendPassengerMessage(groupId: String, text: String, fromVehicleId: String? = null, idempotencyKey: String? = null)` | 동승자 메시지 → 그룹 차량에서 "{보낸 차}에서 온 메시지"로 읽힘 (`POST /groups/{id}/messages`). `fromVehicleId` = 동승자가 탄 내 차(생략 시 이 프로세스에서 그 그룹에 마지막으로 합류할 때 고른 차 → 차를 생략하고 합류했으면 서버 기본 '그룹의 내 첫 차'). `idempotencyKey` = 사용자 동작 한 번의 키(`[A-Za-z0-9_-]{8,64}`, 헤더 `Idempotency-Key` — 다시 보내기에 같은 키면 서버가 한 번만 처리, 생략 시 호출마다 새 키, 형식이 틀리면 `IllegalArgumentException`) |
 | `DongHaeng.observeGroup(groupId: String): Flow<GroupSnapshot>` | 그룹 스냅샷 스트림. MVP 는 `GET /v1/groups/{id}` **15초 폴링**(수집 취소 시 종료) → 이후 푸시로 즉시(docs/07 §3). 서버 응답의 `snapshot.members` 가 있으면 그대로, 없으면 Member 목록을 `online=false`·`OFFLINE` 으로 채운다. `events` 는 `recentEvents` 를 오래된 것부터로 뒤집은 것, `leaderVehicleId` 는 지금 방장. **그룹이 `ENDED` 면 마지막 스냅샷 뒤 흐름이 정상 종료**한다. 서버 오류는 흐름 예외(`Api`) — **일시 오류(NETWORK·5xx·429) 뒤 다시 구독은 호스트 몫**(docs/07 §3.2, demo-host `GroupObservation`). **무전(`VOICE_MESSAGE`, F16)** 은 모듈이 오디오를 미리 받아 payload 에 `localAudioStatus`(READY·PENDING·EXPIRED·FAILED)·`localAudioPath` 를 붙인다(아래 §1.1) |
 | `data class DongHaengConfig(publicBaseUrl, provider, appVersion)` | `publicBaseUrl` = 서버 `DH_PUBLIC_BASE_URL`(끝 `/` 허용) |
 | `enum AccountProvider { BLUELINK, MYHYUNDAI, KIA_CONNECT, GENESIS_CONNECTED, DEV }` | 모듈을 내장한 공식 앱(= 서버가 검증할 IdP) |
@@ -97,7 +97,7 @@ val path = (event.payload["localAudioPath"] as? JsonPrimitive)?.content     // �
 ## 2. 호스트 앱(공식 앱)에 넣는 법
 
 1. **AAR 추가** — `sdk/build/outputs/aar/sdk-debug.aar`(또는 release)를 의존성으로 넣는다. AAR 파일에는 POM 이 없으므로 런타임 의존성 `app.donghaeng:protocol`, `kotlinx-serialization-json`, `kotlinx-coroutines-android`, `com.squareup.okhttp3:okhttp:4.12.0`(REST 전송용, 버전은 `gradle/libs.versions.toml`)을 호스트가 직접 추가해야 한다(합성 빌드 대신 사내 Maven 에 올리면 POM 이 전이한다).
-2. **로그인 직후 초기화** — 앱의 토큰 저장소를 `TokenProvider` 로 감싼다. 모듈은 동행 JWT 교환이 필요할 때(`POST /v1/auth/exchange` — 캐시가 없거나 만료됐거나 401 일 때)만 `accessToken()` 을 부르므로, **부를 때 만료가 가까우면 그 자리에서 갱신해 돌려준다**(demo-host `HostTokenCache` — 만료 2분 전 재발급, 네트워크 실패는 `IOException`, 거부는 빈 문자열). `init` 자체는 네트워크를 쓰지 않는다.
+2. **로그인 직후 초기화** — 앱의 토큰 저장소를 `TokenProvider` 로 감싼다. 모듈은 동행 JWT 교환이 필요할 때(`POST /v1/auth/exchange` — 캐시가 없거나 만료됐거나 401 일 때)만 `accessToken()` 을 부르므로, **부를 때 만료가 가까우면 그 자리에서 갱신해 돌려준다**(demo-host `HostTokenCache` — 만료 2분 전 재발급, 네트워크 실패·5xx·429 는 `IOException`(일시 오류), 거부는 빈 문자열). `init` 자체는 네트워크를 쓰지 않는다.
    ```kotlin
    DongHaeng.init(
        config = DongHaengConfig(
@@ -153,7 +153,7 @@ val path = (event.payload["localAudioPath"] as? JsonPrimitive)?.content     // �
 cd companion
 .\gradlew.bat :sdk:assembleDebug :demo-host:assembleDebug --console=plain   # AAR + APK
 .\gradlew.bat :sdk:testDebugUnitTest --console=plain                        # QrParserTest, DongHaengFakeFlowTest, HttpDongHaengApiTest(MockWebServer), VoiceInboxTest, HttpVoiceDownloadTest
-.\gradlew.bat :demo-host:testDebugUnitTest --console=plain                  # VoiceItemsTest, GroupObservationTest(일시 오류 재구독·종료·나감), DongHaengStoreTest(연결 상태·복원·보낸 차·첫 스냅샷), HostTokenCacheTest(만료 전 재발급), JoinVehiclePolicyTest, ScanInputTest, DemoHostMiscTest
+.\gradlew.bat :demo-host:testDebugUnitTest --console=plain                  # VoiceItemsTest, GroupObservationTest(일시 오류 재구독·종료·나감), DongHaengStoreTest(연결 상태·복원·보낸 차·첫 스냅샷), HostTokenCacheTest(만료 전 재발급·일시 오류), DevAuthClientTest(HTTP 상태 → 일시 오류), JoinVehiclePolicyTest, VehicleListStatusTest, ScanInputTest, DemoHostMiscTest
 .\gradlew.bat :demo-host:assembleRelease -PdhCloudHost=<VM-IP>.sslip.io -PdhDevLoginKey=<키>   # 클라우드 release(차량 앱과 같은 dhCloudHost)
 .\gradlew.bat :sdk:assembleRelease                                          # 배포용 AAR
 

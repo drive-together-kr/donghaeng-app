@@ -42,6 +42,7 @@ fun DongHaengSettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val vehicles by DongHaengStore.vehicles.collectAsStateWithLifecycle()
     val vehiclesError by DongHaengStore.vehiclesError.collectAsStateWithLifecycle()
+    val vehiclesLoading by DongHaengStore.vehiclesLoading.collectAsStateWithLifecycle()
     val participation by DongHaengStore.participation.collectAsStateWithLifecycle()
     val past by DongHaengStore.pastGroups.collectAsStateWithLifecycle()
 
@@ -84,14 +85,19 @@ fun DongHaengSettingsScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(28.dp))
             SectionHeader("차량별 참여 설정")
             KiaCard(contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
-                if (vehicles.isEmpty()) {
+                val listStatus = VehicleListStatus.of(vehicles, vehiclesLoading, vehiclesError)
+                if (listStatus != VehicleListStatus.LIST) {
                     Text(
-                        vehiclesError?.let { "내 차 목록을 불러오지 못했어요: $it" } ?: "계정에 연결된 차가 없어요",
+                        when (listStatus) {
+                            VehicleListStatus.LOADING -> "내 차 목록을 불러오는 중…"
+                            VehicleListStatus.ERROR -> "내 차 목록을 불러오지 못했어요: ${vehiclesError.orEmpty()}"
+                            else -> "계정에 연결된 차가 없어요"
+                        },
                         style = MaterialTheme.typography.bodyMedium,
-                        color = if (vehiclesError != null) KiaColors.Dot else KiaColors.TextSecondary,
+                        color = if (listStatus == VehicleListStatus.ERROR) KiaColors.Dot else KiaColors.TextSecondary,
                         modifier = Modifier.padding(vertical = 16.dp),
                     )
-                    if (vehiclesError != null) {
+                    if (listStatus == VehicleListStatus.ERROR) {
                         KiaChip("다시 불러오기", icon = R.drawable.ms_refresh, onClick = { DongHaengStore.refreshVehicles() }, modifier = Modifier.padding(bottom = 12.dp))
                     }
                 }

@@ -58,6 +58,8 @@ fun MainScreen(
     val snapshot by DongHaengStore.snapshot.collectAsStateWithLifecycle()
     val notifications by DongHaengStore.notifications.collectAsStateWithLifecycle()
     val vehicles by DongHaengStore.vehicles.collectAsStateWithLifecycle()
+    val vehiclesLoading by DongHaengStore.vehiclesLoading.collectAsStateWithLifecycle()
+    val vehiclesError by DongHaengStore.vehiclesError.collectAsStateWithLifecycle()
     val unread = notifications.any { !it.read }
     val userName = account?.nickname ?: DemoSession.USER_NAME
     val onDemoTap: (String) -> Unit = { demoToast(context, it) }
@@ -117,6 +119,9 @@ fun MainScreen(
                 KiaTab.MYCAR -> MyCarScreen(
                     vehicleName = DemoSession.VEHICLE_NAME,
                     vehicles = vehicles,
+                    vehiclesLoading = vehiclesLoading,
+                    vehiclesError = vehiclesError,
+                    onRetryVehicles = { DongHaengStore.refreshVehicles() },
                     onQr = onScan,
                     onProfile = onProfile,
                     onOpenDongHaengSettings = onOpenDongHaengSettings,

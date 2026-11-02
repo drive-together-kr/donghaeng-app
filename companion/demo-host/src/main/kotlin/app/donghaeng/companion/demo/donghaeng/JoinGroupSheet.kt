@@ -48,9 +48,11 @@ import kotlinx.coroutines.launch
 /**
  * 삽입 지점 A — "그룹 합류" 바텀시트. 그룹명·방장·목적지·인원(초대 미리보기) + "어떤 차로 함께 갈까요?"(내 차 목록) → [함께 가기] → joinGroup.
  *
- * 차 고르기 규칙은 [JoinVehiclePolicy]: 이 그룹의 방장 차·참여를 꺼 둔 차는 고를 수 없고, 고를 수 있는 차가 한 대일 때만 미리 고른다
+ * 차 고르기 규칙은 [JoinVehiclePolicy]: 참여를 꺼 둔 차는 고를 수 없다. 이 그룹의 방장 차는 고를 수 있지만(그 차에 탄 채 폰으로 보기 —
+ * 모듈이 409 ALREADY_MEMBER 를 성공으로 바꾼다, RD-2) 다른 차가 있으면 미리 고르지 않는다. 미리 고르기는 고를 차가 한 대일 때만
  * (D093 — 예전엔 대표 차량 = 방장 차를 기본으로 골라 409, D026 — 같은 계정을 쓰는 다른 사람의 대표 차를 고를 수 있었다).
- * 시트를 열 때마다 내 차 목록을 다시 불러오고, 불러오는 중·실패를 '차 없음'과 구분해 보여 준다(D080).
+ * 미리 고른 차는 목록·미리보기가 늦게 오면 다시 정하고, 사용자가 누른 차는 그대로 둔다.
+ * 시트를 열 때마다 내 차 목록을 다시 불러오고, 불러오는 중·실패를 '차 없음'과 구분해 보여 준다(D080, [VehicleListStatus]).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,6 +71,7 @@ fun JoinGroupSheet(
     var preview by remember { mutableStateOf<InvitePreview?>(null) }
     var previewLoading by remember { mutableStateOf(true) }
     var selectedId by remember { mutableStateOf<String?>(null) }
+    var userPicked by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -82,7 +85,9 @@ fun JoinGroupSheet(
     val off = participation.filterValues { !it }.keys
     val options = JoinVehiclePolicy.options(vehicles, preview?.leaderVehicleId, off)
     LaunchedEffect(options) {
-        selectedId = JoinVehiclePolicy.selection(options, selectedId)
+        val next = JoinVehiclePolicy.selection(options, selectedId, userPicked)
+        if (next != selectedId) userPicked = false // 고를 수 없게 된 차를 놓고 기본값으로 — 다시 미리 고른 값
+        selectedId = next
     }
     val selected = options.firstOrNull { it.selectable && it.vehicle.vehicleId == selectedId }?.vehicle
 
@@ -131,28 +136,30 @@ fun JoinGroupSheet(
             Spacer(Modifier.height(20.dp))
             Text("어떤 차로 함께 갈까요?", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(10.dp))
-            when {
-                vehicles.isEmpty() && vehiclesLoading -> Row(verticalAlignment = Alignment.CenterVertically) {
+            when (VehicleListStatus.of(vehicles, vehiclesLoading, vehiclesError)) {
+                VehicleListStatus.LOADING -> Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = KiaColors.Accent)
                     Spacer(Modifier.width(10.dp))
                     Text("내 차 목록을 불러오는 중…", style = MaterialTheme.typography.bodyMedium, color = KiaColors.TextSecondary)
                 }
-                vehicles.isEmpty() && vehiclesError != null -> {
-                    Text("내 차 목록을 불러오지 못했어요: $vehiclesError", style = MaterialTheme.typography.bodyMedium, color = KiaColors.Dot)
+                VehicleListStatus.ERROR -> {
+                    Text("내 차 목록을 불러오지 못했어요: ${vehiclesError.orEmpty()}", style = MaterialTheme.typography.bodyMedium, color = KiaColors.Dot)
                     Spacer(Modifier.height(8.dp))
                     KiaChip("다시 불러오기", icon = R.drawable.ms_refresh, onClick = { DongHaengStore.refreshVehicles() })
                 }
-                vehicles.isEmpty() -> Text(
+                VehicleListStatus.EMPTY -> Text(
                     "계정에 연결된 차가 없어요. 차량 화면의 등록 QR(또는 코드)을 먼저 등록해 주세요.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = KiaColors.TextSecondary,
                 )
-                options.none { it.selectable } -> Text(
-                    "고를 수 있는 차가 없어요. 이 그룹의 방장 차이거나 '동행 그룹 주행' 설정에서 참여를 꺼 둔 차예요.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = KiaColors.TextSecondary,
-                )
-                selected == null -> Text("함께 갈 차를 골라 주세요.", style = MaterialTheme.typography.bodySmall, color = KiaColors.TextSecondary)
+                VehicleListStatus.LIST -> when {
+                    options.none { it.selectable } -> Text(
+                        "고를 수 있는 차가 없어요. '동행 그룹 주행' 설정에서 이 폰의 참여를 꺼 둔 차예요.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = KiaColors.TextSecondary,
+                    )
+                    selected == null -> Text("함께 갈 차를 골라 주세요.", style = MaterialTheme.typography.bodySmall, color = KiaColors.TextSecondary)
+                }
             }
             options.forEach { option ->
                 val v = option.vehicle
@@ -164,7 +171,10 @@ fun JoinGroupSheet(
                         .clip(RoundedCornerShape(16.dp))
                         .background(if (isSelected) KiaColors.SubCard else KiaColors.Card)
                         .border(1.dp, if (isSelected) KiaColors.Accent else KiaColors.SubCard, RoundedCornerShape(16.dp))
-                        .clickable(enabled = !busy && option.selectable) { selectedId = v.vehicleId }
+                        .clickable(enabled = !busy && option.selectable) {
+                            selectedId = v.vehicleId
+                            userPicked = true
+                        }
                         .alpha(if (option.selectable) 1f else 0.45f)
                         .padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -174,6 +184,9 @@ fun JoinGroupSheet(
                     Column(Modifier.weight(1f)) {
                         Text(v.nickname, style = MaterialTheme.typography.titleSmall)
                         Text(listOf(v.brand, v.model).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = KiaColors.TextSecondary)
+                        JoinVehiclePolicy.hint(option)?.let { hint ->
+                            Text(hint, style = MaterialTheme.typography.labelSmall, color = KiaColors.TextTertiary, modifier = Modifier.padding(top = 2.dp))
+                        }
                     }
                     KiaTag(JoinVehiclePolicy.tag(option))
                 }
@@ -205,9 +218,14 @@ fun JoinGroupSheet(
                 }
             }
             Spacer(Modifier.height(8.dp))
+            val selectedIsLeader = options.any { it.leaderOfThisGroup && it.vehicle.vehicleId == selected?.vehicleId }
             Text(
-                "합류하면 선택한 차의 화면에 그룹이 뜨고, 위치·도착 예정 시간·잔량이 그룹과 공유돼요. " +
-                    "그 차가 다른 그룹에 있었다면 그 그룹에서 빠져요(방장이었으면 다른 차가 이어받아요).",
+                if (selectedIsLeader) {
+                    "이 차는 이미 이 그룹의 방장 차예요. 차는 그대로 두고, 이 폰에서 그룹을 보고 메시지를 보낼 수 있어요."
+                } else {
+                    "합류하면 선택한 차의 화면에 그룹이 뜨고, 위치·도착 예정 시간·잔량이 그룹과 공유돼요. " +
+                        "그 차가 다른 그룹에 있었다면 그 그룹에서 빠져요(방장이었으면 다른 차가 이어받아요)."
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = KiaColors.TextTertiary,
             )

@@ -55,10 +55,11 @@ class DongHaengStoreTest {
     /** 호출을 기록하고 정한 대로 답하는 게이트웨이 */
     private class ScriptedGateway : DongHaengGateway {
         var vehicles = listOf<MyVehicle>()
+        var listFailure: DongHaengException? = null
         var observeCalls = 0
         var observe: (groupId: String, call: Int) -> Flow<GroupSnapshot> = { _, _ -> flow { awaitCancellation() } }
         val sent = mutableListOf<Triple<String, String?, String>>()
-        override suspend fun listMyVehicles(): List<MyVehicle> = vehicles
+        override suspend fun listMyVehicles(): List<MyVehicle> = listFailure?.let { throw it } ?: vehicles
         override suspend fun previewInvite(qrPayload: String): InvitePreview? = null
         override suspend fun joinGroup(qrPayload: String, vehicleId: String?): GroupJoinResult {
             val groupId = qrPayload.substringAfterLast("/").replace("inv_", "grp_")
@@ -372,6 +373,25 @@ class DongHaengStoreTest {
         configured(ScriptedGateway())
         assertFalse(DongHaengStore.isParticipating("veh_a"))
         assertEquals(setOf("veh_a"), DongHaengStore.participationOff())
+    }
+
+    // ---------- RD-4 ----------
+
+    @Test
+    fun `RD-4 - 내 차 목록 불러오기가 실패하면 '차 없음'이 아니라 ERROR, 다시 불러오기에 성공하면 목록`() = runTest {
+        useTestScope()
+        val gw = ScriptedGateway()
+        gw.listFailure = DongHaengException.Api("NETWORK", "서버에 연결할 수 없어요")
+        configured(gw)
+        fun status() = VehicleListStatus.of(DongHaengStore.vehicles.value, DongHaengStore.vehiclesLoading.value, DongHaengStore.vehiclesError.value)
+        assertEquals(VehicleListStatus.ERROR, status())
+
+        gw.listFailure = null
+        DongHaengStore.refreshVehicles()
+        assertEquals("다시 불러오는 동안", VehicleListStatus.LOADING, status())
+        runCurrent()
+        assertEquals(VehicleListStatus.LIST, status())
+        assertNull(DongHaengStore.vehiclesError.value)
     }
 
     // ---------- D084 ----------

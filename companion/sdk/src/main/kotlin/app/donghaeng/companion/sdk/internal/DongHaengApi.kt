@@ -26,7 +26,7 @@ internal interface DongHaengApi {
 
     /**
      * `POST /groups/{groupId}/messages` + 헤더 `Idempotency-Key`([idempotencyKey], 같은 키 재전송은 서버가 한 번만 처리).
-     * [fromVehicleId] 가 null 이면 이 프로세스에서 그 그룹에 합류할 때 고른 차, 그것도 없으면 서버 기본(그룹의 내 첫 차).
+     * [fromVehicleId] 가 null 이면 이 프로세스에서 그 그룹에 마지막으로 합류할 때 고른 차, 차를 생략하고 합류했거나 기억이 없으면 서버 기본(그룹의 내 첫 차).
      */
     suspend fun sendPassengerMessage(groupId: String, text: String, fromVehicleId: String?, idempotencyKey: String)
 

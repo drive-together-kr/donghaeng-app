@@ -20,12 +20,13 @@ import kotlin.coroutines.cancellation.CancellationException
  * 그래서 물을 때마다 JWT `exp`(서명 검증 없이 payload 만)를 보고 [renewBeforeMs] 안으로 들어왔으면 [reissue](데모: 같은 이메일로 dev 로그인 재발급 —
  * 실제 공식 앱이면 자기 OAuth refresh)로 바꾼다. 갱신 실패:
  * - 지금 토큰이 아직 유효하면 그것을 돌려준다(다음 교환 때 다시 시도)
- * - 만료됐고 네트워크 오류면 [IOException] 을 던진다 → 모듈이 `Api("NETWORK")`(일시 오류)로 바꿔 관찰이 백오프로 다시 시도한다
- * - 만료됐고 서버가 거부했으면 빈 문자열 → 모듈이 `Unauthorized`(다시 로그인 안내)
+ * - 만료됐고 일시 오류(연결 실패·타임아웃, 서버 5xx — 재배포 중 Caddy 502 등, 429 요청 제한)면 [IOException] 을 던진다
+ *   → 모듈이 `Api("NETWORK")`(일시 오류)로 바꿔 관찰이 백오프로 다시 시도한다(RD-3 — 예전에는 5xx·429 도 '거부'로 보아 다시 로그인 안내에서 멈췄다)
+ * - 만료됐고 서버가 거부했으면(403·400 등) 빈 문자열 → 모듈이 `Unauthorized`(다시 로그인 안내)
  *
  * 토큰은 메모리에만 둔다. 로그에는 남은 시간(초)만(규칙 8).
  *
- * @param reissue 새 토큰 쌍을 받는다. 실패는 예외(네트워크면 [IOException] 이거나 cause 가 IOException)
+ * @param reissue 새 토큰 쌍을 받는다. 실패는 예외 — 일시 오류는 [IOException], cause 가 IOException, 또는 [DevAuthClient.DevAuthException.transient]
  */
 class HostTokenCache(
     initial: TokenResponse,
@@ -53,11 +54,12 @@ class HostTokenCache(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            val network = e is IOException || e.cause is IOException
-            Log.w(TAG, "host token renew failed network=$network leftS=${(expMs - now) / 1000} cause=${e.javaClass.simpleName}")
+            val transient = isTransient(e)
+            val status = (e as? DevAuthClient.DevAuthException)?.status
+            Log.w(TAG, "host token renew failed transient=$transient status=$status leftS=${(expMs - now) / 1000} cause=${e.javaClass.simpleName}")
             return@withLock when {
                 now < expMs -> held.accessToken
-                network -> throw IOException("host token renew failed", e)
+                transient -> throw IOException("host token renew failed", e)
                 else -> ""
             }
         }
@@ -69,6 +71,10 @@ class HostTokenCache(
 
     companion object {
         private const val TAG = DemoApplication.TAG
+
+        /** 다시 받기 실패가 일시 오류인지(→ IOException 으로 모듈에 넘겨 백오프 재시도) */
+        internal fun isTransient(e: Exception): Boolean =
+            e is IOException || e.cause is IOException || (e is DevAuthClient.DevAuthException && e.transient)
 
         /** 만료 2분 전부터 갱신 — 모듈의 교환 여유(30 s)와 서버 시계 허용(60 s)보다 크게 */
         const val RENEW_BEFORE_MS = 2 * 60 * 1000L
