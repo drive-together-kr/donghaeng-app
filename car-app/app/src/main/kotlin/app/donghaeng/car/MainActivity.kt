@@ -39,7 +39,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        requestedRoute.value = routeOf(intent)
+        // 다시 만들어진 액티비티(주야간 전환·프로세스 복원)는 처음 받은 카드 인텐트를 다시 처리하지 않는다 — 탭은 한 번
+        requestedRoute.value = routeOf(intent, fresh = savedInstanceState == null)
         setContent {
             DongHaengTheme {
                 DhNavHost(requestedRoute = requestedRoute, onRouteConsumed = { requestedRoute.value = null })
@@ -59,17 +60,23 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        requestedRoute.value = routeOf(intent)
+        requestedRoute.value = routeOf(intent, fresh = true)
     }
 
-    private fun routeOf(intent: android.content.Intent?): String? {
+    private fun routeOf(intent: android.content.Intent?, fresh: Boolean): String? {
         val from = intent?.getStringExtra(EXTRA_FROM)
-        val driving = runCatching { surfaceState.isDriving.value }.getOrDefault(false)
-        if (!CardTapPolicy.opensScreen(from, driving)) {
-            // 주행 중 카드 탭 — 동행 화면으로 덮지 않고 순정 내비를 앞으로(실패하면 그대로 둔다)
-            app.donghaeng.car.core.common.DhLog.i("card tap while driving → 순정 내비 유지(B125)")
-            if (!app.donghaeng.car.surface.NaviLauncher.bringToFront(this, pleosBuild = BuildConfig.ADAPTER == "pleos")) moveTaskToBack(true)
-            return null
+        if (from == FROM_CARD) {
+            // 카드 탭은 한 번만 처리한다 — 저장된 인텐트에서 지워 다시 만들어질 때 되풀이하지 않게
+            intent?.removeExtra(EXTRA_FROM)
+            if (!fresh) return null
+            val driving = runCatching { surfaceState.isDriving.value }.getOrDefault(false)
+            if (!CardTapPolicy.opensScreen(from, driving)) {
+                intent?.removeExtra(EXTRA_SCREEN)
+                // 주행 중 카드 탭 — 동행 화면으로 덮지 않고 순정 내비를 앞으로(못 올리면 동행을 뒤로 보낸다)
+                app.donghaeng.car.core.common.DhLog.i("card tap while driving → 순정 내비 유지(B125)")
+                if (!app.donghaeng.car.surface.NaviLauncher.bringToFront(this, pleosBuild = BuildConfig.ADAPTER == "pleos")) moveTaskToBack(true)
+                return null
+            }
         }
         return screenRouteOf(intent)
     }
