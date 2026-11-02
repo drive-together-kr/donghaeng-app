@@ -51,4 +51,66 @@ object FormationLayout {
         val start = centerX - stepPx * (count - 1) / 2f
         return List(count) { start + stepPx * it }
     }
+
+    // ---------------------------------------------------------------- 다음 정차지 라벨 자리(2026-11-02 사용자 지적: "덕평휴게소"·"아빠 차" 겹침)
+
+    /** 가로 구간(px) — 이미 그린 라벨이 차지한 자리 */
+    data class Span(val left: Float, val right: Float)
+
+    /** 정차지 라벨 줄: 차 이름 줄 / 그 위 줄 / 막대 아래(간격·목적지) 줄 */
+    enum class StopRow { NEAR, HIGH, BELOW }
+
+    data class StopPlacement(val row: StopRow, val left: Float, val overlaps: Boolean)
+
+    /**
+     * 다음 정차지 라벨(아이콘 + 이름, 폭 [width])을 다른 라벨과 겹치지 않는 자리에 둔다.
+     *
+     * 1) 정차지 바로 위(차 이름 줄 [near])가 비면 거기 — 2) 막히면 한 줄 위([high]) — 3) 그것도 막히면 막대 아래([below], 간격·목적지 라벨).
+     * 각 줄에서 [maxShiftPx] 안으로 옆으로 밀어 비는 자리를 먼저 찾는다. 4) 어느 줄도 그 안에 없으면 셋 중 가장 덜 밀리는 빈자리,
+     * 5) 빈자리가 아예 없으면 [StopRow.HIGH] 의 원래 자리를 겹침 표시와 함께 돌려준다(그리는 쪽이 이름을 줄여 다시 시도).
+     * [desiredLeft] 는 정차지 눈금 중심에 맞춘 왼쪽 끝, 결과 left 는 늘 [0, canvasWidth - width] 안.
+     */
+    fun placeStopLabel(
+        desiredLeft: Float,
+        width: Float,
+        canvasWidth: Float,
+        near: List<Span>,
+        high: List<Span>,
+        below: List<Span>,
+        gapPx: Float,
+        maxShiftPx: Float,
+    ): StopPlacement {
+        val (idx, left, overlaps) = placeLabel(desiredLeft, width, canvasWidth, listOf(near, high, below), gapPx, maxShiftPx, fallbackRow = 1)
+        return StopPlacement(StopRow.entries[idx], left, overlaps)
+    }
+
+    /**
+     * 일반형: [rows] 순서(앞이 우선)로 각 줄에서 [maxShiftPx] 안의 빈자리 → 없으면 가장 덜 밀리는 빈자리 → 그래도 없으면
+     * [fallbackRow] 의 원래 자리(overlaps=true). 돌려주는 left 는 늘 [0, canvasWidth - width] 안.
+     * 목적지 라벨(막대 오른쪽 끝)도 이것으로 간격 라벨과 겹치지 않게 둔다(2026-11-02 기기 캡처 "앞 2.5 km경포해변 14 km").
+     */
+    fun placeLabel(
+        desiredLeft: Float,
+        width: Float,
+        canvasWidth: Float,
+        rows: List<List<Span>>,
+        gapPx: Float,
+        maxShiftPx: Float,
+        fallbackRow: Int = 0,
+    ): Triple<Int, Float, Boolean> {
+        val maxLeft = (canvasWidth - width).coerceAtLeast(0f)
+        val want = desiredLeft.coerceIn(0f, maxLeft)
+        fun free(left: Float, spans: List<Span>) = spans.none { left < it.right + gapPx && left + width > it.left - gapPx }
+        fun best(spans: List<Span>): Float? {
+            val candidates = buildList {
+                add(want)
+                spans.forEach { add(it.left - gapPx - width); add(it.right + gapPx) }
+            }.map { it.coerceIn(0f, maxLeft) }.filter { free(it, spans) }
+            return candidates.minByOrNull { kotlin.math.abs(it - want) }
+        }
+        val found = rows.mapIndexedNotNull { i, spans -> best(spans)?.let { i to it } }
+        found.firstOrNull { kotlin.math.abs(it.second - want) <= maxShiftPx }?.let { return Triple(it.first, it.second, false) }
+        found.minByOrNull { kotlin.math.abs(it.second - want) }?.let { return Triple(it.first, it.second, false) }
+        return Triple(fallbackRow, want, true)
+    }
 }

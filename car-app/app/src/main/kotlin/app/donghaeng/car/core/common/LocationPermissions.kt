@@ -53,12 +53,27 @@ object LocationPermissions {
     fun notificationsGranted(context: Context): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || granted(context, Manifest.permission.POST_NOTIFICATIONS)
 
-    /** 런타임 요청 대상 전체(승인 여부와 무관) — 요청 다이얼로그 한 번에 묶는다 */
-    fun runtimePermissions(context: Context): Array<String> = runtimePermissionList(
-        sdkInt = Build.VERSION.SDK_INT,
-        automotive = context.packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE),
-        fusedRequestable = fusedRequestable(context),
+    /**
+     * 런타임 요청 대상 전체(승인 여부와 무관) — 요청 다이얼로그 한 번에 묶는다.
+     * 이 앱 매니페스트에 선언된 것만 남긴다([onlyDeclared]) — fake flavor 는 CAR_SPEED 를 선언하지 않아 승인될 수 없는데 늘 '미승인'으로 남아
+     * 권한 안내 창이 실행마다 다시 떴다(2026-11-02 기기 확인).
+     */
+    fun runtimePermissions(context: Context): Array<String> = onlyDeclared(
+        runtimePermissionList(
+            sdkInt = Build.VERSION.SDK_INT,
+            automotive = context.packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE),
+            fusedRequestable = fusedRequestable(context),
+        ),
+        declaredPermissions(context),
     ).toTypedArray()
+
+    /** 순수 함수 — [declared] 가 null(조회 실패)이면 목록 그대로 */
+    fun onlyDeclared(list: List<String>, declared: Set<String>?): List<String> = if (declared == null) list else list.filter { it in declared }
+
+    private fun declaredPermissions(context: Context): Set<String>? = runCatching {
+        @Suppress("DEPRECATION")
+        context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_PERMISSIONS).requestedPermissions?.toSet()
+    }.getOrNull()
 
     fun carSpeedGranted(context: Context): Boolean = granted(context, CAR_SPEED)
 

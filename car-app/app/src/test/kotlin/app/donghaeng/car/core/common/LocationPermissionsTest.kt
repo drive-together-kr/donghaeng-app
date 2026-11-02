@@ -32,4 +32,16 @@ class LocationPermissionsTest {
         )
         assertTrue("영구 거부 — 다이얼로그 없이 전부 false", LocationPermissionViewModel.newlyGranted(missing, missing.associateWith { false }).isEmpty())
     }
+
+    @Test
+    fun `permissions the flavor does not declare are never requested - fake has no CAR_SPEED`() {
+        val all = LocationPermissions.runtimePermissionList(sdkInt = 34, automotive = true, fusedRequestable = false)
+        val declaredByFake = setOf("android.permission.ACCESS_FINE_LOCATION", "android.permission.ACCESS_COARSE_LOCATION",
+            "android.permission.POST_NOTIFICATIONS", "android.permission.RECORD_AUDIO")
+        val kept = LocationPermissions.onlyDeclared(all, declaredByFake)
+        org.junit.Assert.assertFalse(LocationPermissions.CAR_SPEED in kept)
+        org.junit.Assert.assertEquals(4, kept.size)
+        org.junit.Assert.assertEquals(all, LocationPermissions.onlyDeclared(all, null))
+    }
 }
+

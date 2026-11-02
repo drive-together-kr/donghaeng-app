@@ -131,6 +131,10 @@ object DriveTone {
 }
 
 private val FORMATION_HEIGHT = 236.dp
+
+/** 대열 막대: 막대 중심 → 차 이름 줄 중심 거리, 한 줄 올릴 때 간격(이름 줄 → 그 위 줄) */
+private val NAME_ROW = 52.dp
+private val ROW_STEP = 30.dp
 private val LADDER_HEIGHT = 330.dp
 
 /** 연결이 끊긴 채 오래된 값의 불투명도(E038) */
@@ -316,18 +320,9 @@ fun FormationBar(ui: FormationBarUi, groupName: String, modifier: Modifier = Mod
                 sorted.zipWithNext().forEach { (rear, ahead) ->
                     if (rear.gapWarn) drawLine(tones.caution, Offset(xOf(rear.offsetKm), y), Offset(xOf(ahead.offsetKm), y), strokeWidth = 10.dp.toPx(), cap = StrokeCap.Round)
                 }
-                ui.nextStopName?.let { stop ->
-                    val sx = xOf(ui.nextStopOffsetKm ?: endKm)
-                    drawLine(onSurface, Offset(sx, y - 16.dp.toPx()), Offset(sx, y + 16.dp.toPx()), strokeWidth = 4.dp.toPx(), cap = StrokeCap.Round)
-                    val t = measurer.measure(stop, stopStyle)
-                    val iconSize = 24.dp.toPx()
-                    val totalW = iconSize + 8.dp.toPx() + t.size.width
-                    val left = (sx - totalW / 2f).coerceAtMost(size.width - totalW - 4.dp.toPx())
-                    drawFuel(Offset(left, y - 60.dp.toPx() - iconSize / 2f), iconSize, tones.info)
-                    drawText(t, topLeft = Offset(left + iconSize + 8.dp.toPx(), y - 60.dp.toPx() - t.size.height / 2f))
-                }
-                val dest = measurer.measure(ui.destinationText, destStyle)
-                drawText(dest, topLeft = Offset(size.width - dest.size.width, y + 26.dp.toPx()))
+                // 정차지 눈금만 먼저 — 라벨은 차 이름·간격 라벨 자리를 안 뒤 겹치지 않는 줄에 그린다(이 Canvas 맨 끝)
+                val stopX = ui.nextStopName?.let { xOf(ui.nextStopOffsetKm ?: endKm) }
+                stopX?.let { sx -> drawLine(onSurface, Offset(sx, y - 16.dp.toPx()), Offset(sx, y + 16.dp.toPx()), strokeWidth = 4.dp.toPx(), cap = StrokeCap.Round) }
 
                 val r = 19.dp.toPx()
                 val xs = sorted.map { xOf(it.offsetKm) }
@@ -349,13 +344,19 @@ fun FormationBar(ui: FormationBarUi, groupName: String, modifier: Modifier = Mod
                     }
                 }
                 val fitted = fitLabels(measurer, clusters.map { Label(it.cx, FormationLayout.clusterLabel(it.cars.map { car -> car.name })) }, nameStyleOf, 8.dp.toPx(), ::shortName)
+                val nearSpans = mutableListOf<FormationLayout.Span>()
+                val highSpans = mutableListOf<FormationLayout.Span>()
                 fitted.labels.forEachIndexed { i, l ->
                     val t = measurer.measure(l.text, fitted.style)
                     // 끝까지 겹치면(아주 촘촘한 대열) 홀수 번째를 한 줄 위로 — 겹쳐 그리지 않는다
-                    val raise = if (!fitted.fits && i % 2 == 1) 30.dp.toPx() else 0f
-                    val top = y - 52.dp.toPx() - raise - t.size.height / 2f
+                    val raised = !fitted.fits && i % 2 == 1
+                    val raise = if (raised) ROW_STEP.toPx() else 0f
+                    val top = y - NAME_ROW.toPx() - raise - t.size.height / 2f
                     drawText(t, topLeft = Offset(l.cx - t.size.width / 2f, top))
-                    if (clusters[i].cars.any { it.lowEnergy }) drawFuel(Offset(l.cx + t.size.width / 2f + 4.dp.toPx(), top + t.size.height / 2f - 9.dp.toPx()), 18.dp.toPx(), tones.caution)
+                    val low = clusters[i].cars.any { it.lowEnergy }
+                    if (low) drawFuel(Offset(l.cx + t.size.width / 2f + 4.dp.toPx(), top + t.size.height / 2f - 9.dp.toPx()), 18.dp.toPx(), tones.caution)
+                    val span = FormationLayout.Span(l.cx - t.size.width / 2f, l.cx + t.size.width / 2f + if (low) 26.dp.toPx() else 0f)
+                    if (raised) highSpans += span else nearSpans += span
                 }
                 // 간격 라벨 — 묶음마다 하나(내 차 묶음은 없음). 묶음에서 내 차에 가장 가까운 차의 간격
                 val gapPicks = clusters.mapNotNull { c ->
@@ -364,10 +365,44 @@ fun FormationBar(ui: FormationBarUi, groupName: String, modifier: Modifier = Mod
                     c.cx to pick
                 }
                 val gaps = fitLabels(measurer, gapPicks.map { (cx, car) -> Label(cx, car.gapToMeText!!) }, gapStyleOf, 6.dp.toPx()) { it.replace(" km", "") }
+                val belowSpans = mutableListOf<FormationLayout.Span>()
                 gaps.labels.forEachIndexed { i, l ->
                     val st = if (gapPicks[i].second.gapWarn) gapWarnStyleOf(gaps.style.fontSize.value.toInt()) else gaps.style
                     val t = measurer.measure(l.text, st)
                     drawText(t, topLeft = Offset(l.cx - t.size.width / 2f, y + 30.dp.toPx()))
+                    belowSpans += FormationLayout.Span(l.cx - t.size.width / 2f, l.cx + t.size.width / 2f)
+                }
+                // 목적지 라벨(막대 오른쪽 끝) — 막대 아래 줄이 기본, 간격 라벨과 겹치면 옆으로 밀거나 차 이름 줄·그 위 줄로(FormationLayout.placeLabel)
+                val dest = measurer.measure(ui.destinationText, destStyle)
+                val destPlace = FormationLayout.placeLabel(size.width - dest.size.width, dest.size.width.toFloat(), size.width, listOf(belowSpans, nearSpans, highSpans), 12.dp.toPx(), 160.dp.toPx())
+                val destCy = when (destPlace.first) {
+                    0 -> y + 30.dp.toPx() + dest.size.height / 2f
+                    1 -> y - NAME_ROW.toPx()
+                    else -> y - NAME_ROW.toPx() - ROW_STEP.toPx()
+                }
+                drawText(dest, topLeft = Offset(destPlace.second, destCy - dest.size.height / 2f))
+                listOf(belowSpans, nearSpans, highSpans)[destPlace.first] += FormationLayout.Span(destPlace.second, destPlace.second + dest.size.width)
+                // 다음 정차지 라벨 — 차 이름 줄 → 한 줄 위 → 막대 아래 순으로 비는 자리(FormationLayout.placeStopLabel). 못 피하면 이름을 줄여 다시
+                val stopName = ui.nextStopName
+                if (stopX != null && stopName != null) {
+                    val iconSize = 24.dp.toPx()
+                    val iconGap = 8.dp.toPx()
+                    val edge = size.width - 4.dp.toPx()
+                    var t = measurer.measure(stopName, stopStyle)
+                    var w = iconSize + iconGap + t.size.width
+                    var place = FormationLayout.placeStopLabel(stopX - w / 2f, w, edge, nearSpans, highSpans, belowSpans, 12.dp.toPx(), 120.dp.toPx())
+                    if (place.overlaps) {
+                        t = measurer.measure(shortName(stopName), stopStyle)
+                        w = iconSize + iconGap + t.size.width
+                        place = FormationLayout.placeStopLabel(stopX - w / 2f, w, edge, nearSpans, highSpans, belowSpans, 12.dp.toPx(), 120.dp.toPx())
+                    }
+                    val cy = when (place.row) {
+                        FormationLayout.StopRow.NEAR -> y - NAME_ROW.toPx()
+                        FormationLayout.StopRow.HIGH -> y - NAME_ROW.toPx() - ROW_STEP.toPx()
+                        FormationLayout.StopRow.BELOW -> y + 30.dp.toPx() + t.size.height / 2f
+                    }
+                    drawFuel(Offset(place.left, cy - iconSize / 2f), iconSize, tones.info)
+                    drawText(t, topLeft = Offset(place.left + iconSize + iconGap, cy - t.size.height / 2f))
                 }
             }
         }
