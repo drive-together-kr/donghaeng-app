@@ -232,7 +232,7 @@ fun KiaChip(
     }
 }
 
-/** 작은 태그("대표 차량", "공유받은 차량") — 어두운 녹색 바탕에 라임 글자 */
+/** 작은 태그("대표 차량", "내 차") — 어두운 녹색 바탕에 라임 글자 */
 @Composable
 fun KiaTag(text: String, modifier: Modifier = Modifier, color: Color = KiaColors.Accent, background: Color = KiaColors.AccentDim) {
     Text(

@@ -8,11 +8,19 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
-// 서버 공개 주소: -PdhPublicBaseUrl=... 또는 gradle.properties 의 dhPublicBaseUrl. 기본은 에뮬레이터 → 호스트 PC
-val dhPublicBaseUrl: String = providers.gradleProperty("dhPublicBaseUrl")
-    .orElse("http://10.0.2.2:8080")
-    .get()
-    .trimEnd('/')
+// 서버 공개 주소 — car-app/app/build.gradle.kts 와 같은 규칙(D077: 예전엔 dhCloudHost 를 무시해 차는 클라우드, 폰은 10.0.2.2 를 가리킬 수 있었다):
+//   debug  : dhPublicBaseUrl (기본 http://10.0.2.2:8080 = 에뮬레이터 → 호스트 PC, -P 로 덮어쓰기)
+//   release: dhCloudHost 가 있으면 https://{dhCloudHost} (클라우드 기본), 없으면 dhPublicBaseUrl — http:// 면 경고만(빌드는 계속)
+//   두 APK 를 같은 서버로: car-app `:app:assemblePleosRelease -PdhCloudHost=H` / companion `:demo-host:assembleRelease -PdhCloudHost=H -PdhDevLoginKey=<키>`
+fun dhProperty(name: String): String? = (findProperty(name) as String?)?.trim()?.takeIf { it.isNotEmpty() }
+
+val dhPublicBaseUrl: String = (dhProperty("dhPublicBaseUrl") ?: "http://10.0.2.2:8080").trimEnd('/')
+val dhCloudHost: String? = dhProperty("dhCloudHost")?.removePrefix("https://")?.trimEnd('/')?.also { host ->
+    if (!host.matches(Regex("[A-Za-z0-9.-]+"))) {
+        throw GradleException("dhCloudHost 는 호스트 이름만 넣는다(스킴·포트·경로 없이). 예: 1-2-3-4.sslip.io — 받은 값: $host")
+    }
+}
+val releasePublicBaseUrl: String = dhCloudHost?.let { "https://$it" } ?: dhPublicBaseUrl
 
 // dev 로그인 접속 키: 클라우드 서버(T32)는 DH_DEV_LOGIN_KEY 를 요구한다 → -PdhDevLoginKey=... 또는 ~/.gradle/gradle.properties 의 dhDevLoginKey.
 // 값은 VM 의 infra/.env 에만 있다 — 저장소의 gradle.properties 에 적지 않는다(CLAUDE.md 규칙 9). 기본 빈 값 = 헤더 안 보냄(로컬 서버는 검사하지 않음).
@@ -21,6 +29,16 @@ val dhDevLoginKey: String = providers.gradleProperty("dhDevLoginKey")
     .get()
     .trim()
 require(dhDevLoginKey.matches(Regex("[A-Za-z0-9._~-]*"))) { "dhDevLoginKey 는 영문·숫자·._~- 만 쓸 수 있어요(remote-env.sh 가 만든 hex 값)" }
+
+gradle.taskGraph.whenReady {
+    if (allTasks.none { it.project == project && it.name.contains("Release") }) return@whenReady
+    // 콘솔 인코딩(Windows CP949)에서 깨지지 않게 영어로 남긴다
+    if (!releasePublicBaseUrl.startsWith("https://")) {
+        logger.warn("w: [donghaeng] demo-host release points at $releasePublicBaseUrl (dhCloudHost is empty). Set -PdhCloudHost=<VM-IP>.sslip.io (same as car-app) for the cloud server.")
+    } else if (dhDevLoginKey.isEmpty()) {
+        logger.warn("w: [donghaeng] demo-host release points at $releasePublicBaseUrl but dhDevLoginKey is empty - cloud dev login will be rejected (403). Pass -PdhDevLoginKey=<key>.")
+    }
+}
 
 android {
     namespace = "app.donghaeng.companion.demo"
@@ -33,19 +51,28 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
-        buildConfigField("String", "DH_PUBLIC_BASE_URL", "\"$dhPublicBaseUrl\"")
         buildConfigField("String", "DH_DEV_LOGIN_KEY", "\"$dhDevLoginKey\"")
-
-        // 평문 HTTP 허용 여부를 서버 주소 스킴에 묶는다(car-app 과 같은 규칙): http://(로컬 개발) → true, https://(클라우드) → false
-        //   AndroidManifest.xml 의 android:usesCleartextTraffic="${usesCleartext}" 로 들어간다
-        manifestPlaceholders["usesCleartext"] = dhPublicBaseUrl.startsWith("http://").toString()
+        // 서버 주소·평문 정책은 buildTypes 에서 정한다(debug = 로컬, release = dhCloudHost 클라우드)
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "DH_PUBLIC_BASE_URL", "\"$dhPublicBaseUrl\"")
+            // 평문 HTTP 허용 여부를 서버 주소 스킴에 묶는다(car-app 과 같은 규칙): http://(로컬 개발) → true, https://(클라우드) → false
+            //   AndroidManifest.xml 의 android:usesCleartextTraffic="${usesCleartext}" 로 들어간다
+            manifestPlaceholders["usesCleartext"] = dhPublicBaseUrl.startsWith("http://").toString()
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            buildConfigField("String", "DH_PUBLIC_BASE_URL", "\"$releasePublicBaseUrl\"")
+            manifestPlaceholders["usesCleartext"] = releasePublicBaseUrl.startsWith("http://").toString()
         }
+    }
+
+    testOptions {
+        // DongHaengStore·HostTokenCache 단위 테스트가 android.util.Log 를 불러도 예외 대신 기본값
+        unitTests.isReturnDefaultValues = true
     }
 
     compileOptions {
@@ -99,6 +126,9 @@ dependencies {
     // 지도 탭: osmdroid(OpenStreetMap 타일). 그룹 차량 마커(동행 D)도 이 위에 그린다
     implementation(libs.osmdroid)
 
-    // 순수 로직 단위 테스트(무전 목록 VoiceItems·시연 신호음 FakeVoiceTone)
+    // 순수 로직 단위 테스트(무전 목록 VoiceItems·시연 신호음 FakeVoiceTone·그룹 관찰 재시도·호스트 토큰 갱신·합류 차 고르기·스토어)
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    // dev 로그인(DevAuthClient)의 HTTP 상태 → 일시 오류 판정(RD-3)
+    testImplementation(libs.okhttp.mockwebserver)
 }

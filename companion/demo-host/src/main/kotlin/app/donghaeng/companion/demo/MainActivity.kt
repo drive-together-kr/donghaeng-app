@@ -4,7 +4,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import app.donghaeng.companion.demo.donghaeng.DongHaengNotifier
 import app.donghaeng.companion.demo.donghaeng.DongHaengStore
 import app.donghaeng.companion.demo.ui.KiaApp
 import app.donghaeng.companion.demo.ui.theme.KiaTheme
@@ -14,8 +13,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        DongHaengNotifier.ensureChannel(this)
-        DongHaengStore.notifier = { DongHaengNotifier.show(applicationContext, it) }
+        // 알림 채널·시스템 알림 출구는 DemoApplication 이 Application 컨텍스트로 등록한다(D086 — 여기서 람다를 넣으면 끝난 Activity 를 붙잡았다)
         setContent {
             KiaTheme {
                 KiaApp()

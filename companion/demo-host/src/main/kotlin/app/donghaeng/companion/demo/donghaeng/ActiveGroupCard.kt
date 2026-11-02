@@ -16,15 +16,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.donghaeng.companion.demo.R
 import app.donghaeng.companion.demo.ui.components.KiaButton
 import app.donghaeng.companion.demo.ui.components.KiaCard
+import app.donghaeng.companion.demo.ui.components.KiaChip
 import app.donghaeng.companion.demo.ui.components.KiaTag
 import app.donghaeng.companion.demo.ui.components.MsIcon
 import app.donghaeng.companion.demo.ui.theme.KiaColors
@@ -34,6 +37,9 @@ import app.donghaeng.protocol.MemberState
 /**
  * 삽입 지점 B — 홈의 "내 차 위치" 카드 바로 위에 뜨는 "동행 중" 카드. 그룹 진행 중일 때만 노출된다.
  * 그룹명 · 멤버별 차량/ETA/잔량 배지 · 최근 이벤트 1줄 · [메시지 보내기]
+ *
+ * 머리줄은 관찰 연결 상태([DongHaengStore.connection])를 그대로 보인다(D021·D022·D028): 끊겨 다시 연결 중이면 회색 점·마지막 갱신 시각·[다시 시도],
+ * 그룹이 끝났거나 내 차가 나갔으면 그 사실과 [기록으로 옮기기] — 멈춘 스냅샷을 '동행 중'으로 보이지 않게. 끝난 그룹에는 메시지를 보낼 수 없다.
  */
 @Composable
 fun ActiveGroupCard(
@@ -44,19 +50,22 @@ fun ActiveGroupCard(
     onOpen: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val connection by DongHaengStore.connection.collectAsStateWithLifecycle()
     KiaCard(modifier = modifier, onClick = onOpen) {
+        val (label, color) = linkLabel(connection.link)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier
                     .size(8.dp)
                     .clip(CircleShape)
-                    .background(KiaColors.Accent),
+                    .background(color),
             )
             Spacer(Modifier.width(8.dp))
-            Text("동행 중", style = MaterialTheme.typography.labelLarge, color = KiaColors.Accent)
+            Text(label, style = MaterialTheme.typography.labelLarge, color = color)
             Spacer(Modifier.weight(1f))
             MsIcon(R.drawable.ms_chevron_right, null, tint = KiaColors.TextSecondary, size = 20.dp)
         }
+        ConnectionNotice(connection)
         Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(group.name, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -106,7 +115,50 @@ fun ActiveGroupCard(
             }
         }
         Spacer(Modifier.height(12.dp))
-        KiaButton("메시지 보내기", onClick = onSendMessage)
+        KiaButton("메시지 보내기", enabled = !connection.finished, onClick = onSendMessage)
+    }
+}
+
+/** 연결 상태 → 머리줄 문구·색 */
+fun linkLabel(link: GroupLink): Pair<String, Color> = when (link) {
+    GroupLink.LIVE -> "동행 중" to KiaColors.Accent
+    GroupLink.CONNECTING -> "연결 중…" to KiaColors.TextSecondary
+    GroupLink.RECONNECTING -> "다시 연결하는 중" to KiaColors.TextSecondary
+    GroupLink.ENDED -> "그룹이 끝났어요" to KiaColors.TextSecondary
+    GroupLink.LEFT -> "그룹에서 나갔어요" to KiaColors.TextSecondary
+    GroupLink.AUTH_EXPIRED -> "다시 로그인이 필요해요" to KiaColors.Dot
+    GroupLink.FAILED -> "연결이 끊겼어요" to KiaColors.Dot
+}
+
+/**
+ * 연결이 정상이 아닐 때의 안내 줄 — 문구, 마지막 갱신 시각, [다시 시도](끊김) 또는 [기록으로 옮기기](끝남).
+ * 동행 메인·지도 시트에서도 쓴다.
+ */
+@Composable
+fun ConnectionNotice(connection: GroupConnection, modifier: Modifier = Modifier) {
+    val message = connection.message ?: return
+    Column(
+        modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(KiaColors.SubCard)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Text(message, style = MaterialTheme.typography.bodySmall)
+        connection.lastSnapshotAtMs?.let {
+            Text("마지막 갱신 ${relativeTime(it)}", style = MaterialTheme.typography.labelSmall, color = KiaColors.TextSecondary)
+        }
+        when {
+            connection.retryable -> {
+                Spacer(Modifier.height(8.dp))
+                KiaChip("다시 시도", icon = R.drawable.ms_refresh, onClick = { DongHaengStore.retryObserving() })
+            }
+            connection.finished -> {
+                Spacer(Modifier.height(8.dp))
+                KiaChip("기록으로 옮기기", icon = R.drawable.ms_history, onClick = { DongHaengStore.leaveLocally() })
+            }
+        }
     }
 }
 
@@ -160,7 +212,8 @@ private fun Badge(text: String, color: Color = KiaColors.TextPrimary) {
 /** 지도(D)용 마커 변환 — 스냅샷이 없으면 멤버 목록만(위치 없음 → 마커 없음) */
 fun groupMarkers(snapshot: GroupSnapshot?, group: ActiveGroup): List<app.donghaeng.companion.demo.ui.components.MapMarker> {
     val members = snapshot?.members ?: return emptyList()
-    val leaderId = group.members.firstOrNull { it.role == app.donghaeng.companion.sdk.MemberRole.LEADER }?.vehicleId
+    // 방장은 위임·승계로 바뀐다 — 합류 때 역할이 아니라 스냅샷의 지금 방장(D084)
+    val leaderId = currentLeaderId(group, snapshot)
     return members.mapNotNull { m: MemberState ->
         val lat = m.lat ?: return@mapNotNull null
         val lon = m.lon ?: return@mapNotNull null

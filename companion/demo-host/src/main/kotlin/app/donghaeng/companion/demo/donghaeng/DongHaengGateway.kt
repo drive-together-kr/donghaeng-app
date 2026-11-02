@@ -46,13 +46,17 @@ import kotlin.math.sin
  * ────────────────────────────────────────────────────────────────────────────
  */
 
-/** 그룹 초대 QR 을 찍었을 때 합류 전에 보여 줄 정보 (`GET {base}/j/{token}` + `Accept: application/json`, docs/03 §2.2) */
+/**
+ * 그룹 초대 QR 을 찍었을 때 합류 전에 보여 줄 정보 (`GET {base}/j/{token}` + `Accept: application/json`, docs/03 §2.2).
+ * [leaderVehicleId] = 이 그룹의 방장 차 — 합류 시트가 그 차를 고르지 못하게 한다(D093)
+ */
 data class InvitePreview(
     val name: String,
     val leaderNickname: String,
     val destinationName: String,
     val memberCount: Int,
     val maxMembers: Int,
+    val leaderVehicleId: String? = null,
 )
 
 interface DongHaengGateway {
@@ -62,11 +66,14 @@ interface DongHaengGateway {
     /** 초대 미리보기. 동행 QR 이 아니거나 만료됐으면 null */
     suspend fun previewInvite(qrPayload: String): InvitePreview?
 
-    /** 합류 (`POST /groups/join`). [vehicleId] 생략 시 대표 차량 */
+    /** 합류 (`POST /groups/join`). [vehicleId] 생략 시 대표 차량. 이미 이 그룹에 있는 차면 지금 그룹을 돌려준다(모듈 멱등) */
     suspend fun joinGroup(qrPayload: String, vehicleId: String?): GroupJoinResult
 
-    /** 동승자 메시지 (`POST /groups/{id}/messages`) */
-    suspend fun sendPassengerMessage(groupId: String, text: String)
+    /**
+     * 동승자 메시지 (`POST /groups/{id}/messages`). [fromVehicleId] = 동승자가 탄 내 차(차에서 "그 차에서 온 메시지"로 읽힌다),
+     * [idempotencyKey] = 사용자 동작 한 번의 키(다시 보내기에 같은 키 → 서버가 한 번만 처리)
+     */
+    suspend fun sendPassengerMessage(groupId: String, text: String, fromVehicleId: String?, idempotencyKey: String)
 
     /** 차량 등록 QR 승인 (`POST /device/approve`, 대체 수단) */
     suspend fun pairVehicle(qrPayload: String, nickname: String): PairResult
@@ -102,7 +109,7 @@ class SdkGateway(
                 }
                 val body = response.body?.string().orEmpty()
                 val dto = DhJson.json.decodeFromString(InvitePreviewResponse.serializer(), body)
-                InvitePreview(dto.name, dto.leaderNickname, dto.destination.name, dto.memberCount, dto.maxMembers)
+                InvitePreview(dto.name, dto.leaderNickname, dto.destination.name, dto.memberCount, dto.maxMembers, dto.leaderVehicleId)
             }
         } catch (e: Exception) {
             Log.w(DemoApplication.TAG, "invite preview failed cause=${e.javaClass.simpleName}")
@@ -112,11 +119,26 @@ class SdkGateway(
 
     override suspend fun joinGroup(qrPayload: String, vehicleId: String?): GroupJoinResult = DongHaeng.joinGroup(qrPayload, vehicleId)
 
-    override suspend fun sendPassengerMessage(groupId: String, text: String) = DongHaeng.sendPassengerMessage(groupId, text)
+    override suspend fun sendPassengerMessage(groupId: String, text: String, fromVehicleId: String?, idempotencyKey: String) =
+        DongHaeng.sendPassengerMessage(groupId, text, fromVehicleId = fromVehicleId, idempotencyKey = idempotencyKey)
 
     override suspend fun pairVehicle(qrPayload: String, nickname: String): PairResult = DongHaeng.pairVehicle(qrPayload, nickname)
 
     override fun observeGroup(groupId: String): Flow<GroupSnapshot> = DongHaeng.observeGroup(groupId)
+}
+
+/**
+ * 로그인(또는 시연 모드) 전의 게이트웨이(D029). 모든 호출이 [DongHaengException.NotInitialized]("먼저 로그인해 주세요").
+ * 프로세스가 다시 떠 로그인 없이 화면이 복원돼도 가짜 데이터로 조용히 넘어가지 않게 한다(예전 기본값은 FakeGateway).
+ */
+class NotConfiguredGateway : DongHaengGateway {
+    override suspend fun listMyVehicles(): List<MyVehicle> = throw DongHaengException.NotInitialized()
+    override suspend fun previewInvite(qrPayload: String): InvitePreview? = null
+    override suspend fun joinGroup(qrPayload: String, vehicleId: String?): GroupJoinResult = throw DongHaengException.NotInitialized()
+    override suspend fun sendPassengerMessage(groupId: String, text: String, fromVehicleId: String?, idempotencyKey: String): Unit =
+        throw DongHaengException.NotInitialized()
+    override suspend fun pairVehicle(qrPayload: String, nickname: String): PairResult = throw DongHaengException.NotInitialized()
+    override fun observeGroup(groupId: String): Flow<GroupSnapshot> = flow { throw DongHaengException.NotInitialized() }
 }
 
 /**
@@ -134,6 +156,9 @@ class FakeGateway(private val tickMs: Long = 2_000L) : DongHaengGateway {
         val events = ArrayList<GroupEvent>()
         var eventSeq = 0
         val sentMessages = ArrayList<Pair<Long, String>>()
+
+        /** 처리한 메시지 Idempotency-Key — 서버처럼 같은 키는 한 번만 */
+        val messageKeys = HashSet<String>()
     }
 
     private val groups = LinkedHashMap<String, Group>()
@@ -145,7 +170,7 @@ class FakeGateway(private val tickMs: Long = 2_000L) : DongHaengGateway {
 
     override suspend fun previewInvite(qrPayload: String): InvitePreview? {
         delay(300)
-        return InvitePreview(name = GROUP_NAME, leaderNickname = "아빠 차", destinationName = DESTINATION, memberCount = 2, maxMembers = 10)
+        return InvitePreview(name = GROUP_NAME, leaderNickname = "아빠 차", destinationName = DESTINATION, memberCount = 2, maxMembers = 10, leaderVehicleId = LEADER)
     }
 
     override suspend fun joinGroup(qrPayload: String, vehicleId: String?): GroupJoinResult {
@@ -169,10 +194,12 @@ class FakeGateway(private val tickMs: Long = 2_000L) : DongHaengGateway {
         return GroupJoinResult(id, group.name, members)
     }
 
-    override suspend fun sendPassengerMessage(groupId: String, text: String) {
+    override suspend fun sendPassengerMessage(groupId: String, text: String, fromVehicleId: String?, idempotencyKey: String) {
         delay(300)
         val group = groups[groupId] ?: throw DongHaengException.Api("NOT_FOUND", "그룹을 찾을 수 없어요")
-        val me = group.members.first { it.vehicleId != LEADER && it.vehicleId != FOLLOWER }
+        if (!group.messageKeys.add(idempotencyKey)) return
+        val me = group.members.firstOrNull { it.vehicleId == fromVehicleId }
+            ?: group.members.first { it.vehicleId != LEADER && it.vehicleId != FOLLOWER }
         group.sentMessages += System.currentTimeMillis() to text
         group.events += group.event(
             GroupEventType.PASSENGER_MESSAGE, me.vehicleId, Severity.INFO,
@@ -193,7 +220,7 @@ class FakeGateway(private val tickMs: Long = 2_000L) : DongHaengGateway {
             val elapsedS = ((System.currentTimeMillis() - group.startedAt) / 1000).toInt()
             scheduleEvents(group, elapsedS)
             scheduleVoice(group, elapsedS)
-            emit(GroupSnapshot(group.id, group.members.mapIndexed { i, m -> memberState(m, i, tick, elapsedS) }, group.events.toList()))
+            emit(GroupSnapshot(group.id, group.members.mapIndexed { i, m -> memberState(m, i, tick, elapsedS) }, group.events.toList(), leaderVehicleId = LEADER))
             tick++
             delay(tickMs)
         }

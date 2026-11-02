@@ -12,10 +12,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -25,10 +27,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import app.donghaeng.companion.demo.R
+import app.donghaeng.companion.demo.donghaeng.VehicleListStatus
 import app.donghaeng.companion.demo.ui.components.CarSideSilhouette
 import app.donghaeng.companion.demo.ui.components.Disclaimer
 import app.donghaeng.companion.demo.ui.components.GreenProgress
 import app.donghaeng.companion.demo.ui.components.KiaCard
+import app.donghaeng.companion.demo.ui.components.KiaChip
 import app.donghaeng.companion.demo.ui.components.KiaTag
 import app.donghaeng.companion.demo.ui.components.KiaTopBar
 import app.donghaeng.companion.demo.ui.components.ListRow
@@ -51,10 +55,18 @@ import app.donghaeng.companion.sdk.MyVehicle
 /** 리스트 카드의 공통 안쪽 여백(행이 자체 세로 패딩을 가진다) */
 private val ListCardPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)
 
+/**
+ * @param vehiclesLoading·[vehiclesError] 계정 차 목록 불러오기 상태 — 목록이 비었을 때 '불러오는 중'·'불러오지 못함 [다시 불러오기]'를
+ *   '연결된 차가 없어요(QR 등록)'와 구분한다([VehicleListStatus], RD-4)
+ * @param onRetryVehicles [다시 불러오기]
+ */
 @Composable
 fun MyCarScreen(
     vehicleName: String,
     vehicles: List<MyVehicle>,
+    vehiclesLoading: Boolean,
+    vehiclesError: String?,
+    onRetryVehicles: () -> Unit,
     onQr: () -> Unit,
     onProfile: () -> Unit,
     onOpenDongHaengSettings: () -> Unit,
@@ -75,7 +87,15 @@ fun MyCarScreen(
                 .padding(horizontal = KiaDimens.ScreenPadding),
         ) {
             Spacer(Modifier.height(8.dp))
-            VehicleCard(vehicleName = vehicleName, vehicles = vehicles, onQr = onQr, onDemoTap = onDemoTap)
+            VehicleCard(
+                vehicleName = vehicleName,
+                vehicles = vehicles,
+                listStatus = VehicleListStatus.of(vehicles, vehiclesLoading, vehiclesError),
+                vehiclesError = vehiclesError,
+                onRetryVehicles = onRetryVehicles,
+                onQr = onQr,
+                onDemoTap = onDemoTap,
+            )
 
             Spacer(Modifier.height(KiaDimens.CardGap))
             MaintenanceNoticeCard(onDemoTap = onDemoTap)
@@ -119,6 +139,9 @@ fun MyCarScreen(
 private fun VehicleCard(
     vehicleName: String,
     vehicles: List<MyVehicle>,
+    listStatus: VehicleListStatus,
+    vehiclesError: String?,
+    onRetryVehicles: () -> Unit,
     onQr: () -> Unit,
     onDemoTap: (String) -> Unit,
 ) {
@@ -167,14 +190,28 @@ private fun VehicleCard(
             Text("차량 관리", style = MaterialTheme.typography.bodyLarge)
         }
 
-        // 계정에 연결된 차량(서버/시연 게이트웨이) — 비어 있으면 QR 등록 안내
+        // 계정에 연결된 차량(서버/시연 게이트웨이) — 불러오는 중·실패는 '없어요(QR 등록)'와 구분한다(RD-4)
         Spacer(Modifier.height(12.dp))
         RowDivider()
         Spacer(Modifier.height(14.dp))
         Text("연결된 차량", style = MaterialTheme.typography.labelMedium, color = KiaColors.TextSecondary)
         Spacer(Modifier.height(8.dp))
-        if (vehicles.isEmpty()) {
-            SubCard(onClick = onQr, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)) {
+        when (listStatus) {
+            VehicleListStatus.LOADING -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 10.dp)) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = KiaColors.Accent)
+                Spacer(Modifier.width(10.dp))
+                Text("내 차 목록을 불러오는 중…", style = MaterialTheme.typography.bodyMedium, color = KiaColors.TextSecondary)
+            }
+            VehicleListStatus.ERROR -> Column {
+                Text(
+                    "내 차 목록을 불러오지 못했어요: ${vehiclesError.orEmpty()}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = KiaColors.Dot,
+                )
+                Spacer(Modifier.height(8.dp))
+                KiaChip("다시 불러오기", icon = R.drawable.ms_refresh, color = KiaColors.SubCard, onClick = onRetryVehicles)
+            }
+            VehicleListStatus.EMPTY -> SubCard(onClick = onQr, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     MsIcon(R.drawable.ms_qr_code_scanner, null, tint = KiaColors.Accent, size = 22.dp)
                     Spacer(Modifier.width(12.dp))
@@ -187,8 +224,7 @@ private fun VehicleCard(
                     MsIcon(R.drawable.ms_chevron_right, null, tint = KiaColors.TextSecondary, size = 20.dp)
                 }
             }
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            VehicleListStatus.LIST -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 vehicles.forEach { v -> LinkedVehicleRow(vehicle = v, onClick = { onDemoTap("차량 선택") }) }
             }
         }
@@ -205,7 +241,8 @@ private fun LinkedVehicleRow(vehicle: MyVehicle, onClick: () -> Unit) {
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(vehicle.nickname, style = MaterialTheme.typography.titleSmall, maxLines = 1)
-                    KiaTag(if (vehicle.isPrimary) "대표 차량" else "공유받은 차량")
+                    // 서버 /me/vehicles 는 내 계정 소유 차만 준다 — '공유받은'이 아니다(D026·D093)
+                    KiaTag(if (vehicle.isPrimary) "대표 차량" else "내 차")
                 }
                 Text(
                     "${vehicle.brand} · ${vehicle.model}",

@@ -79,9 +79,12 @@ public data class PairResult(
  *
  * @param members 각 차의 위치·속도·ETA·잔량·상태 (서버 STATE 와 동일 형태)
  * @param events 최근 그룹 이벤트, 오래된 것부터 (합류·저잔량·동승자 메시지·무전 등)
+ * @param leaderVehicleId 지금 방장(선두차). 위임·방장 이탈 승계로 바뀌므로 [GroupJoinResult.members] 의 역할 대신 이 값을 쓴다.
+ *   전송이 모르면 null (2026-11 추가 — 뒤에 기본값을 둔 필드라 기존 호출은 그대로 컴파일된다)
  */
 public data class GroupSnapshot(
     public val groupId: String,
     public val members: List<MemberState>,
     public val events: List<GroupEvent>,
+    public val leaderVehicleId: String? = null,
 )

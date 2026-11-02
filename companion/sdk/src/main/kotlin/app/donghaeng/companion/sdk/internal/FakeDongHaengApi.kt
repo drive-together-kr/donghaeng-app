@@ -59,6 +59,9 @@ internal class FakeDongHaengApi(
     ) {
         val events = ArrayDeque<GroupEvent>()
 
+        /** 성공으로 처리한 동승자 메시지 Idempotency-Key(실패한 요청의 키는 넣지 않는다) */
+        val messageKeys = HashSet<String>()
+
         /** 이벤트가 바뀔 때마다 1 증가 — observeGroup 이 즉시 재발행하는 신호 */
         val version = MutableStateFlow(0)
 
@@ -119,12 +122,18 @@ internal class FakeDongHaengApi(
         }
     }
 
-    override suspend fun sendPassengerMessage(groupId: String, text: String) {
+    override suspend fun sendPassengerMessage(groupId: String, text: String, fromVehicleId: String?, idempotencyKey: String) {
         requireToken()
         if (text.isBlank()) throw DongHaengException.Api("INVALID_MESSAGE", "메시지를 입력해 주세요")
         synchronized(lock) {
             val group = groups[groupId] ?: throw DongHaengException.Api("GROUP_NOT_FOUND", "참여 중인 그룹이 아니에요")
-            val mine = group.members.firstOrNull { it.role == MemberRole.MEMBER } ?: group.members.first()
+            val mine = fromVehicleId?.let { id ->
+                group.members.firstOrNull { it.vehicleId == id }
+                    ?: throw DongHaengException.Api("NO_PAIRED_VEHICLE", "이 그룹에 있는 내 차가 아니에요")
+            } ?: group.members.firstOrNull { it.role == MemberRole.MEMBER } ?: group.members.first()
+            // 서버 Idempotency-Key 흉내: 같은 키는 한 번만 처리. 서버는 성공(2xx) 응답만 기억하므로 검증을 모두 통과한 뒤에 기록한다 —
+            // 실패한 요청의 키로 다시 보내면 다시 처리된다(RD-5, docs/03 계약 3)
+            if (!group.messageKeys.add(idempotencyKey)) return
             group.append(
                 newEvent(
                     type = GroupEventType.PASSENGER_MESSAGE,
@@ -229,7 +238,7 @@ internal class FakeDongHaengApi(
             )
         }
         val events = synchronized(lock) { group.events.toList() }
-        return GroupSnapshot(group.id, members, events)
+        return GroupSnapshot(group.id, members, events, leaderVehicleId = group.members.firstOrNull { it.role == MemberRole.LEADER }?.vehicleId)
     }
 
     private fun energyFor(order: Int, tick: Int): Energy = when (order) {

@@ -73,12 +73,15 @@ object VoicePlayer {
     val state: StateFlow<State> = _state.asStateFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val mainHandler = Handler(Looper.getMainLooper())
+    // 처음 재생할 때 만든다 — 상태만 읽거나 stop() 하는 곳(DongHaengStore, JVM 단위 테스트)에서 안드로이드 객체를 만들지 않게
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
 
-    private val attributes: AudioAttributes = AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_MEDIA)
-        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-        .build()
+    private val attributes: AudioAttributes by lazy {
+        AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+    }
 
     private var player: MediaPlayer? = null
     private var audioManager: AudioManager? = null

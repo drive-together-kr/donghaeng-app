@@ -15,11 +15,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.donghaeng.companion.demo.R
 import app.donghaeng.companion.demo.ui.components.KiaTag
 import app.donghaeng.companion.demo.ui.components.MsIcon
@@ -27,7 +29,6 @@ import app.donghaeng.companion.demo.ui.components.OutlinePill
 import app.donghaeng.companion.demo.ui.components.RowDivider
 import app.donghaeng.companion.demo.ui.theme.KiaColors
 import app.donghaeng.companion.sdk.GroupSnapshot
-import app.donghaeng.companion.sdk.MemberRole
 
 /**
  * 삽입 지점 D — 지도 탭에서 "동행" 칩을 켰을 때 바텀시트가 바뀌는 "그룹 주행" 목록: 멤버별 ETA·선두와 거리·잔량.
@@ -40,7 +41,9 @@ fun GroupDriveSheet(
     onSendMessage: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val leaderId = group.members.firstOrNull { it.role == MemberRole.LEADER }?.vehicleId
+    // 지금 방장 — 스냅샷의 서버 값(위임·승계 반영), 없으면 합류 때 값(D084)
+    val leaderId = currentLeaderId(group, snapshot)
+    val connection by DongHaengStore.connection.collectAsStateWithLifecycle()
     Column(modifier.padding(horizontal = 20.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             MsIcon(R.drawable.ms_groups, null, tint = KiaColors.Accent, size = 22.dp)
@@ -48,13 +51,19 @@ fun GroupDriveSheet(
             Column(Modifier.weight(1f)) {
                 Text("그룹 주행 · ${group.name}", style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    snapshot?.let { "${it.members.size}대 · 실시간" } ?: "그룹 상태를 기다리는 중…",
+                    when {
+                        // 끊김·종료를 '실시간'으로 보이지 않게(D022)
+                        connection.link != GroupLink.LIVE && snapshot != null -> "${snapshot.members.size}대 · ${linkLabel(connection.link).first}"
+                        snapshot != null -> "${snapshot.members.size}대 · 실시간"
+                        else -> "그룹 상태를 기다리는 중…"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = KiaColors.TextSecondary,
                 )
             }
-            OutlinePill("메시지", icon = R.drawable.ms_chat_bubble, onClick = onSendMessage)
+            if (!connection.finished) OutlinePill("메시지", icon = R.drawable.ms_chat_bubble, onClick = onSendMessage)
         }
+        ConnectionNotice(connection)
         Spacer(Modifier.height(12.dp))
         val members = snapshot?.members
         if (members == null) {

@@ -19,8 +19,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -64,6 +66,7 @@ fun DongHaengMainScreen(
     val mode by DongHaengStore.mode.collectAsStateWithLifecycle()
     val voices by DongHaengStore.voices.collectAsStateWithLifecycle()
     var showMessage by rememberSaveable { mutableStateOfFalse() }
+    var confirmLeave by rememberSaveable { mutableStateOfFalse() }
 
     Column(
         Modifier
@@ -141,10 +144,7 @@ fun DongHaengMainScreen(
                             }
                         }
                         Spacer(Modifier.height(12.dp))
-                        KiaButton("이 폰에서 그룹 보기 끝내기") {
-                            DongHaengStore.leaveLocally()
-                            demoToast(context, "그룹 보기를 끝냈어요. 차량은 차에서 '나가기'를 누르세요")
-                        }
+                        KiaButton("이 폰에서 그룹 보기 끝내기") { confirmLeave = true }
                     }
                     if (mode == DhMode.FAKE) {
                         Spacer(Modifier.height(12.dp))
@@ -170,7 +170,7 @@ fun DongHaengMainScreen(
                 else -> {
                     val steps = listOf(
                         Triple(R.drawable.ms_qr_code_scanner, "1. 선두차가 그룹을 만들면 차량 화면에 QR 이 떠요", "선두차의 동행 앱에서 목적지를 고르고 '같이 가기'를 누르면 초대 QR 이 생겨요."),
-                        Triple(R.drawable.ms_directions_car, "2. 이 앱의 QR 스캔으로 찍고 함께 갈 차를 고르세요", "상단 QR 아이콘 → 그룹 합류 시트에서 내 차(대표/공유받은 차량)를 선택하면 끝."),
+                        Triple(R.drawable.ms_directions_car, "2. 이 앱의 QR 스캔으로 찍고 함께 갈 차를 고르세요", "상단 QR 아이콘(카메라가 없으면 코드·주소 직접 입력) → 그룹 합류 시트에서 함께 갈 내 차를 선택하면 끝."),
                         Triple(R.drawable.ms_location_on, "3. 홈·지도에서 그룹을 함께 봐요", "홈의 '동행 중' 카드와 지도의 '동행' 칩으로 멤버 위치·도착 예정 시간·잔량을 확인해요."),
                         Triple(R.drawable.ms_chat_bubble, "4. 운전자에게는 음성으로", "동승자 메시지와 그룹 소식은 차량에서 음성으로 읽혀서 운전 중에도 안전해요."),
                     )
@@ -197,6 +197,28 @@ fun DongHaengMainScreen(
 
     if (showMessage && group != null) {
         PassengerMessageSheet(onDismiss = { showMessage = false })
+    }
+
+    // 확인 없이 바로 끝나던 것을 막는다(D024). 차는 그룹에 그대로 있고, 같은 QR 을 다시 스캔하면 돌아온다(모듈이 '이미 멤버'를 성공으로)
+    if (confirmLeave && group != null) {
+        AlertDialog(
+            onDismissRequest = { confirmLeave = false },
+            containerColor = KiaColors.Card,
+            titleContentColor = KiaColors.TextPrimary,
+            textContentColor = KiaColors.TextSecondary,
+            title = { Text("이 폰에서 그룹 보기를 끝낼까요?") },
+            text = {
+                Text("이 폰에서만 그룹 화면·알림이 멈추고 지난 그룹으로 옮겨요. 차는 그룹에 그대로 있어요 — 차를 빼려면 차에서 '나가기'를 누르세요. 다시 보려면 같은 그룹 QR 을 다시 스캔하면 돼요.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmLeave = false
+                    DongHaengStore.leaveLocally()
+                    demoToast(context, "그룹 보기를 끝냈어요")
+                }) { Text("끝내기", color = KiaColors.Accent) }
+            },
+            dismissButton = { TextButton(onClick = { confirmLeave = false }) { Text("취소", color = KiaColors.TextSecondary) } },
+        )
     }
 }
 

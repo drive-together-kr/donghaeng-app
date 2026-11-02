@@ -189,6 +189,21 @@ class HttpDongHaengApiTest {
     }
 
     @Test
+    fun `D079 - TokenProvider 가 IOException 을 던지면 Api(NETWORK) 로 바뀐다(호스트 예외가 새지 않음)`() = runTest {
+        val error = runCatching { api(token = TokenProvider { throw java.io.IOException("refresh failed") }).listMyVehicles() }.exceptionOrNull()
+        assertTrue("$error", error is DongHaengException.Api)
+        assertEquals("NETWORK", (error as DongHaengException.Api).code)
+        assertEquals("요청 없이 실패", 0, server.requestCount)
+    }
+
+    @Test
+    fun `D079 - TokenProvider 가 그 밖의 예외를 던지면 Unauthorized`() = runTest {
+        val error = runCatching { api(token = TokenProvider { throw IllegalStateException("no session") }).listMyVehicles() }.exceptionOrNull()
+        assertTrue("$error", error is DongHaengException.Unauthorized)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
     fun `캐시한 JWT 의 exp 가 지났으면 호출 전에 다시 교환한다`() = runTest {
         server.enqueue(json(200, tokenJson(jwt(expEpochS = System.currentTimeMillis() / 1000 - 10))))
         server.enqueue(json(200, "[]"))
@@ -328,17 +343,170 @@ class HttpDongHaengApiTest {
         assertEquals("그룹을 찾을 수 없어요.", error.message)
     }
 
+    private val groupDetailJson = """{"groupId":"grp_1","name":"추석 귀성길","leaderVehicleId":"veh_lead","status":"ACTIVE",
+        "members":[{"vehicleId":"veh_lead","nickname":"아빠 차","color":"#2E7DFF","role":"LEADER","joinedAt":1},
+                   {"vehicleId":"veh_02","nickname":"둘째 차","color":"#FF6B2E","role":"MEMBER","joinedAt":2}]}"""
+
+    @Test
+    fun `D024 - joinGroup 409 ALREADY_MEMBER 면 그 차의 활성 그룹을 찾아 성공으로 돌려준다`() = runTest {
+        server.enqueue(json(200, tokenJson(jwt())))
+        server.enqueue(error(409, "ALREADY_MEMBER", "이미 이 그룹에 들어가 있는 차량이에요."))
+        server.enqueue(
+            json(
+                200,
+                """[{"groupId":"grp_other","name":"다른 그룹","leaderVehicleId":"veh_x","status":"ACTIVE","memberCount":2,"myVehicleIds":["veh_01"],"createdAt":1},
+                    {"groupId":"grp_1","name":"추석 귀성길","leaderVehicleId":"veh_lead","status":"ACTIVE","memberCount":2,"myVehicleIds":["veh_lead","veh_02"],"createdAt":2}]""",
+            ),
+        )
+        server.enqueue(json(200, groupDetailJson))
+
+        val result = api().joinGroup("inv_abc", "veh_02")
+
+        assertEquals("grp_1", result.groupId)
+        assertEquals("추석 귀성길", result.name)
+        assertEquals(listOf("veh_lead", "veh_02"), result.members.map { it.vehicleId })
+        assertEquals(MemberRole.LEADER, result.members[0].role)
+        server.takeRequest()
+        assertEquals("/v1/groups/join", server.takeRequest().path)
+        assertEquals("/v1/me/groups?active=true", server.takeRequest().path)
+        assertEquals("/v1/groups/grp_1", server.takeRequest().path)
+    }
+
+    @Test
+    fun `D024 - vehicleId 생략 후 409 ALREADY_MEMBER 면 대표 차량의 그룹을 찾는다`() = runTest {
+        server.enqueue(json(200, tokenJson(jwt())))
+        server.enqueue(error(409, "ALREADY_MEMBER", "이미 이 그룹에 들어가 있는 차량이에요."))
+        server.enqueue(json(200, """[{"vehicleId":"veh_02","nickname":"둘째 차","isPrimary":true}]"""))
+        server.enqueue(
+            json(200, """[{"groupId":"grp_1","name":"추석 귀성길","leaderVehicleId":"veh_lead","status":"ACTIVE","memberCount":2,"myVehicleIds":["veh_02"],"createdAt":2}]"""),
+        )
+        server.enqueue(json(200, groupDetailJson))
+
+        val result = api().joinGroup("inv_abc", null)
+
+        assertEquals("grp_1", result.groupId)
+        server.takeRequest()
+        server.takeRequest()
+        assertEquals("/v1/me/vehicles", server.takeRequest().path)
+        assertEquals("/v1/me/groups?active=true", server.takeRequest().path)
+    }
+
+    @Test
+    fun `D024 - 409 ALREADY_MEMBER 인데 그 차의 활성 그룹이 없으면 원래 409 를 그대로 던진다`() = runTest {
+        server.enqueue(json(200, tokenJson(jwt())))
+        server.enqueue(error(409, "ALREADY_MEMBER", "이미 이 그룹에 들어가 있는 차량이에요."))
+        server.enqueue(json(200, "[]"))
+
+        val error = runCatching { api().joinGroup("inv_abc", "veh_02") }.exceptionOrNull()
+
+        assertTrue("$error", error is DongHaengException.Api)
+        assertEquals("ALREADY_MEMBER", (error as DongHaengException.Api).code)
+    }
+
+    @Test
+    fun `GROUP_FULL 같은 다른 409 는 복구하지 않고 그대로`() = runTest {
+        server.enqueue(json(200, tokenJson(jwt())))
+        server.enqueue(error(409, "GROUP_FULL", "그룹이 꽉 찼어요"))
+        val error = runCatching { api().joinGroup("inv_abc", "veh_02") }.exceptionOrNull() as DongHaengException.Api
+        assertEquals("GROUP_FULL", error.code)
+        assertEquals("추가 조회 없음", 2, server.requestCount)
+    }
+
     @Test
     fun `sendPassengerMessage 는 text 를 보내고 204 를 성공으로 본다`() = runTest {
         server.enqueue(json(200, tokenJson(jwt())))
         server.enqueue(MockResponse().setResponseCode(204))
 
-        api().sendPassengerMessage("grp_1", "앞에 휴게소 들르자")
+        api().sendPassengerMessage("grp_1", "앞에 휴게소 들르자", fromVehicleId = null, idempotencyKey = "key_00000001")
 
         server.takeRequest()
         val send = server.takeRequest()
         assertEquals("/v1/groups/grp_1/messages", send.path)
         assertEquals("앞에 휴게소 들르자", send.bodyJson()["text"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `D025·계약3 - sendPassengerMessage 는 fromVehicleId 와 Idempotency-Key 헤더를 싣는다`() = runTest {
+        server.enqueue(json(200, tokenJson(jwt())))
+        server.enqueue(MockResponse().setResponseCode(201).setBody("{}"))
+
+        api().sendPassengerMessage("grp_1", "배고파요", fromVehicleId = "veh_02", idempotencyKey = "6f1c2e0a-0d5b-4c1e-9a77-3b2f1d0c9e88")
+
+        server.takeRequest()
+        val send = server.takeRequest()
+        assertEquals("veh_02", send.bodyJson()["fromVehicleId"]?.jsonPrimitive?.content)
+        assertEquals("6f1c2e0a-0d5b-4c1e-9a77-3b2f1d0c9e88", send.getHeader("Idempotency-Key"))
+    }
+
+    @Test
+    fun `D025 - fromVehicleId 를 생략하면 이 프로세스에서 합류할 때 고른 차를 보낸 차로 싣는다`() = runTest {
+        server.enqueue(json(200, tokenJson(jwt())))
+        server.enqueue(json(200, """{"groupId":"grp_1","name":"추석 귀성길","members":[]}"""))
+        server.enqueue(MockResponse().setResponseCode(201).setBody("{}"))
+
+        val api = api()
+        api.joinGroup("inv_abc", "veh_02")
+        api.sendPassengerMessage("grp_1", "배고파요", fromVehicleId = null, idempotencyKey = "key_00000002")
+
+        server.takeRequest()
+        server.takeRequest()
+        assertEquals("veh_02", server.takeRequest().bodyJson()["fromVehicleId"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `RD-1 - 차를 골라 합류한 뒤 vehicleId 를 생략해 다시 합류하면 예전 차를 보낸 차로 싣지 않는다`() = runTest {
+        server.enqueue(json(200, tokenJson(jwt())))
+        server.enqueue(json(200, """{"groupId":"grp_1","name":"추석 귀성길","members":[]}"""))
+        server.enqueue(json(200, """{"groupId":"grp_1","name":"추석 귀성길","members":[]}"""))
+        server.enqueue(MockResponse().setResponseCode(201).setBody("{}"))
+
+        val api = api()
+        api.joinGroup("inv_abc", "veh_02") // 그 뒤 veh_02 는 차 화면에서 그룹을 나갔다
+        api.joinGroup("inv_abc", null) // 대표 차로 다시 합류(서버가 고름)
+        api.sendPassengerMessage("grp_1", "배고파요", fromVehicleId = null, idempotencyKey = "key_00000003")
+
+        server.takeRequest()
+        server.takeRequest()
+        assertNull("두 번째 합류는 vehicleId 생략", server.takeRequest().bodyJson()["vehicleId"])
+        val send = server.takeRequest()
+        assertEquals("/v1/groups/grp_1/messages", send.path)
+        assertNull("나간 차(veh_02)가 아니라 서버 기본값에 맡긴다", send.bodyJson()["fromVehicleId"])
+    }
+
+    @Test
+    fun `RD-1 - vehicleId 생략 후 409 복구로 찾은 대표 차는 보낸 차로 기억한다`() = runTest {
+        server.enqueue(json(200, tokenJson(jwt())))
+        server.enqueue(json(200, """{"groupId":"grp_1","name":"추석 귀성길","members":[]}"""))
+        server.enqueue(error(409, "ALREADY_MEMBER", "이미 이 그룹에 들어가 있는 차량이에요."))
+        server.enqueue(json(200, """[{"vehicleId":"veh_lead","nickname":"아빠 차","isPrimary":true}]"""))
+        server.enqueue(
+            json(200, """[{"groupId":"grp_1","name":"추석 귀성길","leaderVehicleId":"veh_lead","status":"ACTIVE","memberCount":2,"myVehicleIds":["veh_lead"],"createdAt":2}]"""),
+        )
+        server.enqueue(json(200, groupDetailJson))
+        server.enqueue(MockResponse().setResponseCode(201).setBody("{}"))
+
+        val api = api()
+        api.joinGroup("inv_abc", "veh_02")
+        api.joinGroup("inv_abc", null)
+        api.sendPassengerMessage("grp_1", "배고파요", fromVehicleId = null, idempotencyKey = "key_00000004")
+
+        repeat(6) { server.takeRequest() }
+        assertEquals("veh_lead", server.takeRequest().bodyJson()["fromVehicleId"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `계약3 - 401 재교환 뒤 다시 보낼 때도 같은 Idempotency-Key`() = runTest {
+        server.enqueue(json(200, tokenJson(jwt(sub = "usr_a"))))
+        server.enqueue(error(401, "UNAUTHORIZED", "만료"))
+        server.enqueue(json(200, tokenJson(jwt(sub = "usr_b"))))
+        server.enqueue(MockResponse().setResponseCode(201).setBody("{}"))
+
+        api().sendPassengerMessage("grp_1", "천천히 와", fromVehicleId = "veh_02", idempotencyKey = "key_retry_01")
+
+        server.takeRequest()
+        assertEquals("key_retry_01", server.takeRequest().getHeader("Idempotency-Key"))
+        server.takeRequest()
+        assertEquals("key_retry_01", server.takeRequest().getHeader("Idempotency-Key"))
     }
 
     @Test
@@ -392,6 +560,40 @@ class HttpDongHaengApiTest {
         assertEquals(MemberStatus.DRIVING, second.members[0].status)
         assertEquals(62, second.members[0].energy?.socPct)
         assertEquals(listOf("evt_1", "evt_2"), second.events.map { it.eventId })
+        assertEquals("D084 - 지금 방장은 매 폴링의 서버 값", "veh_lead", second.leaderVehicleId)
+    }
+
+    @Test
+    fun `D028 - observeGroup 은 그룹이 ENDED 면 그 스냅샷을 내보내고 흐름을 정상 종료한다`() = runTest {
+        server.enqueue(json(200, tokenJson(jwt())))
+        server.enqueue(json(200, groupDetailJson))
+        server.enqueue(
+            json(
+                200,
+                groupDetailJson.replace("\"ACTIVE\"", "\"ENDED\"").replace(
+                    "\"members\":[",
+                    "\"recentEvents\":[{\"eventId\":\"evt_9\",\"type\":\"GROUP_ENDED\",\"sourceVehicleId\":null,\"severity\":\"INFO\",\"speech\":\"방장이 그룹을 종료했어요.\",\"payload\":{}}],\"members\":[",
+                ),
+            ),
+        )
+
+        // take() 없이 끝까지 모은다 — 종료하지 않으면 다음 폴링이 빈 큐에서 타임아웃(NETWORK)으로 실패한다
+        val snapshots = api().observeGroup("grp_1").toList()
+
+        assertEquals(2, snapshots.size)
+        assertEquals("GROUP_ENDED", snapshots.last().events.last().type)
+        assertEquals("교환 1 + 폴링 2, ENDED 뒤 폴링 없음", 3, server.requestCount)
+    }
+
+    @Test
+    fun `D084 - 방장이 바뀌면 스냅샷의 leaderVehicleId 도 바뀐다`() = runTest {
+        server.enqueue(json(200, tokenJson(jwt())))
+        server.enqueue(json(200, groupDetailJson))
+        server.enqueue(json(200, groupDetailJson.replace("\"leaderVehicleId\":\"veh_lead\"", "\"leaderVehicleId\":\"veh_02\"")))
+
+        val snapshots = api().observeGroup("grp_1").take(2).toList()
+
+        assertEquals(listOf("veh_lead", "veh_02"), snapshots.map { it.leaderVehicleId })
     }
 
     @Test
@@ -444,6 +646,36 @@ class HttpDongHaengApiTest {
         assertEquals(2, vehicles.size)
         assertEquals("/v1/auth/exchange", server.takeRequest().path)
         assertEquals("/v1/me/vehicles", server.takeRequest().path)
+    }
+
+    @Test
+    fun `계약3 - 공개 sendPassengerMessage 는 키를 생략하면 새 키를 만들어 싣고, 형식이 틀리면 보내지 않고 IllegalArgumentException`() = runTest {
+        server.enqueue(json(200, tokenJson(jwt())))
+        server.enqueue(MockResponse().setResponseCode(201).setBody("{}"))
+        DongHaeng.init(DongHaengConfig("$baseUrl/", AccountProvider.DEV, "0.1.0-test"), hostToken)
+
+        DongHaeng.sendPassengerMessage("grp_1", "  배고파요 ", fromVehicleId = "veh_02")
+        val bad = runCatching { DongHaeng.sendPassengerMessage("grp_1", "배고파요", idempotencyKey = "짧음") }.exceptionOrNull()
+
+        assertTrue("$bad", bad is IllegalArgumentException)
+        assertEquals("잘못된 키는 서버로 가지 않는다", 2, server.requestCount)
+        server.takeRequest()
+        val send = server.takeRequest()
+        assertEquals("배고파요", send.bodyJson()["text"]?.jsonPrimitive?.content)
+        assertTrue(IdempotencyKeys.isValid(send.getHeader("Idempotency-Key").orEmpty()))
+    }
+
+    @Test
+    fun `RD-6 - IdempotencyKeys 는 docs-03 계약 3 의 헤더 이름·형식 그대로(protocol 정의로 바꿀 때까지 고정)`() {
+        assertEquals("Idempotency-Key", IdempotencyKeys.HEADER)
+        assertFalse("7자", IdempotencyKeys.isValid("a".repeat(7)))
+        assertTrue("8자", IdempotencyKeys.isValid("a".repeat(8)))
+        assertTrue("64자", IdempotencyKeys.isValid("a".repeat(64)))
+        assertFalse("65자", IdempotencyKeys.isValid("a".repeat(65)))
+        assertTrue("영문·숫자·_-", IdempotencyKeys.isValid("Ab9_-Ab9_-"))
+        assertFalse("점·공백은 안 됨", IdempotencyKeys.isValid("abc.defgh"))
+        assertFalse("점·공백은 안 됨", IdempotencyKeys.isValid("abc defgh"))
+        assertTrue("생성 키(UUID)는 형식 안", IdempotencyKeys.isValid(IdempotencyKeys.generate()))
     }
 
     @Test

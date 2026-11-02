@@ -127,6 +127,34 @@ class DongHaengFakeFlowTest {
     }
 
     @Test
+    fun `같은 idempotencyKey 로 두 번 보내면 메시지는 하나, fromVehicleId 가 보낸 차가 된다`() = runTest {
+        initFake()
+        val second = DongHaeng.listMyVehicles().first { !it.isPrimary }
+        val joined = DongHaeng.joinGroup("http://10.0.2.2:8080/j/inv_msg", vehicleId = second.vehicleId)
+        repeat(2) { DongHaeng.sendPassengerMessage(joined.groupId, "배고파요", fromVehicleId = second.vehicleId, idempotencyKey = "same_key_0001") }
+        val messages = DongHaeng.observeGroup(joined.groupId).first().events.filter { it.type == GroupEventType.PASSENGER_MESSAGE.name }
+        assertEquals(1, messages.size)
+        assertEquals(second.vehicleId, messages.single().sourceVehicleId)
+    }
+
+    @Test
+    fun `RD-5 - 실패한 요청의 idempotencyKey 로 다시 보내면 처리된다(서버는 성공 응답만 기억한다)`() = runTest {
+        initFake()
+        val second = DongHaeng.listMyVehicles().first { !it.isPrimary }
+        val joined = DongHaeng.joinGroup("http://10.0.2.2:8080/j/inv_retry", vehicleId = second.vehicleId)
+        val failed = runCatching {
+            DongHaeng.sendPassengerMessage(joined.groupId, "배고파요", fromVehicleId = "veh_wrong", idempotencyKey = "retry_key_0001")
+        }.exceptionOrNull()
+        assertEquals("NO_PAIRED_VEHICLE", (failed as DongHaengException.Api).code)
+
+        DongHaeng.sendPassengerMessage(joined.groupId, "배고파요", fromVehicleId = second.vehicleId, idempotencyKey = "retry_key_0001")
+
+        val messages = DongHaeng.observeGroup(joined.groupId).first().events.filter { it.type == GroupEventType.PASSENGER_MESSAGE.name }
+        assertEquals("고친 재시도는 조용히 무시되지 않고 메시지가 생긴다", 1, messages.size)
+        assertEquals(second.vehicleId, messages.single().sourceVehicleId)
+    }
+
+    @Test
     fun `init 에 스킴 없는 publicBaseUrl 을 주면 IllegalArgumentException`() = runTest {
         listOf("10.0.2.2:8080", "ftp://10.0.2.2:8080", "   ").forEach { bad ->
             val error = runCatching { initFake(config.copy(publicBaseUrl = bad)) }.exceptionOrNull()

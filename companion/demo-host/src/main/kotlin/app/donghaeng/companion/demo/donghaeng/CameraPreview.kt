@@ -86,7 +86,7 @@ fun CameraPreview(onQr: (String) -> Unit, modifier: Modifier = Modifier) {
         )
         bindError?.let { message ->
             Text(
-                "카메라를 열 수 없어요: $message\n아래 'QR 문자열 붙여넣기'를 사용하세요.",
+                "카메라를 열 수 없어요: $message\n아래 '코드·주소 직접 입력'을 사용하세요.",
                 color = Color.White,
                 modifier = Modifier
                     .align(Alignment.Center)
