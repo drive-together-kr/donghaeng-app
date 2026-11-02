@@ -103,6 +103,9 @@ class FloatingPanelMapperTest {
         assertEquals("아빠 차와 같이 가기", FloatingPanelSamples.of("worst").groupName)
         assertEquals("경포해변 도착", FloatingPanelSamples.of("worst").etaLabel)
         assertTrue(FloatingPanelSamples.of("longdest").etaPlace.length > 10)
+        // panel_stale = 가장 긴 나이 + 긴 그룹 이름 — "연결 끊김 · 23시간 전"(≈ 211 dp)이 상한 안에 들어가 나이가 잘리지 않는다(E038)
+        assertEquals("23시간 전", FloatingPanelSamples.of("stale").staleText)
+        assertTrue(app.donghaeng.car.feature.drive.FloatingPanelSpec.STALE_LABEL_MAX_DP >= 211f)
     }
 
     @Test

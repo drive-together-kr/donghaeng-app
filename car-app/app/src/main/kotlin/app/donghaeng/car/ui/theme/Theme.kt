@@ -18,12 +18,14 @@ import androidx.compose.ui.unit.sp
 private val Navy = Color(0xFF0B3D91)
 private val NavyContainer = Color(0xFFD9E3FF)
 private val Amber = Color(0xFFFFB300)
-private val Red = Color(0xFFD32F2F)
 
 /**
  * 색 대비 원칙(E041, WCAG AA): 글자로 쓰는 색은 바탕(#F7F8FA·#FFFFFF / 다크 #121417·#1B1E22) 대비 본문 4.5:1 이상.
  * - 주간 tertiary(강조 글자) = 진한 호박색 #8A5A00(바탕 대비 ≈ 5.6:1). 밝은 호박색 #FFB300 은 다크 전용·컨테이너 바탕용(흰 바탕 글자로는 1.7:1).
  * - 주간 secondary(연결됨 등) = #00695C(≈ 6.3:1) — 예전 #00897B 는 4.1:1.
+ * - 주간 error = #B3261E — 기본 Card 바탕(surfaceContainerHighest #E1E3E8) 위 글자("초대가 만료됐어요"·이벤트 띠 ALERT)도 4.5:1 이상.
+ *   예전 #D32F2F 는 카드 바탕에서 ≈ 3.9:1 이었다.
+ * - 글자는 바탕·surface 뿐 아니라 기본 Card 바탕([lightCard]/[darkCard] = surfaceContainerHighest) 위에서도 4.5:1 이상.
  * - 카드 바탕(surfaceContainer*)은 M3 기본 보라 대신 무채색 회색 단계(설정·소식·진단 카드와 대시보드 카드가 같은 색 언어).
  * 대비 값은 `ThemeContrastTest` 가 고정한다.
  */
@@ -35,7 +37,9 @@ internal object DhPalette {
     val lightTertiary = Color(0xFF8A5A00)
     val lightSecondary = Color(0xFF00695C)
     val lightPrimary = Navy
-    val lightError = Red
+    val lightError = Color(0xFFB3261E)
+    /** 기본 Card 바탕(surfaceContainerHighest) — 글자 대비 검증용 */
+    val lightCard = Color(0xFFE1E3E8)
 
     val darkBackground = Color(0xFF121417)
     val darkSurface = Color(0xFF1B1E22)
@@ -45,6 +49,7 @@ internal object DhPalette {
     val darkSecondary = Color(0xFF4DB6AC)
     val darkPrimary = Color(0xFFAFC6FF)
     val darkError = Color(0xFFFFB4AB)
+    val darkCard = Color(0xFF2C2F35)
 }
 
 private val LightColors = lightColorScheme(
@@ -69,7 +74,7 @@ private val LightColors = lightColorScheme(
     surfaceContainerLow = Color(0xFFF3F4F7),
     surfaceContainer = Color(0xFFEEF0F4),
     surfaceContainerHigh = Color(0xFFE8EAEE),
-    surfaceContainerHighest = Color(0xFFE1E3E8),
+    surfaceContainerHighest = DhPalette.lightCard,
 )
 
 private val DarkColors = darkColorScheme(
@@ -94,7 +99,7 @@ private val DarkColors = darkColorScheme(
     surfaceContainerLow = Color(0xFF16191D),
     surfaceContainer = Color(0xFF1B1E22),
     surfaceContainerHigh = Color(0xFF23262B),
-    surfaceContainerHighest = Color(0xFF2C2F35),
+    surfaceContainerHighest = DhPalette.darkCard,
 )
 
 /**

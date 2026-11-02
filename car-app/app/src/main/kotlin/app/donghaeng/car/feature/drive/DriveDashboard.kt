@@ -462,6 +462,7 @@ private fun CardBox(modifier: Modifier, fill: Boolean, content: @Composable () -
 /**
  * 그룹 도착 카드. 도착 예상을 하나도 모르면(순정 내비 안내 전, [ArrivalCardUi.noEtaPlace]) 84sp "—" 대신 "도착 예상 시각 없음" +
  * "순정 내비에서 {목적지} 안내를 시작하면…" 을 보이고, 정차 중이면 [목적지 안내 시작](NaviHelper requestRoute — 4-3·5-1).
+ * 전원 도착([ArrivalCardUi.allArrived])이면 "모두 도착했어요" + 목적지 이름만(안내 버튼 없음).
  */
 @Composable
 fun ArrivalCard(ui: ArrivalCardUi, modifier: Modifier = Modifier, big: Boolean = false, onStartGuidance: (() -> Unit)? = null) {
@@ -469,6 +470,14 @@ fun ArrivalCard(ui: ArrivalCardUi, modifier: Modifier = Modifier, big: Boolean =
     val subSp = if (big) 24.sp else 20.sp
     CardBox(modifier, fill = big) {
         Text(stringResource(R.string.dash_group_arrival), fontSize = subSp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (ui.allArrived) {
+            // 전원 도착 — 이미 목적지에 있으므로 안내 시작 버튼을 두지 않는다
+            Text(stringResource(R.string.dash_all_arrived), fontSize = if (big) 36.sp else 28.sp, lineHeight = if (big) 44.sp else 34.sp, fontWeight = FontWeight.SemiBold)
+            if (ui.destinationName.isNotBlank()) {
+                Text(stringResource(R.string.dash_all_arrived_hint, ui.destinationName), fontSize = if (big) 22.sp else 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            return@CardBox
+        }
         val place = ui.noEtaPlace
         if (place != null) {
             Text(stringResource(R.string.dash_no_eta), fontSize = if (big) 36.sp else 28.sp, lineHeight = if (big) 44.sp else 34.sp, fontWeight = FontWeight.SemiBold)

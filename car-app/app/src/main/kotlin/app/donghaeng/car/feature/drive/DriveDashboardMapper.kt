@@ -18,6 +18,8 @@ import kotlin.math.roundToInt
  *   간격 경고 = 바로 앞차와 3 km 초과. 다음 정차지 = RouteSyncEngine 이 마지막으로 수락·발행한 경유지 — 막대 위치는 내 위치 + 직선거리(모르면 null → 선두 + 2 km).
  * - 그룹 도착 = 멤버 eta.destTs 최댓값과 그 차(연결 끊김·도착한 차는 뺀다 — 옛 ETA 로 그룹 도착이 늦게·빠르게 보이지 않게), 내 도착 = 내 eta.
  *   둘 다 모르면(순정 내비 안내 전) [ArrivalCardUi.noEtaPlace] = 목적지 이름 → 카드가 빈 상태 안내 + 정차 중 [목적지 안내 시작].
+ *   단 내 차가 이미 도착했거나 연결된 미도착 차가 없으면 빈 상태를 쓰지 않는다([needsGuidance]) — 내 차 도착이면 "내 도착 도착",
+ *   전원 도착이면 [ArrivalCardUi.allArrived] → "모두 도착했어요"(안내 버튼 없음).
  * - 간격이 50 m 미만이면 "바로 옆", 대열 전체가 50 m 안이면 "모두 함께"(같은 주차장 출발에서 "0 m" 가 고장처럼 보였다, 4-2).
  * - 실시간 연결이 끊긴 채 그룹 상태가 15초 넘게 오래되면 [DriveDashboardUi.staleText]("2분 전") — 화면이 흐리게·"2분 전 정보"(E038).
  * - 다음 정차 카드는 경유지가 있을 때만(이름·내 위치에서 직선거리, 차별 ETA·주유/충전·도달 가능 여부는 아직 모름 → 생략·"—").
@@ -80,12 +82,16 @@ object DriveDashboardMapper {
         )
 
         val last = arrivalCandidates(s.members).maxByOrNull { it.etaDestTs!! }
+        val meArrived = me?.status == MemberStatus.ARRIVED
+        val allArrived = allArrived(s.members)
         val arrival = ArrivalCardUi(
             groupArrivalText = DriveFormat.clock(last?.etaDestTs, zone),
             lastCarText = last?.let { "마지막: " + if (it.isMe) "내 차" else it.nickname } ?: "",
-            myArrivalText = DriveFormat.clock(me?.etaDestTs, zone),
-            myRemainText = DriveFormat.remain(me?.remainM, me?.remainS),
-            noEtaPlace = if (last == null && me?.etaDestTs == null) session.destination.name.ifBlank { null } else null,
+            myArrivalText = if (meArrived) ARRIVED_TEXT else DriveFormat.clock(me?.etaDestTs, zone),
+            myRemainText = if (meArrived) "" else DriveFormat.remain(me?.remainM, me?.remainS),
+            noEtaPlace = if (s.connection != ConnState.OFFLINE && needsGuidance(s.members, me, last)) session.destination.name.ifBlank { null } else null,
+            allArrived = allArrived,
+            destinationName = session.destination.name,
         )
 
         val nextStop = stop?.let {
@@ -142,6 +148,27 @@ object DriveDashboardMapper {
             overlayNotice = s.surfaceMode == SurfaceMode.CARDS_ONLY,
         )
     }
+
+    /**
+     * 도착 예상 빈 상태([ArrivalCardUi.noEtaPlace] — "순정 내비에서 안내를 시작하면…" + [목적지 안내 시작])를 보일 때인가.
+     * 아직 도착하지 않았고 연결된 차(내 차 포함)가 있는데 그 누구의 ETA 도 모를 때만. 내 차가 이미 도착했거나(서 있는 곳으로 안내를 다시 요청하게 된다),
+     * 연결된 미도착 차가 하나도 없으면(모두 도착·모두 끊김) 안내를 권하지 않는다. 실시간 연결이 끊긴 동안(ConnState.OFFLINE)도 권하지 않는다 —
+     * 도착 시각은 서버 스냅샷으로 오므로 안내를 시작해도 "모든 차의 도착 시각"이 채워지지 않는다(호출 쪽에서 거른다).
+     */
+    fun needsGuidance(members: List<MemberUi>, me: MemberUi?, last: MemberUi?): Boolean {
+        if (last != null || me?.etaDestTs != null) return false
+        if (me != null && (me.status == MemberStatus.ARRIVED || !isActive(me))) return false
+        return members.any { isActive(it) && it.status != MemberStatus.ARRIVED }
+    }
+
+    /** 그룹 전원이 목적지에 도착했나(서버 SnapshotBuilder 의 ARRIVED — 연결 끊긴 차가 하나라도 있으면 모른다 → false) */
+    fun allArrived(members: List<MemberUi>): Boolean =
+        members.isNotEmpty() && members.all { it.online && it.status == MemberStatus.ARRIVED }
+
+    private fun isActive(m: MemberUi): Boolean = m.online && m.status != MemberStatus.OFFLINE
+
+    /** 내 차가 도착했을 때 "내 도착" 자리 */
+    const val ARRIVED_TEXT = "도착"
 
     /** 그룹 도착 후보 — ETA 가 있고, 연결돼 있고, 아직 도착하지 않은 차 */
     fun arrivalCandidates(members: List<MemberUi>): List<MemberUi> =

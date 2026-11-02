@@ -64,6 +64,11 @@ class SurfaceState(
     private val tickMs: Long = 1_000L,
     /** 음성 경로·지연·시작 신호(VoiceCueTracker) — 위험 이벤트 강조. 바뀌면 틱을 기다리지 않고 패널을 다시 그린다 */
     private val voiceCues: StateFlow<VoiceCue> = MutableStateFlow(VoiceCue()),
+    /**
+     * 그룹 상태를 실제로 받은 시각(기기 벽시계 — `MqttSessionManager.groupStateAt`, 정차 대시보드의 "N분 전"과 같은 값). 패널 '연결 끊김 · N분 전'의 나이를
+     * 이것으로 잰다. null 이면(아직 연결 안 함·테스트) 패널이 그 스냅샷을 처음 본 시각으로 대신한다
+     */
+    private val groupStateAt: StateFlow<Long?> = MutableStateFlow(null),
 ) : SurfaceFeed {
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private var job: Job? = null
@@ -112,14 +117,17 @@ class SurfaceState(
                 session.flatMapLatest { s ->
                     if (s == null) flowOf(null)
                     else {
-                        // E038: 그룹 상태가 바뀐(새 스냅샷이 온) 시각 — 연결이 끊겨 스냅샷이 멈추면 나이가 늘어 패널이 '연결 끊김 · N분 전'으로 바뀐다
+                        // E038: 그룹 상태를 받은 시각 — 연결이 끊겨 스냅샷이 멈추면 나이가 늘어 패널이 '연결 끊김 · N분 전'으로 바뀐다.
+                        // 수신 시각([groupStateAt])이 있으면 그것을 쓴다(대시보드와 같은 값 — 세션이 다시 방출돼도 0 으로 돌아가지 않는다).
+                        // 없을 때만 이 흐름이 그 스냅샷 객체를 처음 본 시각으로 대신한다
                         var lastState: GroupState? = null
-                        var stateAtMs = clock()
-                        combine(groupState, _recent, _connected, ptt, ticker()) { g, ev, c, p, now ->
-                            if (g !== lastState) { lastState = g; stateAtMs = now }
+                        var firstSeenMs = clock()
+                        val stateWithAt = combine(groupState, groupStateAt) { g, at -> g to at }
+                        combine(stateWithAt, _recent, _connected, ptt, ticker()) { (g, at), ev, c, p, now ->
+                            if (g !== lastState) { lastState = g; firstSeenMs = now }
                             FloatingPanelMapper.map(
                                 s, g, myVehicleId(), ev, p, c, nowMs = now, zone = zone(), serverNowMs = serverClock(), voiceCue = voiceCue(),
-                                stateAgeMs = if (g == null) null else (now - stateAtMs).coerceAtLeast(0),
+                                stateAgeMs = stateAgeMs(g, at, firstSeenMs, now),
                             )
                         }
                     }
@@ -195,5 +203,11 @@ class SurfaceState(
 
     companion object {
         const val MAX_EVENTS = 20
+
+        /** 패널 그룹 상태 나이(E038) — 상태가 없으면 null, 수신 시각이 있으면 그 기준, 없으면 처음 본 시각 기준. 음수는 0 */
+        fun stateAgeMs(state: GroupState?, receivedAtMs: Long?, firstSeenMs: Long, nowMs: Long): Long? {
+            if (state == null) return null
+            return (nowMs - (receivedAtMs ?: firstSeenMs)).coerceAtLeast(0)
+        }
     }
 }

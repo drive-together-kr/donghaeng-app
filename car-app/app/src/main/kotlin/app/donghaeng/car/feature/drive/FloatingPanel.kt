@@ -94,7 +94,7 @@ data class FloatingPanelUi(
     /** 4대를 넘는 나머지 차 수 — "외 N대" (0 이면 줄 없음) */
     val moreCount: Int = 0,
     /**
-     * 실시간 연결이 끊긴 채 그룹 상태가 15초 넘게 오래됨 — "2분 전"(E038). 있으면 머리줄 기준 문구 자리에 "연결 끊김 · 2분 전"(주의 색),
+     * 실시간 연결이 끊긴 채 그룹 상태가 15초 넘게 오래됨 — "2분 전"(E038). 있으면 머리줄 기준 문구 자리에 "연결 끊김 · 2분 전"(주의 색, 나이는 잘리지 않음),
      * 차 줄은 흐리게. null = 새 정보
      */
     val staleText: String? = null,
@@ -115,6 +115,11 @@ object FloatingPanelSpec {
      * 180 dp(22sp 한글 약 7자 + " 도착", "광주송정역 도착" ≈ 160 dp 까지 그대로)를 넘지 않게 해 그룹 이름 몫을 139 dp(약 6자) 이상 남긴다.
      */
     const val HEADER_LABEL_MAX_DP = 180f
+    /**
+     * 연결이 끊긴 채 오래된 값일 때 머리줄 "연결 끊김 · {나이}" 의 상한 폭(E038). 나이가 핵심이라 기준 문구 상한보다 넓게 —
+     * "연결 끊김 · 23시간 전"(한글 7자 + 숫자 2 + 공백·가운뎃점, SemiBold 22sp ≈ 211 dp)이 잘리지 않고, 그룹 이름 몫은 99 dp(약 4자) 남는다.
+     */
+    const val STALE_LABEL_MAX_DP = 220f
     const val NAME_SP = 29f
     /** 긴 닉네임을 맞출 때 내려가는 하한 */
     const val NAME_MIN_SP = 20f
@@ -183,11 +188,7 @@ fun FloatingPanel(
                 Spacer(Modifier.width(s.dp(8f)))
                 val stale = ui.staleText
                 if (stale != null) {
-                    Text(
-                        stringResource(R.string.surface_panel_stale, stale), color = p.caution, fontSize = s.sp(FloatingPanelSpec.HEADER_SP), lineHeight = s.sp(26f),
-                        fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.widthIn(max = s.dp(FloatingPanelSpec.HEADER_LABEL_MAX_DP)),
-                    )
+                    StaleHeaderLabel(stale, p.caution, s)
                 } else {
                     EtaHeaderLabel(ui.etaPlace, p.muted, s)
                 }
@@ -234,6 +235,23 @@ private fun EtaHeaderLabel(place: String, color: Color, s: Scaler) {
     Row(Modifier.widthIn(max = s.dp(FloatingPanelSpec.HEADER_LABEL_MAX_DP)), verticalAlignment = Alignment.CenterVertically) {
         Text(place, color = color, fontSize = size, lineHeight = s.sp(26f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
         Text(FloatingPanelSpec.ETA_SUFFIX, color = color, fontSize = size, lineHeight = s.sp(26f), maxLines = 1, softWrap = false)
+    }
+}
+
+/**
+ * 머리줄 "연결 끊김 · 10분 전"(E038): 핵심은 나이 — 나이는 자기 폭 그대로 두고, 폭이 모자라면 앞쪽 "연결 끊김 ·" 만 말줄임한다.
+ * 상한 [FloatingPanelSpec.STALE_LABEL_MAX_DP](220 dp)는 기준 문구(180 dp)보다 넓다 — 끊긴 동안은 나이가 그룹 이름보다 중요하다
+ * ("연결 끊김 · 23시간 전" ≈ 211 dp, SemiBold 22sp). 시안 `screen=design&variant=panel_stale`.
+ */
+@Composable
+private fun StaleHeaderLabel(age: String, color: Color, s: Scaler) {
+    val size = s.sp(FloatingPanelSpec.HEADER_SP)
+    Row(Modifier.widthIn(max = s.dp(FloatingPanelSpec.STALE_LABEL_MAX_DP)), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            stringResource(R.string.surface_panel_stale), color = color, fontSize = size, lineHeight = s.sp(26f), fontWeight = FontWeight.SemiBold,
+            maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
+        )
+        Text(" $age", color = color, fontSize = size, lineHeight = s.sp(26f), fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
     }
 }
 
@@ -501,6 +519,12 @@ object FloatingPanelSamples {
         etaPlace = "강릉 경포해변 중앙광장 공영주차장",
     )
 
+    /**
+     * 연결이 끊긴 채 오래된 값(E038) + 긴 그룹 이름 + 가장 긴 나이 "23시간 전" — 머리줄 "연결 끊김 · 23시간 전" 이 잘리지 않고
+     * 그룹 이름만 말줄임되는지 `screen=design&variant=panel_stale` 로 확인한다.
+     */
+    val stale = worst.copy(staleText = "23시간 전", connected = false, event = null)
+
     fun of(variant: String): FloatingPanelUi = when (variant) {
         "recording" -> base.copy(event = null, ptt = PttUi(PttPhase.RECORDING, seconds = 9, totalSeconds = 15, level = 0.7f))
         "confirm" -> base.copy(event = null, ptt = PttUi(PttPhase.CONFIRMING, seconds = 4, listening = true))
@@ -514,6 +538,7 @@ object FloatingPanelSamples {
         "full" -> full
         "worst" -> worst
         "longdest" -> longDestination
+        "stale" -> stale
         else -> base
     }
 }

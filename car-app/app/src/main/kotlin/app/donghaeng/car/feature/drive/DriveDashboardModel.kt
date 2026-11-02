@@ -53,6 +53,10 @@ data class ArrivalCardUi(
      * 시작하면…" 을 보이고, 정차 중이면 [목적지 안내 시작] 버튼을 둔다(4-3·5-1). 하나라도 있으면 null
      */
     val noEtaPlace: String? = null,
+    /** 그룹 전원이 목적지에 도착 — 카드가 시각 대신 "모두 도착했어요" + 목적지 이름(안내 버튼 없음) */
+    val allArrived: Boolean = false,
+    /** 목적지 이름(전원 도착 문구용, 없으면 빈 문자열) */
+    val destinationName: String = "",
 )
 
 /** 휴게소 도착 예상 — 이름+시각, 가장 늦은 차는 굵게 */

@@ -13,8 +13,8 @@
     <!-- 플로팅 패널 -->
     <string name="surface_panel_more">외 %1$d대</string>
     <string name="surface_panel_waiting">다른 차 정보를 기다리는 중</string>
-    <!-- 실시간 연결이 끊긴 채 오래된 값(E038) — "연결 끊김 · 2분 전" -->
-    <string name="surface_panel_stale">연결 끊김 · %1$s</string>
+    <!-- 실시간 연결이 끊긴 채 오래된 값(E038) — 머리줄 "연결 끊김 · 2분 전" 의 앞부분(나이는 따로 그려 잘리지 않게) -->
+    <string name="surface_panel_stale">연결 끊김 ·</string>
 
     <!-- 정차 대시보드 -->
     <string name="surface_cards_only_notice">플로팅 창 권한이 없어 알림 카드와 음성으로 안내해요</string>

@@ -15,6 +15,8 @@ import dagger.hilt.android.AndroidEntryPoint
  * 알림 탭에서 쓴다. 없으면 홈.
  * B125: 헤드업 카드에서 온 인텐트(`from=card`)는 **주행 중이면** 그룹 주행 화면으로 가지 않고 순정 내비를 앞에 둔다(규칙 6 — 앞 화면은 늘 순정 내비).
  * 정차 중 올린 카드(탭 가능)를 출발 직후 5초 수명 안에 눌러도 여기서 막힌다([CardTapPolicy]).
+ * 인텐트의 screen 은 새로 받았을 때만 쓴다 — 다시 만들어진 액티비티(주야간 전환 등)는 NavController 가 보던 화면을 복원하므로 다시 이동하지 않는다.
+ * 카드 인텐트는 처리한 뒤 from·screen 을 모두 지운다(탭은 한 번).
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -65,20 +67,23 @@ class MainActivity : ComponentActivity() {
 
     private fun routeOf(intent: android.content.Intent?, fresh: Boolean): String? {
         val from = intent?.getStringExtra(EXTRA_FROM)
+        val route = screenRouteOf(intent)
         if (from == FROM_CARD) {
-            // 카드 탭은 한 번만 처리한다 — 저장된 인텐트에서 지워 다시 만들어질 때 되풀이하지 않게
+            // 카드 탭은 한 번만 처리한다 — 주행 여부와 관계없이 저장된 인텐트에서 from·screen 을 지워 다시 만들어질 때 되풀이하지 않게
             intent?.removeExtra(EXTRA_FROM)
-            if (!fresh) return null
-            val driving = runCatching { surfaceState.isDriving.value }.getOrDefault(false)
-            if (!CardTapPolicy.opensScreen(from, driving)) {
-                intent?.removeExtra(EXTRA_SCREEN)
+            intent?.removeExtra(EXTRA_SCREEN)
+        }
+        val driving = if (fresh && from == FROM_CARD) runCatching { surfaceState.isDriving.value }.getOrDefault(false) else false
+        return when (CardTapPolicy.outcome(fresh, from, driving)) {
+            CardTapPolicy.Outcome.IGNORE -> null
+            CardTapPolicy.Outcome.KEEP_NAVI -> {
                 // 주행 중 카드 탭 — 동행 화면으로 덮지 않고 순정 내비를 앞으로(못 올리면 동행을 뒤로 보낸다)
                 app.donghaeng.car.core.common.DhLog.i("card tap while driving → 순정 내비 유지(B125)")
                 if (!app.donghaeng.car.surface.NaviLauncher.bringToFront(this, pleosBuild = BuildConfig.ADAPTER == "pleos")) moveTaskToBack(true)
-                return null
+                null
             }
+            CardTapPolicy.Outcome.OPEN -> route
         }
-        return screenRouteOf(intent)
     }
 
     private fun screenRouteOf(intent: android.content.Intent?): String? = when (intent?.getStringExtra(EXTRA_SCREEN)) {
@@ -116,5 +121,18 @@ class MainActivity : ComponentActivity() {
 
 /** 카드 탭 인텐트 처리 규칙(B125, 순수 — 단위 테스트): 카드에서 왔고 지금 주행 중이면 화면을 열지 않는다 */
 object CardTapPolicy {
+    /** 인텐트 하나의 처리 결과 — 화면 이동 / 순정 내비 유지(주행 중 카드 탭) / 무시 */
+    enum class Outcome { OPEN, KEEP_NAVI, IGNORE }
+
     fun opensScreen(from: String?, drivingNow: Boolean): Boolean = !(from == MainActivity.FROM_CARD && drivingNow)
+
+    /**
+     * [fresh] = 새로 받은 인텐트(첫 시작·onNewIntent). 다시 만들어진 액티비티(주야간 전환·프로세스 복원)는 화면을 NavController 가 복원하므로
+     * 인텐트의 screen 으로 다시 이동하지 않는다 — 사용자가 이미 다른 화면으로 옮겼다면 그 자리를 지킨다.
+     */
+    fun outcome(fresh: Boolean, from: String?, drivingNow: Boolean): Outcome = when {
+        !fresh -> Outcome.IGNORE
+        !opensScreen(from, drivingNow) -> Outcome.KEEP_NAVI
+        else -> Outcome.OPEN
+    }
 }

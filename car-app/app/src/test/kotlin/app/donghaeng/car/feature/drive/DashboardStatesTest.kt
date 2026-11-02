@@ -74,6 +74,68 @@ class DashboardStatesTest {
     }
 
     @Test
+    fun `once my car or the whole group has arrived the card never asks to start guidance`() {
+        // 전원 도착: 내비 안내가 끝나 ETA 가 모두 비어도 빈 상태·안내 버튼이 아니라 "모두 도착"
+        val all = DriveDashboardMapper.map(state(listOf(
+            m("veh_A", "아빠 차", 0, leader = true, status = MemberStatus.ARRIVED),
+            m("veh_ME", "내 차", 20, me = true, status = MemberStatus.ARRIVED),
+        )), zone)!!.arrival
+        assertNull(all.noEtaPlace)
+        assertTrue(all.allArrived)
+        assertEquals("경포해변", all.destinationName)
+        assertEquals(DriveDashboardMapper.ARRIVED_TEXT, all.myArrivalText)
+
+        // 나만 도착, 다른 차는 ETA 없이 달리는 중: 안내 버튼 없음, 내 도착 = "도착"
+        val meOnly = DriveDashboardMapper.map(state(listOf(
+            m("veh_A", "아빠 차", 0, leader = true),
+            m("veh_ME", "내 차", 300, me = true, status = MemberStatus.ARRIVED),
+        )), zone)!!.arrival
+        assertNull(meOnly.noEtaPlace)
+        assertFalse(meOnly.allArrived)
+        assertEquals("도착", meOnly.myArrivalText)
+        assertEquals("", meOnly.myRemainText)
+
+        // 나만 도착, 다른 차는 ETA 있음: 그룹 도착은 그 차 기준
+        val others = DriveDashboardMapper.map(state(listOf(
+            m("veh_A", "아빠 차", 0, leader = true, destTs = at(14, 40)),
+            m("veh_ME", "내 차", 300, me = true, status = MemberStatus.ARRIVED),
+        )), zone)!!.arrival
+        assertEquals("14:40", others.groupArrivalText)
+        assertEquals("마지막: 아빠 차", others.lastCarText)
+        assertNull(others.noEtaPlace)
+
+        // 내가 도착했고 다른 차는 모두 끊김: 전원 도착이 아니고(끊긴 차는 모른다) 안내도 권하지 않는다
+        val offline = DriveDashboardMapper.map(state(listOf(
+            m("veh_A", "아빠 차", 0, leader = true, online = false, status = MemberStatus.OFFLINE),
+            m("veh_ME", "내 차", 300, me = true, status = MemberStatus.ARRIVED),
+        )), zone)!!.arrival
+        assertFalse(offline.allArrived)
+        assertNull(offline.noEtaPlace)
+    }
+
+    @Test
+    fun `a disconnected me does not get the start guidance prompt`() {
+        val a = DriveDashboardMapper.map(state(listOf(
+            m("veh_A", "아빠 차", 0, leader = true, online = false, status = MemberStatus.OFFLINE),
+            m("veh_ME", "내 차", 300, me = true, online = false, status = MemberStatus.OFFLINE),
+        ), ConnState.OFFLINE), zone)!!.arrival
+        assertNull(a.noEtaPlace)
+        assertEquals(DriveFormat.DASH, a.groupArrivalText)
+        // 내 차는 연결돼 있고 다른 차가 모두 끊김 — 내 내비 안내가 없으면 여전히 안내를 권한다(내 ETA 가 그룹 도착을 채운다)
+        val mineOnline = DriveDashboardMapper.map(state(listOf(
+            m("veh_A", "아빠 차", 0, leader = true, online = false, status = MemberStatus.OFFLINE),
+            m("veh_ME", "내 차", 300, me = true),
+        )), zone)!!.arrival
+        assertEquals("경포해변", mineOnline.noEtaPlace)
+        // 실시간 연결이 끊긴 동안은 스냅샷이 멈춰 있어 안내를 시작해도 도착 시각이 채워지지 않는다 → 권하지 않는다
+        val disconnected = DriveDashboardMapper.map(state(listOf(
+            m("veh_A", "아빠 차", 0, leader = true),
+            m("veh_ME", "내 차", 300, me = true),
+        ), ConnState.OFFLINE), zone)!!.arrival
+        assertNull(disconnected.noEtaPlace)
+    }
+
+    @Test
     fun `while disconnected an old group state is marked stale, a fresh one or a connected one is not`() {
         val members = listOf(m("veh_A", "아빠 차", 0, leader = true), m("veh_ME", "내 차", 300, me = true))
         val stale = DriveDashboardMapper.map(state(members, ConnState.RECONNECTING, snapshotAgeS = 125), zone)!!

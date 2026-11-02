@@ -31,6 +31,12 @@ class ScreenPoliciesTest {
         assertFalse(CardTapPolicy.opensScreen(MainActivity.FROM_CARD, drivingNow = true))
         assertTrue(CardTapPolicy.opensScreen(MainActivity.FROM_CARD, drivingNow = false))
         assertTrue("카드가 아닌 인텐트(시연 스크립트·상시 알림)는 그대로", CardTapPolicy.opensScreen(null, drivingNow = true))
+        // 새로 받은 인텐트만 화면을 연다 — 다시 만들어진 액티비티(주야간 전환)는 정차 중 카드·시연 인텐트 모두 되풀이하지 않는다
+        assertEquals(CardTapPolicy.Outcome.OPEN, CardTapPolicy.outcome(fresh = true, MainActivity.FROM_CARD, drivingNow = false))
+        assertEquals(CardTapPolicy.Outcome.KEEP_NAVI, CardTapPolicy.outcome(fresh = true, MainActivity.FROM_CARD, drivingNow = true))
+        assertEquals(CardTapPolicy.Outcome.OPEN, CardTapPolicy.outcome(fresh = true, null, drivingNow = true))
+        assertEquals(CardTapPolicy.Outcome.IGNORE, CardTapPolicy.outcome(fresh = false, MainActivity.FROM_CARD, drivingNow = false))
+        assertEquals(CardTapPolicy.Outcome.IGNORE, CardTapPolicy.outcome(fresh = false, null, drivingNow = false))
     }
 
     @Test

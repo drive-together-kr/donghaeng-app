@@ -305,6 +305,8 @@
     <string name="dash_no_eta">도착 예상 시각 없음</string>
     <string name="dash_no_eta_hint">순정 내비에서 %1$s 안내를 시작하면 모든 차의 도착 시각이 보여요</string>
     <string name="dash_start_guidance">%1$s 안내 시작</string>
+    <string name="dash_all_arrived">모두 도착했어요</string>
+    <string name="dash_all_arrived_hint">그룹 전원이 %1$s에 있어요</string>
     <string name="dash_next_stop">다음 정차</string>
     <string name="dash_fuel">주유</string>
     <string name="dash_charge">충전</string>
