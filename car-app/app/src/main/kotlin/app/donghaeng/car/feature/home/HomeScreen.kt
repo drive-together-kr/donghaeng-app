@@ -110,7 +110,7 @@ fun HomeScreen(
                         ActionSection(state, onPrimary, onOpenSettings, onOpenTour)
                     }
                     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        if (state.groupSession == null) HowToCard()
+                        if (state.groupSession == null) HowToCard() else DrivingHowToCard()
                         if (BuildConfig.DEBUG) BuildInfoCard(state)
                     }
                 }
@@ -304,6 +304,17 @@ private fun ActionSection(
     if (state.groupSession == null && state.primaryAction == HomeAction.PAIR_PHONE) {
         Spacer(Modifier.height(8.dp))
         Text(stringResource(R.string.home_tour_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** 그룹이 있을 때 홈 오른쪽 — 주행 중 동행이 어떻게 알려 주는지(앞 화면은 순정 내비, 패널·음성·핸들 무전) */
+@Composable
+private fun DrivingHowToCard() {
+    Card(modifier = Modifier.fillMaxWidth().widthIn(max = 960.dp)) {
+        Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            HowToStep(R.string.home_howto_3_title, R.string.home_howto_3_body)
+            Text(stringResource(R.string.dash_ptt_hint), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 

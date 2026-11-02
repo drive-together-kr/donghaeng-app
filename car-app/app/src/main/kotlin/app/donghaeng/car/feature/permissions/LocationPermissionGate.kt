@@ -28,6 +28,7 @@ import app.donghaeng.car.domain.session.MqttSessionManager
 import app.donghaeng.car.domain.vehicle.VehicleSignals
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -49,20 +50,20 @@ class LocationPermissionViewModel @Inject constructor(
     private val driveSession: app.donghaeng.car.service.DriveSessionController,
 ) : ViewModel() {
 
-    @Volatile
-    private var asked = false
+    /** 이번 실행에서 이미 물었나(안내 [계속]·[나중에] 모두) — 흐름에 넣어 안내 창이 바로 닫히게 한다 */
+    private val asked = MutableStateFlow(false)
 
     /** 요청할 때 아직 없던 권한 — 결과에서 '새로 승인된 것'을 가린다(A051) */
     @Volatile
     private var missingAtAsk: Set<String> = emptySet()
 
     /** 지금 요청해야 하는가 */
-    val shouldAsk: StateFlow<Boolean> = combine(sessionManager.session, drivingMonitor.isDriving()) { session, driving ->
-        session != null && !driving && !asked && LocationPermissions.missing(context).isNotEmpty()
+    val shouldAsk: StateFlow<Boolean> = combine(sessionManager.session, drivingMonitor.isDriving(), asked) { session, driving, wasAsked ->
+        session != null && !driving && !wasAsked && LocationPermissions.missing(context).isNotEmpty()
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     fun markAsked() {
-        asked = true
+        asked.value = true
         missingAtAsk = runCatching { LocationPermissions.missing(context).toSet() }.getOrDefault(emptySet())
     }
 

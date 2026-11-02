@@ -49,6 +49,8 @@ data class FeedEvent(
     val mine: Boolean = false,
     /** 아이콘·색 톤(대시보드 지난 소식과 같은 규칙, 4-4) */
     val tone: Tone = Tone.INFO,
+    /** 출처 차(연속 접기 비교용 — 화면·로그에 쓰지 않는다) */
+    val sourceVehicleId: String? = null,
 ) {
     /** 제목 — 서버 음성 문구, 없으면 종류 라벨(+ 요약) */
     val title: String get() = speech?.trim()?.takeIf { it.isNotEmpty() } ?: listOfNotNull(typeLabel, detail).joinToString(" · ")
@@ -115,7 +117,7 @@ class EventsViewModel @Inject constructor(
         val liveIds = live.map { it.event.eventId }.toSet()
         val rows = live.map { it.event.toFeed(envelopeTsMs = it.envelopeTsMs, serverNowMs = serverNow, myVehicleId = me) } +
             fetchedList.filterNot { it.eventId in liveIds }.map { it.toFeed(envelopeTsMs = null, serverNowMs = serverNow, myVehicleId = me) }
-        EventsUiState(groupName = session?.name, events = rows.take(MAX), loading = isLoading, error = err)
+        EventsUiState(groupName = session?.name, events = collapseRepeats(rows).take(MAX), loading = isLoading, error = err)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), EventsUiState())
 
     /** 서버의 최근 20개 다시 읽기 */
@@ -154,6 +156,15 @@ class EventsViewModel @Inject constructor(
 
         /** 이보다 최근이면 "방금" 꼬리표 */
         const val LIVE_WINDOW_MS = 60_000L
+
+        /** 같은 차에서 연달아 오면 가장 최근 하나만 보이는 종류(정차가 이어지면 "정차·정차·정차" 가 쌓였다, 4-6) */
+        private val COLLAPSIBLE = setOf(GroupEventType.STOPPED.name, GroupEventType.RESUMED.name, GroupEventType.MEMBER_OFFLINE.name)
+
+        /** 최신 먼저 정렬된 줄에서 바로 앞(더 최근) 줄과 같은 차·같은 종류([COLLAPSIBLE])면 뺀다 — 순수 */
+        fun collapseRepeats(rows: List<FeedEvent>): List<FeedEvent> = rows.filterIndexed { i, r ->
+            i == 0 || r.type !in COLLAPSIBLE || r.sourceVehicleId == null ||
+                !(rows[i - 1].type == r.type && rows[i - 1].sourceVehicleId == r.sourceVehicleId)
+        }
 
         /** 이벤트 종류 한국어 라벨 */
         fun labelOf(type: String): String = when (GroupEventType.entries.firstOrNull { it.name == type }) {
@@ -234,6 +245,7 @@ class EventsViewModel @Inject constructor(
                 live = ageMs != null && ageMs < LIVE_WINDOW_MS,
                 mine = myVehicleId != null && sourceVehicleId == myVehicleId,
                 tone = DriveFormat.eventTone(type),
+                sourceVehicleId = sourceVehicleId,
             )
         }
     }

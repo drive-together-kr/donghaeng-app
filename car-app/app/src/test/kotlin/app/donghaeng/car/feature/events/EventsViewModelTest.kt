@@ -144,6 +144,22 @@ class EventsViewModelTest {
     }
 
     @Test
+    fun `repeated stop news from the same car collapse into the newest one`() = runTest(dispatcher) {
+        recent.value = listOf(
+            event("s3", "STOPPED", "veh_A", "아빠 차가 멈췄어요.", mapOf("durationS" to 180), ageMs = 1_000),
+            event("s2", "STOPPED", "veh_A", "아빠 차가 멈췄어요.", mapOf("durationS" to 120), ageMs = 60_000),
+            event("s1", "STOPPED", "veh_B", "둘째 차가 멈췄어요.", mapOf("durationS" to 60), ageMs = 70_000),
+            event("j1", "MEMBER_JOINED", "veh_A", "아빠 차가 들어왔어요.", ageMs = 80_000),
+            event("j0", "MEMBER_JOINED", "veh_A", "아빠 차가 들어왔어요.", ageMs = 90_000),
+        )
+        val vm = viewModel()
+        backgroundScope.launch { vm.uiState.collect {} }
+        runCurrent()
+        assertEquals("같은 차 정차 연속은 최신 하나, 다른 차·다른 종류는 그대로", listOf("s3", "s1", "j1", "j0"), vm.uiState.value.events.map { it.eventId })
+        assertEquals("3분째 정차", vm.uiState.value.events.first().detail)
+    }
+
+    @Test
     fun `details are human summaries for known kinds only - never raw key=value or vehicle ids`() {
         val samples = mapOf(
             GroupEventType.MEMBER_JOINED to mapOf("vehicleId" to "veh_01HABC", "nickname" to "둘째 차", "color" to "#2E7DFF", "role" to "MEMBER"),
