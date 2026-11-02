@@ -9,6 +9,8 @@ import app.donghaeng.car.core.common.TokenClearReason
 import app.donghaeng.car.core.network.ApiResult
 import app.donghaeng.car.domain.pairing.PairingRepository
 import app.donghaeng.car.domain.pairing.VehicleIdUnavailableException
+import app.donghaeng.car.domain.session.GroupSessionStore
+import app.donghaeng.protocol.rest.ErrorCodes
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
@@ -19,6 +21,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -32,7 +36,7 @@ enum class PairingErrorReason { NETWORK, SERVER, VEHICLE_ID_UNAVAILABLE, TOO_MAN
  * ```
  * Idle → Checking ─ 저장된 토큰 있음 → Connected
  *                 └ 없음 → RequestingCode → CodeIssued ─ interval 마다 폴링 ─ 200 → Connected
- *                                               ↑          428 계속 / 429 interval+2 / 410·404·로컬 만료 → 새 코드(최대 3회)
+ *                                               ↑          428 계속 / 429 interval+2 / 410·404·409 ALREADY_APPROVED·로컬 만료 → 새 코드(최대 3회)
  *                                               └── Error(retryable) ← 네트워크·서버 오류 · 코드 3회 초과
  * ```
  * deviceCode 는 UI 상태에 넣지 않는다(화면·로그에 나올 이유가 없다).
@@ -66,10 +70,16 @@ class PairingViewModel internal constructor(
     private val clock: () -> Long,
     autoStart: Boolean,
     driving: DrivingStateMonitor = AlwaysParkedDrivingStateMonitor(),
+    /** 활성 그룹이 있나 — 연결됨 화면의 주 버튼([같이 가기 시작] / [그룹 보기])을 고른다(1-1) */
+    groupActive: Flow<Boolean> = flowOf(false),
 ) : ViewModel() {
 
     @Inject
-    constructor(repository: PairingRepository, driving: DrivingStateMonitor) : this(repository, { System.currentTimeMillis() }, autoStart = true, driving = driving)
+    constructor(repository: PairingRepository, driving: DrivingStateMonitor, sessionStore: GroupSessionStore) :
+        this(repository, { System.currentTimeMillis() }, autoStart = true, driving = driving, groupActive = sessionStore.session.map { it != null })
+
+    /** 활성 그룹이 있으면 true — 연결됨 화면 주 버튼이 [그룹 보기] */
+    val hasGroup: StateFlow<Boolean> = groupActive.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     private val _state = MutableStateFlow<PairingState>(PairingState.Idle)
     val state: StateFlow<PairingState> = _state.asStateFlow()
@@ -175,6 +185,14 @@ class PairingViewModel internal constructor(
                         DhLog.i("pairing poll=${r.summary} attempt=$attempt → 새 코드 요청")
                         break
                     }
+                    // C112: 409 ALREADY_APPROVED — 이 코드는 이미 토큰을 내준 뒤(마지막 200 응답 유실 + 재수령 유예 지남 등). 오류 화면 대신 새 코드(docs/03 §1.2)
+                    is ApiResult.HttpFailure.Other -> if (isAlreadyApproved(r)) {
+                        DhLog.i("pairing poll=${r.summary} attempt=$attempt → 이미 승인된 코드, 새 코드 요청")
+                        break
+                    } else {
+                        setState(r.toErrorState())
+                        return
+                    }
                     is ApiResult.NetworkFailure -> {
                         // 일시적 네트워크 오류(앱 전환·절전 등)는 코드가 살아 있는 동안 계속 폴링한다 — 폰이 이미 승인했을 수 있고,
                         // 새 코드를 받으면 그 승인이 무효가 된다. 연속 실패가 쌓이면 그때 오류 화면으로
@@ -218,6 +236,9 @@ class PairingViewModel internal constructor(
     }
 
     companion object {
+        /** 409 ALREADY_APPROVED — 새 코드로 넘어갈 응답(C112). 순수 */
+        fun isAlreadyApproved(r: ApiResult.HttpFailure): Boolean = r.status == 409 && r.code == ErrorCodes.ALREADY_APPROVED
+
         /** 코드가 만료되어 다시 받는 횟수 상한(이번 시도 묶음 안에서) */
         const val MAX_CODE_REQUESTS = 3
 

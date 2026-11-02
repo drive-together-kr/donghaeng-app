@@ -30,7 +30,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -100,7 +99,7 @@ fun CreateGroupScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = onBack, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.group_back)) }
+                OutlinedButton(onClick = onBack, modifier = Modifier.heightIn(min = 76.dp)) { Text(stringResource(R.string.group_back)) }
                 Spacer(Modifier.width(20.dp))
                 Text(
                     when (state) {
@@ -118,7 +117,7 @@ fun CreateGroupScreen(
                 }
                 is CreateGroupState.Form -> FormContent(state, onLoadNavi, onPickPreset, onName, onMaxMembers, onCreate)
                 is CreateGroupState.Active -> {
-                    Button(onClick = onOpenDrive, modifier = Modifier.fillMaxWidth().heightIn(min = 60.dp)) { Text(stringResource(R.string.group_btn_open_drive)) }
+                    Button(onClick = onOpenDrive, modifier = Modifier.fillMaxWidth().heightIn(min = 84.dp)) { Text(stringResource(R.string.group_btn_open_drive), style = MaterialTheme.typography.titleLarge) }
                     ActiveContent(state, onReissue, onEndOrLeave, onRefresh)
                 }
             }
@@ -157,7 +156,7 @@ private fun FormContent(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                OutlinedButton(onClick = onLoadNavi, enabled = !form.loadingNavi && !form.isDriving, modifier = Modifier.heightIn(min = 56.dp)) {
+                OutlinedButton(onClick = onLoadNavi, enabled = !form.loadingNavi && !form.isDriving, modifier = Modifier.heightIn(min = 76.dp)) {
                     Text(stringResource(R.string.group_btn_load_navi))
                 }
             }
@@ -196,7 +195,9 @@ private fun FormContent(
     }
     form.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyLarge) }
     if (form.isDriving) Text(stringResource(R.string.group_driving_hint), color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.titleMedium)
-    Button(onClick = onCreate, enabled = form.canCreate, modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp)) {
+    // 목적지를 아직 안 골라 버튼이 꺼져 있으면 왜 꺼졌는지 말한다
+    if (form.needsDestination) Text(stringResource(R.string.group_create_need_destination), color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.titleMedium)
+    Button(onClick = onCreate, enabled = form.canCreate, modifier = Modifier.fillMaxWidth().heightIn(min = 84.dp)) {
         if (form.creating) {
             CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 3.dp, color = MaterialTheme.colorScheme.onPrimary)
             Spacer(Modifier.width(12.dp))
@@ -235,10 +236,17 @@ private fun InvitePane(active: CreateGroupState.Active, onReissue: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
             )
             val invite = session.invite
-            if (session.isLeader && invite != null) {
-                QrCodeImage(content = invite.url, modifier = Modifier.widthIn(max = 320.dp).fillMaxWidth())
+            if (session.isLeader && invite == null) {
+                // 승계로 새 선두차가 됐는데 초대가 없다 — 초대 QR 을 새로 만든다(서버 POST /groups/{id}/invites, 선두만)
+                Text(stringResource(R.string.group_invite_none_hint), style = MaterialTheme.typography.titleMedium)
+                Button(onClick = onReissue, enabled = !active.reissuing && !active.isDriving, modifier = Modifier.heightIn(min = 76.dp)) {
+                    Text(if (active.reissuing) stringResource(R.string.group_reissuing) else stringResource(R.string.group_btn_make_invite))
+                }
+            } else if (session.isLeader && invite != null) {
+                QrCodeImage(content = invite.url, modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth())
                 Text(stringResource(R.string.group_scan_hint), style = MaterialTheme.typography.titleMedium)
-                // QR 내용(서버가 준 초대 URL) — 카메라 없는 폰 에뮬레이터에서 '붙여넣기'로 합류할 때 읽어 쓴다. QR 과 같은 정보라 추가 노출은 아니다
+                // QR 내용(서버가 준 초대 URL) — 카메라 없는 폰에서 공식 앱 '코드·주소 직접 입력'에 넣는다(D039). QR 과 같은 정보라 추가 노출은 아니다
+                Text(stringResource(R.string.group_scan_manual_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(invite.url, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 val remaining = active.inviteRemainingS
                 Text(
@@ -247,7 +255,8 @@ private fun InvitePane(active: CreateGroupState.Active, onReissue: () -> Unit) {
                     style = MaterialTheme.typography.bodyLarge,
                     color = if (active.inviteExpired) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedButton(onClick = onReissue, enabled = !active.reissuing, modifier = Modifier.heightIn(min = 56.dp)) {
+                // 주행 중에는 다시 만들 수 없다(규칙 6 — ViewModel 도 무시한다)
+                OutlinedButton(onClick = onReissue, enabled = !active.reissuing && !active.isDriving, modifier = Modifier.heightIn(min = 76.dp)) {
                     Text(if (active.reissuing) stringResource(R.string.group_reissuing) else stringResource(R.string.group_btn_reissue))
                 }
             } else {
@@ -273,7 +282,7 @@ private fun MembersPane(active: CreateGroupState.Active, onEndOrLeave: () -> Uni
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(stringResource(R.string.group_members, active.members.size), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                OutlinedButton(onClick = onRefresh, modifier = Modifier.heightIn(min = 44.dp)) { Text(stringResource(R.string.group_btn_refresh)) }
+                OutlinedButton(onClick = onRefresh) { Text(stringResource(R.string.group_btn_refresh)) }
             }
             HorizontalDivider()
             if (active.members.isEmpty()) {
@@ -292,7 +301,7 @@ private fun MembersPane(active: CreateGroupState.Active, onEndOrLeave: () -> Uni
     }
     active.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyLarge) }
     if (active.isDriving) Text(stringResource(R.string.group_driving_hint), color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.titleMedium)
-    OutlinedButton(onClick = { confirmLeave = true }, enabled = !active.busy && !active.isDriving, modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp)) {
+    OutlinedButton(onClick = { confirmLeave = true }, enabled = !active.busy && !active.isDriving, modifier = Modifier.fillMaxWidth().heightIn(min = 76.dp)) {
         Text(if (active.session.isLeader) stringResource(R.string.group_btn_end) else stringResource(R.string.group_btn_leave))
     }
     if (confirmLeave) {
@@ -303,11 +312,11 @@ private fun MembersPane(active: CreateGroupState.Active, onEndOrLeave: () -> Uni
             text = { Text(if (leader) stringResource(R.string.drive_confirm_end_text) else stringResource(R.string.drive_confirm_leave_text)) },
             confirmButton = {
                 // 다이얼로그가 떠 있는 동안 주행으로 바뀌면 확정 버튼도 막는다(주행 중 입력 비활성)
-                TextButton(onClick = { confirmLeave = false; onEndOrLeave() }, enabled = !active.busy && !active.isDriving) {
+                Button(onClick = { confirmLeave = false; onEndOrLeave() }, enabled = !active.busy && !active.isDriving) {
                     Text(if (leader) stringResource(R.string.group_btn_end) else stringResource(R.string.group_btn_leave))
                 }
             },
-            dismissButton = { TextButton(onClick = { confirmLeave = false }) { Text(stringResource(R.string.drive_cancel)) } },
+            dismissButton = { OutlinedButton(onClick = { confirmLeave = false }) { Text(stringResource(R.string.drive_cancel)) } },
         )
     }
 }

@@ -102,8 +102,9 @@ object PttDisplay {
                     PastStatus.PLAY_FAILED -> "재생 실패"
                     PastStatus.PLAYED, PastStatus.QUEUED -> null
                 },
+                // 놓친 무전(못 들음·다 못 들음)은 주의 — 초록(정보)이면 '정상 처리'처럼 읽혔다(E124)
                 tone = when (v.status) {
-                    PastStatus.STALE, PastStatus.INTERRUPTED -> Tone.INFO
+                    PastStatus.STALE, PastStatus.INTERRUPTED -> Tone.CAUTION
                     PastStatus.DOWNLOAD_FAILED, PastStatus.PLAY_FAILED -> Tone.CAUTION
                     PastStatus.PLAYED, PastStatus.QUEUED -> Tone.NEUTRAL
                 },

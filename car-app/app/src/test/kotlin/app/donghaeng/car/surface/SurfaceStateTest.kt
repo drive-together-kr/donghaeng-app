@@ -38,10 +38,14 @@ class SurfaceStateTest {
     private val positions = InMemoryPanelPositionStore(PanelCorner.BOTTOM_START)
     private val group = GroupSession("grp_1", "강릉 가족 여행", "veh_A", Place(37.7, 128.9, "경포해변"), GroupTopics("s", "e"), 0L)
 
+    private val connected = MutableStateFlow(true)
+    private val groupStateAt = MutableStateFlow<Long?>(null)
+
     private fun surface(scheduler: TestCoroutineScheduler, serverOffsetMs: Long = 0L) = SurfaceState(
-        session = session, groupState = groupState, events = events, myVehicleId = { "veh_ME" }, connected = MutableStateFlow(true),
+        session = session, groupState = groupState, events = events, myVehicleId = { "veh_ME" }, connected = connected,
         driving = driving, canDrawOverlays = canDraw, appVisible = resumed, positions = positions,
         dispatcher = StandardTestDispatcher(scheduler), clock = { scheduler.currentTime }, serverClock = { scheduler.currentTime + serverOffsetMs },
+        groupStateAt = groupStateAt,
     )
 
     private fun member(vid: String, dist: Int) = MemberState(vid, vid, "#2E7DFF", true, 37.0, 127.0, 0f, 80f, 0, null, null, dist, MemberStatus.DRIVING)
@@ -118,5 +122,36 @@ class SurfaceStateTest {
             assertEquals("저잔량", s.panelUi.value!!.event?.text)
             assertEquals("나이 = 서버 시계 − 봉투 ts", 4, s.panelUi.value!!.event?.ageS)
         } finally { s.stop() }
+    }
+
+    @Test
+    fun `the stale age counts from when the group state was received, not from when the panel first saw it`() = runTest {
+        session.value = group
+        val s = surface(testScheduler); s.start(); runCurrent()
+        try {
+            connected.value = false
+            // 2분 전에 받은 스냅샷(대시보드 stateAt 과 같은 값) — 패널이 지금 처음 봐도 나이는 2분
+            groupStateAt.value = testScheduler.currentTime - 120_000
+            groupState.value = GroupState("grp_1", "veh_A", listOf(member("veh_A", 0), member("veh_ME", 500))); runCurrent()
+            assertEquals("2분 전", s.panelUi.value!!.staleText)
+
+            // 끊긴 동안 세션 객체가 다시 방출돼도(이름 변경 등) 나이가 0 으로 돌아가지 않는다
+            session.value = group.copy(name = "강릉 가족 여행 2"); runCurrent()
+            assertEquals("2분 전", s.panelUi.value!!.staleText)
+
+            // 새 스냅샷을 받으면(연결 복구) 표시가 사라진다
+            connected.value = true
+            groupStateAt.value = testScheduler.currentTime; runCurrent()
+            assertNull(s.panelUi.value!!.staleText)
+        } finally { s.stop() }
+    }
+
+    @Test
+    fun `state age falls back to first seen only without a receipt time`() {
+        val g = GroupState("grp_1", "veh_A", emptyList())
+        assertNull(SurfaceState.stateAgeMs(null, 1_000, 0, 5_000))
+        assertEquals(4_000L, SurfaceState.stateAgeMs(g, 1_000, 3_000, 5_000))
+        assertEquals(2_000L, SurfaceState.stateAgeMs(g, null, 3_000, 5_000))
+        assertEquals("시계가 거꾸로면 0", 0L, SurfaceState.stateAgeMs(g, 9_000, 3_000, 5_000))
     }
 }

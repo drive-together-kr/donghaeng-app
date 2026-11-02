@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.donghaeng.car.BuildConfig
 import app.donghaeng.car.R
 import app.donghaeng.car.core.common.TextMasking
 import app.donghaeng.car.ui.components.DestructiveConfirmDialog
@@ -50,10 +51,14 @@ import kotlinx.coroutines.delay
 fun PairingRoute(
     onBack: () -> Unit,
     onPaired: () -> Unit,
+    onStartGroup: () -> Unit = onBack,
+    onOpenGroup: () -> Unit = onBack,
+    onOpenTour: () -> Unit = {},
     viewModel: PairingViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val isDriving by viewModel.isDriving.collectAsStateWithLifecycle()
+    val hasGroup by viewModel.hasGroup.collectAsStateWithLifecycle()
     LaunchedEffect(viewModel) {
         viewModel.events.collect { event ->
             if (event is PairingEvent.Paired) onPaired()
@@ -65,13 +70,18 @@ fun PairingRoute(
         onRetry = viewModel::retry,
         onRepair = viewModel::disconnectAndRepair,
         isDriving = isDriving,
+        hasGroup = hasGroup,
+        onPrimaryConnected = if (hasGroup) onOpenGroup else onStartGroup,
+        onOpenTour = onOpenTour,
     )
 }
 
 /**
  * 페어링 화면 (T12). 서버 `POST /v1/device/code` 응답의 verifyUri 를 QR 로, userCode 를 `KQ7-4MZ` 로 크게 보여 주고
  * interval 마다 `/device/token` 을 폴링한다. QR 문자열은 서버 응답 그대로(docs/05 §7).
- * T33: '연결 해제 후 다시 연결' 은 확인 창 뒤로, 주행 중에는 비활성(docs/10 R13).
+ * 카메라가 없으면 공식 앱(demo-host) 스캔 화면의 '코드·주소 직접 입력'에 이 코드(KQ7-4MZ)만 넣어도 되고, 아래 작은 글자의 주소(verifyUri)를 넣어도 된다(D039).
+ * 연결됨 화면의 주 버튼은 다음 할 일 — 그룹이 있으면 [그룹 보기], 없으면 [같이 가기 시작](1-1).
+ * T33: '연결 해제 후 다시 연결' 은 확인 창 뒤로, 주행 중에는 비활성(docs/10 R13). 시도 횟수·예외 원문은 debug 빌드에서만(1-5).
  */
 @Composable
 fun PairingScreen(
@@ -80,6 +90,9 @@ fun PairingScreen(
     onRetry: () -> Unit,
     onRepair: () -> Unit,
     isDriving: Boolean = false,
+    hasGroup: Boolean = false,
+    onPrimaryConnected: () -> Unit = onBack,
+    onOpenTour: () -> Unit = {},
 ) {
     Scaffold { innerPadding ->
         Column(
@@ -101,8 +114,14 @@ fun PairingScreen(
                 PairingState.Idle, PairingState.Checking -> ProgressSection(stringResource(R.string.pairing_checking))
                 PairingState.RequestingCode -> ProgressSection(stringResource(R.string.pairing_requesting))
                 is PairingState.CodeIssued -> CodeIssuedSection(state)
-                is PairingState.Connected -> ConnectedSection(state, onBack = onBack, onRepair = onRepair, isDriving = isDriving)
+                is PairingState.Connected -> ConnectedSection(state, onPrimary = onPrimaryConnected, primaryIsGroup = hasGroup, onRepair = onRepair, isDriving = isDriving)
                 is PairingState.Error -> ErrorSection(state, onRetry = onRetry, onBack = onBack)
+            }
+            // 폰(공식 앱)이 없으면 여기서 막힌다 — 예시 데이터로 그룹 주행 화면을 둘러본다(2-1). 연결됨 화면에서는 필요 없다
+            if (state !is PairingState.Connected) {
+                Spacer(Modifier.height(28.dp))
+                OutlinedButton(onClick = onOpenTour, enabled = !isDriving, modifier = Modifier.heightIn(min = 76.dp)) { Text(stringResource(R.string.home_btn_tour)) }
+                Text(stringResource(R.string.home_tour_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -164,17 +183,22 @@ private fun CodeDetails(state: PairingState.CodeIssued, remaining: String) {
         letterSpacing = 6.sp,
         color = MaterialTheme.colorScheme.primary,
     )
+    // QR 내용(서버 verifyUri) — 카메라 없는 폰에서 '코드·주소 직접 입력'에 넣을 수 있게 작은 글자로(D039, 그룹 초대 화면의 초대 주소와 같은 방식)
+    Text(stringResource(R.string.pairing_verify_uri, state.verifyUri), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     Spacer(Modifier.height(12.dp))
     Text(stringResource(R.string.pairing_remaining, remaining), style = MaterialTheme.typography.titleMedium)
-    Text(
-        stringResource(R.string.pairing_attempt, state.attempt, PairingViewModel.MAX_CODE_REQUESTS, state.intervalSec),
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
+    Text(stringResource(R.string.pairing_auto_hint), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    if (BuildConfig.DEBUG) {
+        Text(
+            stringResource(R.string.pairing_attempt, state.attempt, PairingViewModel.MAX_CODE_REQUESTS, state.intervalSec),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 @Composable
-private fun ConnectedSection(state: PairingState.Connected, onBack: () -> Unit, onRepair: () -> Unit, isDriving: Boolean) {
+private fun ConnectedSection(state: PairingState.Connected, onPrimary: () -> Unit, primaryIsGroup: Boolean, onRepair: () -> Unit, isDriving: Boolean) {
     var confirmRepair by rememberSaveable { mutableStateOf(false) }
     if (confirmRepair) {
         DestructiveConfirmDialog(
@@ -200,8 +224,11 @@ private fun ConnectedSection(state: PairingState.Connected, onBack: () -> Unit, 
     Text(stringResource(R.string.pairing_connected_hint), style = MaterialTheme.typography.bodyLarge)
     Spacer(Modifier.height(24.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Button(onClick = onBack, modifier = Modifier.heightIn(min = 64.dp)) { Text(stringResource(R.string.pairing_back)) }
-        OutlinedButton(onClick = { confirmRepair = true }, enabled = !isDriving, modifier = Modifier.heightIn(min = 64.dp)) { Text(stringResource(R.string.pairing_btn_repair)) }
+        // 다음 할 일이 주 버튼 — 그룹 보기는 주행 중에도, 같이 가기 시작은 정차 중에만(규칙 6)
+        Button(onClick = onPrimary, enabled = primaryIsGroup || !isDriving, modifier = Modifier.heightIn(min = 76.dp)) {
+            Text(stringResource(if (primaryIsGroup) R.string.home_btn_open_group else R.string.home_btn_start_group))
+        }
+        OutlinedButton(onClick = { confirmRepair = true }, enabled = !isDriving, modifier = Modifier.heightIn(min = 76.dp)) { Text(stringResource(R.string.pairing_btn_repair)) }
     }
     if (isDriving) {
         Spacer(Modifier.height(8.dp))
@@ -219,7 +246,8 @@ private fun ErrorSection(state: PairingState.Error, onRetry: () -> Unit, onBack:
         PairingErrorReason.STORAGE_UNAVAILABLE -> stringResource(R.string.t33_pairing_error_storage)
     }
     Text(message, style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.error)
-    if (state.detail != null) {
+    // 예외 원문("network ConnectException")은 개발용 — release 에는 사유 문구만(1-5). 원문은 로그·진단에 남는다
+    if (BuildConfig.DEBUG && state.detail != null) {
         Spacer(Modifier.height(8.dp))
         Text(
             stringResource(R.string.pairing_error_detail, state.detail),
@@ -230,9 +258,9 @@ private fun ErrorSection(state: PairingState.Error, onRetry: () -> Unit, onBack:
     Spacer(Modifier.height(24.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         if (state.retryable) {
-            Button(onClick = onRetry, modifier = Modifier.heightIn(min = 64.dp)) { Text(stringResource(R.string.pairing_btn_retry)) }
+            Button(onClick = onRetry, modifier = Modifier.heightIn(min = 76.dp)) { Text(stringResource(R.string.pairing_btn_retry)) }
         }
-        OutlinedButton(onClick = onBack, modifier = Modifier.heightIn(min = 64.dp)) { Text(stringResource(R.string.pairing_back)) }
+        OutlinedButton(onClick = onBack, modifier = Modifier.heightIn(min = 76.dp)) { Text(stringResource(R.string.pairing_back)) }
     }
 }
 

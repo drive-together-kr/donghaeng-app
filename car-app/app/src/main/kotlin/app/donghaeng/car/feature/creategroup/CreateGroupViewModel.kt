@@ -58,6 +58,9 @@ sealed interface CreateGroupState {
         val isDriving: Boolean = false,
     ) : CreateGroupState {
         val canCreate: Boolean get() = name.isNotBlank() && destination != null && !creating && !notPaired && !isDriving
+
+        /** 목적지를 아직 안 골라서 시작할 수 없다(내비 목적지를 읽는 중이면 아직 모름) — 화면이 '목적지를 고르면 시작할 수 있어요'를 보인다 */
+        val needsDestination: Boolean get() = destination == null && !loadingNavi && !notPaired
     }
 
     data class Active(
@@ -314,7 +317,8 @@ class CreateGroupViewModel @Inject constructor(
             if (credentialsRevoked()) "차량 연결이 만료됐어요. 폰에서 다시 연결해 주세요" else "연결을 확인하고 잠시 후 다시 시도해 주세요"
         is ApiResult.HttpFailure -> failure.error?.message ?: "요청에 실패했어요 (HTTP ${failure.status})"
         is ApiResult.NetworkFailure -> "서버에 연결할 수 없어요"
-        is ApiResult.UnexpectedFailure -> "예상치 못한 오류가 났어요 (${failure.cause.javaClass.simpleName})"
+        // 예외 클래스 이름은 화면에 보이지 않는다(E119) — 원인은 로그에
+        is ApiResult.UnexpectedFailure -> { DhLog.w("create group: 요청 실패 ${failure.summary}"); "처리하지 못했어요. 잠시 후 다시 시도해 주세요" }
     }
 
     /** 서버가 끊어 자격 증명이 지워졌다(refresh 거부·TOKEN_REVOKED) */

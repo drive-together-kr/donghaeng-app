@@ -99,17 +99,30 @@ class SettingsViewModel @Inject constructor(
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState(tokens = tokenStore.state.value, lastClear = tokenStore.lastClear.value, server = serverConfig.current.value, pttHandleButton = pttSettings.handleButton.value))
 
-    /** RA-3: 저장은 음성 쪽 한 곳(VoiceAnnouncer.setEnabled → 자체 저장소, B066) */
+    /** RA-3: 저장은 음성 쪽 한 곳(VoiceAnnouncer.setEnabled → 자체 저장소, B066). 주행 중에는 끄기만(켜기는 무시 — 화면도 같은 규칙) */
     fun setVoiceEnabled(enabled: Boolean) {
+        if (enabled && drivingNow) {
+            DhLog.w("settings voice enable ignored while driving")
+            return
+        }
         voiceAnnouncer.setEnabled(enabled)
     }
 
+    /** 자동 따라가기 — 켜면 대기 중 제안을 바로 수락하므로 주행 중에는 무시(E035, 화면 스위치도 잠김) */
     fun setAutoFollow(enabled: Boolean) {
+        if (drivingNow) {
+            DhLog.w("settings auto-follow change ignored while driving")
+            return
+        }
         userSettings.setAutoFollow(enabled)
         routeSync.setAutoFollow(enabled)
     }
 
     fun setLatencyOverlay(enabled: Boolean) {
+        if (drivingNow) {
+            DhLog.w("settings latency overlay change ignored while driving")
+            return
+        }
         userSettings.setLatencyOverlay(enabled)
         latency.setOverlayEnabled(enabled)
     }

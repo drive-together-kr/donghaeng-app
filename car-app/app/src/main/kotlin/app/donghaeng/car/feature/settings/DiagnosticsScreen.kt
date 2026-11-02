@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -22,6 +24,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -31,6 +36,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.donghaeng.car.BuildConfig
 import app.donghaeng.car.R
 import app.donghaeng.car.adapter.sdk.ProbeLine
 import app.donghaeng.car.core.common.LocationPermissions
@@ -44,6 +50,7 @@ import app.donghaeng.car.domain.model.CapabilityDomain
 import app.donghaeng.car.domain.model.CapabilityEntry
 import app.donghaeng.car.domain.model.CapabilitySource
 import app.donghaeng.car.domain.model.VehicleCapabilities
+import app.donghaeng.car.ui.theme.CompactTypography
 import app.donghaeng.car.ui.theme.DongHaengTheme
 
 @Composable
@@ -53,6 +60,7 @@ fun DiagnosticsRoute(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val t33 by viewModel.t33State.collectAsStateWithLifecycle()
+    val extra by viewModel.extraState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { viewModel.onPermissionResult(it) }
     DiagnosticsScreen(
@@ -67,12 +75,16 @@ fun DiagnosticsRoute(
         onVoiceAction = viewModel::onVoiceAction,
         onRouteSyncAction = viewModel::onRouteSyncAction, onResyncClock = viewModel::resyncClock,
         t33 = t33,
+        extra = extra,
     )
 }
 
 /**
  * 진단 화면 (T11, docs/09 §3 체크리스트를 화면으로). 표: 항목 | 지원 | 상세 | 출처 — `adb logcat -s DH_CAP` 과 같은 내용.
- * 사용자가 결과를 캡처해 붙여넣기만 하면 되게 만든 확인용 화면(CLAUDE.md 작업 방식).
+ * 사용자가 결과를 캡처해 붙여넣기만 하면 되게 만든 확인용 화면(CLAUDE.md 작업 방식). 개발자용 표라 예전 글자 크기([CompactTypography])를 쓴다.
+ * 맨 위 '이 차에서 쓰는 차량 기능'(5-2)은 capability 실측값을 사람 말로 요약한다.
+ * E035: 부작용 있는 확인용 동작(내비 경로 요청·내비 화면·경로 변경 테스트 발행·제안 수락/거절·자동 따라가기 토글·테스트 발화·음성 켜기/끄기)은
+ * debug 빌드에서만 보이고, 그 밖 버튼도 모두 주행 중 비활성(ViewModel 도 무시). 경로 요청·테스트 발행은 확인 창을 거친다. '예시 안내 듣기'는 release 에도(정차 중).
  */
 @Composable
 fun DiagnosticsScreen(
@@ -85,7 +97,9 @@ fun DiagnosticsScreen(
     onRouteSyncAction: (RouteSyncDebugAction) -> Unit = {},
     onResyncClock: () -> Unit = {},
     t33: T33DiagState = T33DiagState(),
+    extra: DiagExtraState = DiagExtraState(),
 ) {
+    MaterialTheme(colorScheme = MaterialTheme.colorScheme, typography = CompactTypography) {
     Scaffold { innerPadding ->
         Column(
             modifier = Modifier
@@ -96,23 +110,24 @@ fun DiagnosticsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = onBack, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_back)) }
+                OutlinedButton(onClick = onBack) { Text(stringResource(R.string.diag_back)) }
                 Spacer(Modifier.width(20.dp))
                 Text(stringResource(R.string.diag_title), style = MaterialTheme.typography.headlineMedium)
             }
 
+            VehicleFeaturesCard(state.report?.capabilities)
             VehicleCard(state)
             // 음성 경로 카드는 위쪽에 — 심사 환경 재현('예시 안내 듣기')을 스크롤 없이(R19, docs/09 §1.4)
-            VoiceCard(state, onVoiceAction)
+            VoiceCard(state, onVoiceAction, extra)
             TokenCard(t33, state)
             RecentLogCard(t33)
             CapabilityCard(state.report?.capabilities)
             ProbeCard(state.probe)
-            MqttCard(state)
+            MqttCard(state, extra)
             NaviCard(state, onNaviAction)
             LocationCard(state, onLocationAction)
             VehicleSignalCard(state, onRestartVehicleSignals)
-            TelemetryCard(state)
+            TelemetryCard(state, extra)
             EventEngineCard(state)
             RouteSyncCard(state, onRouteSyncAction)
             DrivingCard(state)
@@ -120,6 +135,37 @@ fun DiagnosticsScreen(
             BuildCard(state)
         }
     }
+    }
+}
+
+/** 5-2 '이 차에서 쓰는 차량 기능' — 쓰는 신호(급제동 감지·저잔량 알림·도착 예상)와 이 차가 지원하지 않아 숨긴 것 */
+@Composable
+private fun VehicleFeaturesCard(capabilities: VehicleCapabilities?) {
+    val summary = VehicleFeatureSummary.of(capabilities)
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer)) {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(stringResource(R.string.diag_features_title), style = MaterialTheme.typography.titleLarge)
+            if (summary == null) {
+                Text(stringResource(R.string.diag_pending), style = MaterialTheme.typography.bodyLarge)
+                return@Column
+            }
+            if (summary.used.isNotEmpty()) Text(stringResource(R.string.diag_features_used, summary.used.joinToString("·")), style = MaterialTheme.typography.bodyLarge)
+            if (summary.hidden.isNotEmpty()) Text(stringResource(R.string.diag_features_hidden, summary.hidden.joinToString("·")), style = MaterialTheme.typography.bodyLarge)
+            if (summary.unknown.isNotEmpty()) Text(stringResource(R.string.diag_features_unknown, summary.unknown.joinToString("·")), style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+/** 부작용 있는 확인용 동작의 확인 창 */
+@Composable
+private fun DebugConfirmDialog(message: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.diag_confirm_title)) },
+        text = { Text(message) },
+        confirmButton = { Button(onClick = onConfirm) { Text(stringResource(R.string.diag_confirm_ok)) } },
+        dismissButton = { OutlinedButton(onClick = onDismiss) { Text(stringResource(R.string.drive_cancel)) } },
+    )
 }
 
 @Composable
@@ -205,7 +251,8 @@ private fun RecentLogCard(t33: T33DiagState) {
                     )
                 }
             }
-            Text(stringResource(R.string.t33_diag_logs_hint), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            // adb 명령은 debug 빌드에서만 맞다(release 는 run-as 불가) — 1-2
+            if (BuildConfig.DEBUG) Text(stringResource(R.string.t33_diag_logs_hint), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -228,7 +275,8 @@ private fun CapabilityCard(capabilities: VehicleCapabilities?) {
             }
             HorizontalDivider()
             capabilities.entries.forEach { entry -> CapabilityRow(entry) }
-            if (capabilities.raw.isNotEmpty()) {
+            // 어댑터 원시 값(작업 ID 가 섞인 개발용 줄)은 debug 빌드에서만 — 1-2
+            if (BuildConfig.DEBUG && capabilities.raw.isNotEmpty()) {
                 Spacer(Modifier.width(1.dp))
                 Text(
                     capabilities.raw.entries.joinToString("  ·  ") { "${it.key}=${it.value}" },
@@ -321,7 +369,7 @@ private fun BuildCard(state: DiagnosticsUiState) {
 
 /** T16 — MQTT 연결 상태·그룹 세션·마지막 cmd. 브로커 재시작 뒤 reconnects 가 늘고 state 가 CONNECTED 로 돌아오면 자동 복구가 된 것 */
 @Composable
-private fun MqttCard(state: DiagnosticsUiState) {
+private fun MqttCard(state: DiagnosticsUiState, extra: DiagExtraState = DiagExtraState()) {
     Card {
         Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(stringResource(R.string.diag_section_mqtt), style = MaterialTheme.typography.titleMedium)
@@ -334,6 +382,9 @@ private fun MqttCard(state: DiagnosticsUiState) {
             LabelRow(stringResource(R.string.diag_mqtt_traffic), "in ${m.inboundCount} / out ${m.outboundCount}")
             LabelRow(stringResource(R.string.diag_mqtt_subscribed), if (m.subscribed.isEmpty()) "-" else m.subscribed.joinToString(separator = "\n") { topic -> maskTopic(topic) })
             LabelRow(stringResource(R.string.diag_mqtt_last_error), m.lastError ?: "-")
+            LabelRow(stringResource(R.string.diag_mqtt_denied), if (m.deniedTopics.isEmpty()) "-" else m.deniedTopics.joinToString(separator = "\n") { topic -> maskTopic(topic) })
+            val rc = extra.reconcile
+            LabelRow(stringResource(R.string.diag_reconcile), if (rc.count == 0) "-" else "${rc.count}회" + (rc.lastAtMs?.let { "  마지막 ${formatShortTime(it)}" } ?: "") + (rc.lastTrigger?.let { "  $it" } ?: "") + (rc.lastResult?.let { " → $it" } ?: ""))
             val session = state.groupSession
             LabelRow(stringResource(R.string.diag_group_session), session?.let { "${TextMasking.maskVehicleId(it.groupId)}  ${it.name}" } ?: stringResource(R.string.diag_group_none))
             LabelRow(stringResource(R.string.diag_last_cmd), state.lastCommand?.let { "${it.type} ${it.groupIdMasked ?: ""}".trim() } ?: "-")
@@ -372,10 +423,15 @@ private fun NaviCard(state: DiagnosticsUiState, onNaviAction: (NaviDebugAction) 
             LabelRow(stringResource(R.string.diag_navi_destination), listOfNotNull(n.destinationName, n.waypointCount?.let { "경유지 $it" }).joinToString(" / ").ifEmpty { "-" })
             LabelRow(stringResource(R.string.diag_navi_trip), listOfNotNull(n.lastTrip, n.speedLimitKph?.let { "제한 $it km/h" }, n.lastArrival).joinToString(" / ").ifEmpty { "-" })
             LabelRow(stringResource(R.string.diag_mqtt_last_error), n.lastError ?: "-")
+            var confirmRoute by remember { mutableStateOf(false) }
+            if (confirmRoute) DebugConfirmDialog(stringResource(R.string.diag_confirm_route), onConfirm = { confirmRoute = false; onNaviAction(NaviDebugAction.REQUEST_ROUTE) }, onDismiss = { confirmRoute = false })
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = { onNaviAction(NaviDebugAction.REQUEST_ROUTE) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_navi_action_route)) }
-                OutlinedButton(onClick = { onNaviAction(NaviDebugAction.QUERY_DESTINATION) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_navi_action_dest)) }
-                OutlinedButton(onClick = { onNaviAction(NaviDebugAction.SHOW_NAVIGATION) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_navi_action_show)) }
+                // 경로 요청·내비 화면은 실제 내비를 바꾼다 — debug 빌드에서만(E035). 모두 주행 중 비활성
+                if (state.debug) {
+                    OutlinedButton(onClick = { confirmRoute = true }, enabled = !state.isDriving) { Text(stringResource(R.string.diag_navi_action_route)) }
+                    OutlinedButton(onClick = { onNaviAction(NaviDebugAction.SHOW_NAVIGATION) }, enabled = !state.isDriving) { Text(stringResource(R.string.diag_navi_action_show)) }
+                }
+                OutlinedButton(onClick = { onNaviAction(NaviDebugAction.QUERY_DESTINATION) }, enabled = !state.isDriving) { Text(stringResource(R.string.diag_navi_action_dest)) }
             }
             LabelRow(stringResource(R.string.diag_navi_last_action), state.naviActionResult ?: "-")
         }
@@ -391,7 +447,7 @@ private fun DrivingCard(state: DiagnosticsUiState) {
             HorizontalDivider()
             val d = state.driving
             LabelRow(stringResource(R.string.diag_uxr_state), if (state.isDriving) "주행 중 — 입력 비활성" else "정차 — 입력 허용")
-            LabelRow(stringResource(R.string.diag_uxr_source), "${d.source}   requiresDO=${d.requiresDistractionOptimization ?: "?"}   restrictions=${d.activeRestrictions?.let { r -> "0x" + Integer.toHexString(r) } ?: "-"}   updates=${d.updates}")
+            LabelRow(stringResource(R.string.diag_uxr_source), "${d.source}   requiresDO=${d.requiresDistractionOptimization ?: "?"}   restrictions=${d.activeRestrictions?.let { r -> "0x" + Integer.toHexString(r) } ?: "-"}   updates=${d.updates}   retries=${d.retries}")
             LabelRow(stringResource(R.string.diag_mqtt_last_error), d.lastError ?: "-")
         }
     }
@@ -411,11 +467,17 @@ private fun RouteSyncCard(state: DiagnosticsUiState, onAction: (RouteSyncDebugAc
             LabelRow(stringResource(R.string.diag_rs_sent), "${r.routeChangedSent}건" + (r.lastRouteChangedSummary?.let { s -> "   $sentAge$s" } ?: ""))
             LabelRow(stringResource(R.string.diag_rs_pending), r.pending?.let { p -> "${(p.waypoints.map { w -> w.name } + p.destination.name).joinToString(" → ")}  (${((p.expiresAtMs - System.currentTimeMillis()) / 1000).coerceAtLeast(0)}s 뒤 자동 거절)" } ?: "-")
             LabelRow(stringResource(R.string.diag_rs_acks), "수락 ${r.accepted} / 거절 ${r.declined} / 자동 거절 ${r.autoDeclined}" + (r.lastResult?.let { s -> "   $s" } ?: ""))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = { onAction(RouteSyncDebugAction.PUBLISH_TEST) }, enabled = state.groupSession?.isLeader == true, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_rs_action_publish)) }
-                OutlinedButton(onClick = { onAction(RouteSyncDebugAction.ACCEPT) }, enabled = r.pending != null, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.drive_proposal_accept)) }
-                OutlinedButton(onClick = { onAction(RouteSyncDebugAction.DECLINE) }, enabled = r.pending != null, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.drive_proposal_decline)) }
-                OutlinedButton(onClick = { onAction(RouteSyncDebugAction.TOGGLE_AUTO) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_rs_action_auto)) }
+            LabelRow(stringResource(R.string.diag_rs_hold), "정차까지 보류 ${r.held} / 음성 답 ${r.voiceAnswered} / 새 제안에 밀림 ${r.superseded}" + (r.pending?.let { p -> if (p.heldUntilParked) "   (지금 보류 중)" else "" } ?: ""))
+            // 테스트 발행(그룹 전체에 제안·음성)·수락(내 내비 경로 변경)·거절·자동 따라가기 토글은 debug 빌드·정차 중에만(E035 — 주행 중 잠긴 수락을 여기서 우회하지 않게)
+            if (state.debug) {
+                var confirmPublish by remember { mutableStateOf(false) }
+                if (confirmPublish) DebugConfirmDialog(stringResource(R.string.diag_confirm_publish), onConfirm = { confirmPublish = false; onAction(RouteSyncDebugAction.PUBLISH_TEST) }, onDismiss = { confirmPublish = false })
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = { confirmPublish = true }, enabled = state.groupSession?.isLeader == true && !state.isDriving) { Text(stringResource(R.string.diag_rs_action_publish)) }
+                    OutlinedButton(onClick = { onAction(RouteSyncDebugAction.ACCEPT) }, enabled = r.pending != null && !state.isDriving) { Text(stringResource(R.string.drive_proposal_accept)) }
+                    OutlinedButton(onClick = { onAction(RouteSyncDebugAction.DECLINE) }, enabled = r.pending != null && !state.isDriving) { Text(stringResource(R.string.drive_proposal_decline)) }
+                    OutlinedButton(onClick = { onAction(RouteSyncDebugAction.TOGGLE_AUTO) }, enabled = !state.isDriving) { Text(stringResource(R.string.diag_rs_action_auto)) }
+                }
             }
         }
     }
@@ -426,7 +488,7 @@ private fun RouteSyncCard(state: DiagnosticsUiState, onAction: (RouteSyncDebugAc
  * 큐·읽음/생략 수, 마지막 문장(종류·길이만). '예시 안내 듣기'(정차 중, release 에도 있음 — 심사 환경 재현)·테스트 발화·켜기/끄기.
  */
 @Composable
-private fun VoiceCard(state: DiagnosticsUiState, onAction: (VoiceDebugAction) -> Unit) {
+private fun VoiceCard(state: DiagnosticsUiState, onAction: (VoiceDebugAction) -> Unit, extra: DiagExtraState = DiagExtraState()) {
     Card {
         Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(stringResource(R.string.diag_section_voice), style = MaterialTheme.typography.titleMedium)
@@ -438,15 +500,19 @@ private fun VoiceCard(state: DiagnosticsUiState, onAction: (VoiceDebugAction) ->
             LabelRow(stringResource(R.string.diag_voice_candidates), VoiceDiagFormat.candidatesText(t))
             LabelRow(stringResource(R.string.diag_voice_latency), VoiceDiagFormat.latencyLine(t.latency))
             LabelRow(stringResource(R.string.diag_voice_state), (if (v.enabled) "켜짐" else "꺼짐") + (if (v.running) "" else "  (중지)") + "   큐 ${v.queued}")
-            LabelRow(stringResource(R.string.diag_voice_counts), "읽음 ${v.spoken}   생략: 오래됨 ${v.skippedStale} · 내 차 ${v.skippedOwn} · 중복 ${v.skippedDuplicate} · 꺼짐 ${v.skippedDisabled} · 문구 없음 ${v.skippedNoSpeech}")
+            LabelRow(stringResource(R.string.diag_voice_counts), "읽음 ${v.spoken}   생략: 오래됨 ${v.skippedStale} · 내 차 ${v.skippedOwn} · 중복 ${v.skippedDuplicate} · 꺼짐 ${v.skippedDisabled} · 문구 없음 ${v.skippedNoSpeech} · 지난 그룹 ${v.droppedOldGroup}   무전에 양보 ${v.yieldedToMic}")
+            LabelRow(stringResource(R.string.diag_ptt_stats), extra.pttStats.toString())
             LabelRow(stringResource(R.string.diag_voice_tts_counts), VoiceDiagFormat.countsLine(t))
             val age = v.lastSpokenAtMs?.let { ts -> "${(System.currentTimeMillis() - ts) / 1000}s 전  " } ?: ""
             LabelRow(stringResource(R.string.diag_voice_last), v.lastSpokenType?.let { ty -> "$age$ty ${v.lastSpokenPriority} (len=${v.lastSpokenLen})" } ?: "-")
             Text(stringResource(R.string.diag_voice_sample_hint), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = { onAction(VoiceDebugAction.SAMPLE) }, enabled = !state.isDriving, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_voice_action_sample)) }
-                OutlinedButton(onClick = { onAction(VoiceDebugAction.SPEAK_TEST) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_voice_action_test)) }
-                OutlinedButton(onClick = { onAction(VoiceDebugAction.TOGGLE) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(if (v.enabled) stringResource(R.string.diag_voice_action_off) else stringResource(R.string.diag_voice_action_on)) }
+                OutlinedButton(onClick = { onAction(VoiceDebugAction.SAMPLE) }, enabled = !state.isDriving) { Text(stringResource(R.string.diag_voice_action_sample)) }
+                // 테스트 발화·켜기/끄기는 debug 빌드에서만(E035 — 음성 켜기/끄기는 설정 '음성 안내')
+                if (state.debug) {
+                    OutlinedButton(onClick = { onAction(VoiceDebugAction.SPEAK_TEST) }, enabled = !state.isDriving) { Text(stringResource(R.string.diag_voice_action_test)) }
+                    OutlinedButton(onClick = { onAction(VoiceDebugAction.TOGGLE) }, enabled = !state.isDriving) { Text(if (v.enabled) stringResource(R.string.diag_voice_action_off) else stringResource(R.string.diag_voice_action_on)) }
+                }
             }
         }
     }
@@ -472,7 +538,7 @@ private fun EventEngineCard(state: DiagnosticsUiState) {
 
 /** T23 — 텔레메트리 발행 상태. 활성 그룹이 있으면 1초마다 발행 수가 늘어야 한다 */
 @Composable
-private fun TelemetryCard(state: DiagnosticsUiState) {
+private fun TelemetryCard(state: DiagnosticsUiState, extra: DiagExtraState = DiagExtraState()) {
     Card {
         Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(stringResource(R.string.diag_section_telemetry), style = MaterialTheme.typography.titleMedium)
@@ -489,7 +555,7 @@ private fun TelemetryCard(state: DiagnosticsUiState) {
             LabelRow(stringResource(R.string.diag_tm_last), age + (t.lastSummary?.let { s -> "  $s" } ?: ""))
             LabelRow(stringResource(R.string.diag_tm_extras), "eta ${t.etaSentCount} / energy ${t.energySentCount}")
             LabelRow(stringResource(R.string.diag_tm_topic), t.topicMasked ?: "-")
-            LabelRow(stringResource(R.string.diag_tm_service), if (state.driveServiceRunning) "실행 중" else "없음")
+            LabelRow(stringResource(R.string.diag_tm_service), (if (state.driveServiceRunning) "실행 중" else "없음") + (extra.lastStartFailure?.let { "   마지막 시작 실패 $it" } ?: ""))
         }
     }
 }
@@ -511,7 +577,7 @@ private fun VehicleSignalCard(state: DiagnosticsUiState, onRestart: () -> Unit) 
             LabelRow(stringResource(R.string.diag_vs_updates), if (v.updates.isEmpty()) "-" else v.updates.entries.joinToString("   ") { e -> "${e.key} ${e.value}" + (v.lastTs[e.key]?.let { ts -> "(${(now - ts) / 1000}s)" } ?: "") })
             LabelRow(stringResource(R.string.diag_vs_streams), if (v.streams.isEmpty()) "-" else v.streams.entries.filter { e -> e.value != "구독 중" }.joinToString("\n") { e -> "${e.key}: ${e.value}" }.ifEmpty { "모두 구독 중" })
             LabelRow(stringResource(R.string.diag_loc_counts), "total ${v.totalUpdates} / restarts ${v.restarts}" + if (v.running) "" else "  (중지)")
-            OutlinedButton(onClick = onRestart, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_vs_action_restart)) }
+            OutlinedButton(onClick = onRestart, enabled = !state.isDriving) { Text(stringResource(R.string.diag_vs_action_restart)) }
         }
     }
 }
@@ -541,8 +607,8 @@ private fun LocationCard(state: DiagnosticsUiState, onAction: (LocationDebugActi
             LabelRow(stringResource(R.string.diag_loc_permissions), "FINE_LOCATION=${g(l.fineLocationGranted)}   FUSED_LOCATION=${g(l.fusedLocationGranted)}   POST_NOTIFICATIONS=${g(l.notificationsGranted)}")
             LabelRow(stringResource(R.string.diag_mqtt_last_error), l.lastError ?: c.lastError ?: "-")
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = { onAction(LocationDebugAction.REQUEST_PERMISSION) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_loc_action_permission)) }
-                OutlinedButton(onClick = { onAction(LocationDebugAction.RESTART) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_loc_action_restart)) }
+                OutlinedButton(onClick = { onAction(LocationDebugAction.REQUEST_PERMISSION) }, enabled = !state.isDriving) { Text(stringResource(R.string.diag_loc_action_permission)) }
+                OutlinedButton(onClick = { onAction(LocationDebugAction.RESTART) }, enabled = !state.isDriving) { Text(stringResource(R.string.diag_loc_action_restart)) }
             }
         }
     }
@@ -602,7 +668,7 @@ private fun LatencyCard(state: DiagnosticsUiState, onResync: () -> Unit) {
             LabelRow(stringResource(R.string.diag_lat_event), stat(l.event))
             LabelRow(stringResource(R.string.diag_lat_state), stat(l.state))
             LabelRow(stringResource(R.string.diag_mqtt_last_error), "오버레이 ${if (l.overlayEnabled) "켜짐" else "꺼짐"}   동기화 전 수신 ${l.unsynced}   음수 보정 ${l.clamped}")
-            OutlinedButton(onClick = onResync, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.diag_lat_action_resync)) }
+            OutlinedButton(onClick = onResync) { Text(stringResource(R.string.diag_lat_action_resync)) }
         }
     }
 }

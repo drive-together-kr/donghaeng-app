@@ -3,10 +3,19 @@ package app.donghaeng.car.feature.permissions
 import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import app.donghaeng.car.R
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -19,6 +28,7 @@ import app.donghaeng.car.domain.session.MqttSessionManager
 import app.donghaeng.car.domain.vehicle.VehicleSignals
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -40,20 +50,20 @@ class LocationPermissionViewModel @Inject constructor(
     private val driveSession: app.donghaeng.car.service.DriveSessionController,
 ) : ViewModel() {
 
-    @Volatile
-    private var asked = false
+    /** 이번 실행에서 이미 물었나(안내 [계속]·[나중에] 모두) — 흐름에 넣어 안내 창이 바로 닫히게 한다 */
+    private val asked = MutableStateFlow(false)
 
     /** 요청할 때 아직 없던 권한 — 결과에서 '새로 승인된 것'을 가린다(A051) */
     @Volatile
     private var missingAtAsk: Set<String> = emptySet()
 
     /** 지금 요청해야 하는가 */
-    val shouldAsk: StateFlow<Boolean> = combine(sessionManager.session, drivingMonitor.isDriving()) { session, driving ->
-        session != null && !driving && !asked && LocationPermissions.missing(context).isNotEmpty()
+    val shouldAsk: StateFlow<Boolean> = combine(sessionManager.session, drivingMonitor.isDriving(), asked) { session, driving, wasAsked ->
+        session != null && !driving && !wasAsked && LocationPermissions.missing(context).isNotEmpty()
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     fun markAsked() {
-        asked = true
+        asked.value = true
         missingAtAsk = runCatching { LocationPermissions.missing(context).toSet() }.getOrDefault(emptySet())
     }
 
@@ -79,17 +89,45 @@ class LocationPermissionViewModel @Inject constructor(
     }
 }
 
-/** NavHost 옆에 한 번 두면 조건이 맞을 때 시스템 권한 다이얼로그를 띄운다 */
+/**
+ * NavHost 옆에 한 번 두면 조건이 맞을 때(활성 그룹 + 정차 + 아직 안 물음) **왜 필요한지 안내 한 장**(위치·마이크·알림) 뒤에 시스템 권한 다이얼로그를 띄운다.
+ * [deferred] 인 화면(초대 QR — 시스템 창이 QR 을 가리면 합류가 막힌다, 예시 화면)에서는 미뤘다가 다른 화면으로 가면 묻는다.
+ * 안내 창은 정차 중에만 보이고(주행으로 바뀌면 [shouldAsk] 가 false 라 사라진다), [나중에]를 고르면 이번 실행에서는 다시 묻지 않는다.
+ */
 @Composable
-fun LocationPermissionGate(viewModel: LocationPermissionViewModel = hiltViewModel()) {
+fun LocationPermissionGate(deferred: Boolean = false, viewModel: LocationPermissionViewModel = hiltViewModel()) {
     val shouldAsk by viewModel.shouldAsk.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { viewModel.onResult(it) }
-    LaunchedEffect(shouldAsk) {
-        if (shouldAsk) {
+    if (!shouldAsk || deferred) return
+    PermissionRationaleDialog(
+        onContinue = {
             viewModel.markAsked()
-            DhLog.i("location permissions: 그룹 활성 + 정차 → 요청")
+            DhLog.i("location permissions: 그룹 활성 + 정차 → 안내 뒤 요청")
             launcher.launch(LocationPermissions.runtimePermissions(context))
-        }
-    }
+        },
+        onLater = {
+            viewModel.markAsked()
+            DhLog.i("location permissions: 안내에서 나중에 — 이번 실행에서는 묻지 않음")
+        },
+    )
+}
+
+/** 권한이 왜 필요한지 한 장 — 위치(차 간격·도착 시각 공유)·마이크(무전 녹음)·알림(소식 카드) */
+@Composable
+private fun PermissionRationaleDialog(onContinue: () -> Unit, onLater: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onLater,
+        title = { Text(stringResource(R.string.perm_rationale_title), style = MaterialTheme.typography.headlineSmall) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(stringResource(R.string.perm_rationale_location), style = MaterialTheme.typography.bodyLarge)
+                Text(stringResource(R.string.perm_rationale_mic), style = MaterialTheme.typography.bodyLarge)
+                Text(stringResource(R.string.perm_rationale_notifications), style = MaterialTheme.typography.bodyLarge)
+                Text(stringResource(R.string.perm_rationale_footer), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = { Button(onClick = onContinue) { Text(stringResource(R.string.perm_rationale_continue)) } },
+        dismissButton = { OutlinedButton(onClick = onLater) { Text(stringResource(R.string.perm_rationale_later)) } },
+    )
 }

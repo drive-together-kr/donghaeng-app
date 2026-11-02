@@ -3,8 +3,8 @@
     <string name="app_name">동행</string>
     <string name="app_tagline">전화 없이, 한 대처럼.</string>
 
-    <!-- 홈 -->
-    <string name="home_vehicle_connection">차량 연결 상태</string>
+    <!-- 홈 — '폰 계정 연결'(페어링)과 '실시간 연결'(서버 MQTT)을 다른 말로 부른다(E122) -->
+    <string name="home_vehicle_connection">폰 계정 연결</string>
     <string name="home_connection_checking">확인 중…</string>
     <string name="home_connection_disconnected">연결 안 됨</string>
     <string name="home_connection_connected">연결됨</string>
@@ -20,39 +20,62 @@
     <string name="home_label_version">버전</string>
     <string name="home_sdk_probe_title">Pleos SDK 점검</string>
     <string name="home_sdk_probe_pending">점검 중…</string>
-    <string name="home_buttons_hint">\'같이 가기 시작\'은 차량이 폰과 연결된 뒤 쓸 수 있어요. 정차 중에 사용하세요.</string>
+    <string name="home_buttons_hint">먼저 \'내 폰과 연결하기\'를 눌러 폰의 공식 앱으로 차 화면의 QR을 스캔하세요.</string>
+    <!-- 홈 상태 칩(누르면 진단) — "차량 SDK 5/5 · 실시간 연결됨 ›" -->
+    <string name="home_chip_sdk">차량 SDK %1$d/%2$d</string>
+    <string name="home_chip_sdk_pending">차량 SDK 점검 중</string>
+    <string name="home_chip_fake">가상 차량 신호</string>
+    <string name="home_chip_realtime_on">실시간 연결됨</string>
+    <string name="home_chip_realtime_connecting">실시간 연결 중</string>
+    <string name="home_chip_realtime_off">실시간 연결 전</string>
+    <string name="home_chip_desc">차량 기능·연결 상태 자세히 보기</string>
+    <!-- 홈 오른쪽 '동행은 이렇게 써요' -->
+    <string name="home_howto_title">동행은 이렇게 써요</string>
+    <string name="home_howto_1_title">1. 내 폰과 연결하기</string>
+    <string name="home_howto_1_body">폰의 공식 앱(동행 메뉴)으로 차 화면의 QR을 스캔하면 이 차가 내 계정에 연결돼요.</string>
+    <string name="home_howto_2_title">2. 같이 가기 시작</string>
+    <string name="home_howto_2_body">목적지를 고르면 초대 QR이 떠요. 함께 갈 차의 운전자가 폰으로 스캔하면 그 차가 그룹에 들어와요.</string>
+    <string name="home_howto_3_title">3. 출발</string>
+    <string name="home_howto_3_body">앞 화면은 순정 내비 그대로예요. 동행은 내비 위 작은 패널과 음성으로 차 간격·도착 시각·급제동을 알려 줘요.</string>
+    <string name="home_btn_tour">예시 화면 둘러보기</string>
+    <string name="home_tour_hint">폰이 없어도 그룹 주행 화면을 예시 데이터로 볼 수 있어요.</string>
 
     <!-- 페어링 (T12) -->
     <string name="pairing_title">내 폰과 연결하기</string>
-    <string name="pairing_back">홈으로</string>
+    <string name="pairing_back">뒤로</string>
     <string name="pairing_checking">저장된 연결을 확인하는 중…</string>
     <string name="pairing_requesting">연결 코드를 요청하는 중…</string>
     <string name="pairing_scan_hint">폰의 공식 앱 동행 메뉴에서 이 QR을 스캔하세요</string>
-    <string name="pairing_or_code">또는 공식 앱에 이 코드를 입력하세요</string>
+    <string name="pairing_or_code">카메라가 없으면 공식 앱 스캔 화면의 \'코드·주소 직접 입력\'에 이 코드를 넣으세요</string>
+    <string name="pairing_verify_uri">주소: %1$s</string>
     <string name="pairing_remaining">남은 시간 %1$s</string>
+    <string name="pairing_auto_hint">폰에서 승인하면 자동으로 연결돼요</string>
     <string name="pairing_attempt">코드 %1$d/%2$d · %3$d초마다 승인 확인</string>
     <string name="pairing_connected">연결됨 · %1$s</string>
-    <string name="pairing_connected_hint">이제 이 차량은 내 폰 계정에 등록됐어요. 그룹 만들기는 다음 단계(T17)에서 열립니다.</string>
+    <string name="pairing_connected_hint">이 차량이 내 폰 계정에 연결됐어요. 이제 \'같이 가기 시작\'으로 그룹을 만들 수 있어요.</string>
     <string name="pairing_btn_retry">다시 시도</string>
     <string name="pairing_btn_repair">연결 해제 후 다시 연결</string>
     <string name="pairing_error_network">서버에 연결할 수 없어요. 네트워크와 서버 주소를 확인하세요.</string>
     <string name="pairing_error_server">서버가 요청을 처리하지 못했어요. 잠시 후 다시 시도하세요.</string>
-    <string name="pairing_error_vehicle_id">차량 ID를 읽지 못했어요. 차량 서비스(CarInfo) 상태를 진단 화면에서 확인하세요.</string>
+    <string name="pairing_error_vehicle_id">차량 ID를 읽지 못했어요. 설정 → 진단 화면에서 차량 서비스 상태를 확인하세요.</string>
     <string name="pairing_error_too_many">코드가 여러 번 만료됐어요. 폰에서 승인한 뒤 다시 시도하세요.</string>
     <string name="pairing_error_detail">상세: %1$s</string>
 
-    <!-- 설정 -->
+    <!-- 설정 — 구역: 안내 / 주행 / 연결 / 개발자 -->
     <string name="settings_title">설정</string>
-    <string name="settings_back">홈으로</string>
-    <string name="settings_section_connection">차량 연결</string>
+    <string name="settings_back">뒤로</string>
+    <string name="settings_section_connection">연결</string>
     <string name="settings_btn_disconnect">연결 해제</string>
     <string name="settings_disconnected_notice">연결을 해제했어요. 홈에서 \'내 폰과 연결하기\'로 다시 연결할 수 있어요.</string>
-    <string name="settings_section_diagnostics">진단</string>
-    <string name="settings_diagnostics_hint">차량 SDK capability 실측값·SDK 점검·빌드 정보를 표로 봅니다.</string>
+    <string name="settings_section_diagnostics">개발자</string>
+    <string name="settings_diagnostics_hint">이 차에서 동행이 쓰는 차량 기능과 연결 상태를 확인해요(개발자용).</string>
     <string name="settings_btn_diagnostics">진단 화면 열기</string>
-    <string name="settings_section_voice">음성 안내</string>
-    <string name="settings_voice_placeholder">그룹 소식(급제동·저잔량·도착·동승자 메시지)을 음성으로 읽어 줍니다. 내 차 일은 읽지 않아요.</string>
+    <string name="settings_section_voice">안내</string>
+    <string name="settings_section_drive">주행</string>
+    <string name="settings_voice_placeholder">그룹 소식(급제동·저잔량·도착·동승자 메시지)을 음성으로 읽어 줘요. 내 차 일은 읽지 않아요.</string>
     <string name="settings_voice_switch">음성 안내</string>
+    <string name="settings_voice_driving_hint">주행 중에는 끄기만 할 수 있어요</string>
+    <string name="settings_driving_locked">주행 중에는 바꿀 수 없어요. 정차하면 다시 켜져요.</string>
 
     <!-- 진단 (T11) -->
     <string name="diag_title">진단</string>
@@ -63,7 +86,7 @@
     <string name="diag_vehicle_id_length">길이 %1$d</string>
     <string name="diag_paired">페어링된 차량</string>
     <string name="diag_paired_none">없음</string>
-    <string name="diag_section_capabilities">차량 SDK capability (DH_CAP)</string>
+    <string name="diag_section_capabilities">차량 기능 지원 여부(실측)</string>
     <string name="diag_col_domain">항목</string>
     <string name="diag_col_supported">지원</string>
     <string name="diag_col_detail">상세</string>
@@ -74,14 +97,14 @@
     <string name="diag_pending">점검 중…</string>
     <string name="diag_section_probe">Pleos SDK 점검</string>
     <string name="diag_section_build">빌드 정보</string>
-    <string name="diag_section_mqtt">MQTT 연결 (T16)</string>
+    <string name="diag_section_mqtt">서버 실시간 연결(MQTT)</string>
     <string name="diag_mqtt_state">상태</string>
     <string name="diag_mqtt_broker">브로커</string>
     <string name="diag_mqtt_reconnects">재연결 횟수</string>
     <string name="diag_mqtt_traffic">수신/발신</string>
     <string name="diag_mqtt_subscribed">구독 토픽</string>
     <string name="diag_mqtt_last_error">마지막 오류</string>
-    <string name="diag_section_navi">내비 이벤트 (T20)</string>
+    <string name="diag_section_navi">순정 내비 연동(NaviHelper)</string>
     <string name="diag_navi_state">구독</string>
     <string name="diag_navi_counts">콜백 수</string>
     <string name="diag_navi_last_fix">마지막 위치</string>
@@ -92,7 +115,7 @@
     <string name="diag_navi_action_dest">목적지 조회</string>
     <string name="diag_navi_action_show">내비 화면</string>
     <string name="diag_navi_last_action">마지막 요청</string>
-    <string name="diag_section_location">위치 소스 (T21)</string>
+    <string name="diag_section_location">위치 소스</string>
     <string name="diag_loc_active">활성 소스</string>
     <string name="diag_loc_availability">소스 가용성</string>
     <string name="diag_loc_counts">수신/전환</string>
@@ -101,24 +124,24 @@
     <string name="diag_loc_permissions">권한</string>
     <string name="diag_loc_action_permission">위치 권한 요청</string>
     <string name="diag_loc_action_restart">체인 다시 탐색</string>
-    <string name="diag_section_vehicle_signals">차량 신호 (T22)</string>
+    <string name="diag_section_vehicle_signals">차량 신호(Vehicle SDK)</string>
     <string name="diag_vs_energy">에너지</string>
     <string name="diag_vs_drive">주행</string>
     <string name="diag_vs_body">차체</string>
     <string name="diag_vs_updates">수신 수</string>
     <string name="diag_vs_streams">스트림</string>
     <string name="diag_vs_action_restart">신호 다시 구독</string>
-    <string name="diag_section_telemetry">텔레메트리 (T23)</string>
+    <string name="diag_section_telemetry">위치·상태 공유</string>
     <string name="diag_tm_state">상태</string>
     <string name="diag_tm_counts">발행/실패/건너뜀</string>
     <string name="diag_tm_last">마지막 발행</string>
     <string name="diag_tm_extras">ETA/에너지 포함</string>
     <string name="diag_tm_topic">토픽</string>
     <string name="diag_tm_service">포그라운드 서비스</string>
-    <string name="diag_section_events">차량 이벤트 (T26)</string>
-    <string name="diag_section_voice">음성 안내 (T27)</string>
-    <string name="diag_section_routesync">경로 동기화 (T28)</string>
-    <string name="diag_section_uxr">주행 제한 (T29)</string>
+    <string name="diag_section_events">차량 이벤트 감지</string>
+    <string name="diag_section_voice">음성 안내</string>
+    <string name="diag_section_routesync">선두 경로 따라가기</string>
+    <string name="diag_section_uxr">주행 중 입력 제한</string>
     <string name="diag_uxr_state">상태</string>
     <string name="diag_uxr_source">판정</string>
     <string name="home_driving_hint">주행 중이에요. 연결·그룹 만들기는 정차 후에 할 수 있어요. 그룹 보기는 가능해요.</string>
@@ -133,6 +156,8 @@
     <string name="drive_proposal_accept">따라가기</string>
     <string name="drive_proposal_decline">아니요</string>
     <string name="drive_proposal_countdown">%1$d초 뒤 자동으로 거절돼요</string>
+    <string name="drive_proposal_held">정차하면 답할 수 있어요</string>
+    <string name="drive_proposal_settling">정차를 확인하는 중이에요…</string>
     <string name="settings_autofollow_switch">선두 경로 자동 따라가기</string>
     <string name="settings_autofollow_hint">켜면 선두차가 목적지·경유지를 바꿀 때 묻지 않고 내 내비에 바로 반영해요.</string>
     <string name="diag_voice_tts">TTS 엔진</string>
@@ -153,7 +178,8 @@
     <string name="events_loading">불러오는 중…</string>
     <string name="events_empty">아직 소식이 없어요. 저잔량·급제동·도착·합류 같은 일이 생기면 여기에 쌓여요.</string>
     <string name="events_empty_short">아직 소식이 없어요</string>
-    <string name="events_live">실시간</string>
+    <string name="events_live">방금</string>
+    <string name="events_mine">(내 차)</string>
     <string name="drive_btn_events">소식 더 보기</string>
     <string name="drive_channel_name">동행 그룹 주행</string>
     <string name="drive_channel_desc">그룹 주행 중 위치·상태 공유가 켜져 있음을 알립니다</string>
@@ -162,34 +188,52 @@
     <string name="drive_notification_text_named">%1$s 그룹과 위치·상태를 공유하고 있어요</string>
     <string name="diag_group_session">활성 그룹</string>
     <string name="diag_group_none">없음 (GROUP_JOINED 대기)</string>
-    <string name="diag_group_state">그룹 STATE (T24)</string>
+    <string name="diag_group_state">그룹 상태</string>
     <string name="diag_last_cmd">마지막 cmd</string>
     <string name="diag_label_adapter">어댑터</string>
     <string name="diag_label_debug">디버그</string>
     <string name="diag_label_android">Android API</string>
     <string name="diag_label_device">기기</string>
+    <!-- 진단 맨 위 '이 차에서 쓰는 차량 기능'(5-2) -->
+    <string name="diag_features_title">이 차에서 쓰는 차량 기능</string>
+    <string name="diag_features_used">%1$s — 급제동 감지·저잔량 알림·도착 예상에 사용</string>
+    <string name="diag_features_hidden">%1$s — 이 차량이 지원하지 않아 자동으로 숨김</string>
+    <string name="diag_features_unknown">%1$s — 아직 확인하지 못함</string>
+    <!-- 진단 확인용 동작 확인 창(debug 빌드) -->
+    <string name="diag_confirm_title">정말 실행할까요?</string>
+    <string name="diag_confirm_ok">실행</string>
+    <string name="diag_confirm_route">순정 내비 경로가 확인용 목적지(대전역)로 바뀝니다.</string>
+    <string name="diag_confirm_publish">그룹 전체에 경로 변경 제안과 음성 안내가 보내집니다.</string>
+    <string name="diag_mqtt_denied">거부된 구독</string>
+    <string name="diag_reconcile">재접속 그룹 맞추기</string>
+    <string name="diag_rs_hold">보류·음성 답</string>
+    <string name="diag_ptt_stats">무전 통계</string>
 
     <string name="placeholder_in_progress">준비 중 — %1$s 에서 구현</string>
     <!-- T17 그룹 생성 -->
     <string name="group_title">같이 가기 시작</string>
-    <string name="group_back">홈으로</string>
+    <string name="group_back">뒤로</string>
     <string name="group_loading">그룹 상태를 확인하는 중…</string>
     <string name="group_not_paired">먼저 \'내 폰과 연결하기\'로 차량을 등록해 주세요.</string>
     <string name="group_destination">목적지</string>
     <string name="group_destination_none">목적지를 고르세요</string>
     <string name="group_destination_loading">내비 목적지를 읽는 중…</string>
     <string name="group_destination_from_navi">내비게이션의 현재 목적지</string>
-    <string name="group_destination_preset">시연용 목적지</string>
+    <string name="group_destination_preset">추천 목적지</string>
     <string name="group_btn_load_navi">내비에서 불러오기</string>
-    <string name="group_presets">또는 시연용 목적지 선택</string>
+    <string name="group_presets">또는 추천 목적지에서 고르기</string>
     <string name="group_name">그룹 이름</string>
     <string name="group_max_members">최대 인원</string>
     <string name="group_btn_create">같이 가기 시작</string>
-    <string name="group_create_hint">만들면 초대 QR이 뜹니다. 함께 갈 차의 운전자가 폰 공식 앱(동행 메뉴)으로 QR을 스캔하면 그 차가 그룹에 들어옵니다.</string>
+    <string name="group_create_need_destination">목적지를 고르면 시작할 수 있어요</string>
+    <string name="group_create_hint">만들면 초대 QR이 떠요. 함께 갈 차의 운전자가 폰 공식 앱(동행 메뉴)으로 QR을 스캔하면 그 차가 그룹에 들어와요.</string>
     <string name="group_scan_hint">폰 공식 앱의 동행 메뉴에서 이 QR을 스캔하세요</string>
+    <string name="group_scan_manual_hint">카메라가 없으면 \'코드·주소 직접 입력\'에 아래 주소를 넣으세요</string>
     <string name="group_invite_remaining">초대 남은 시간 %1$s</string>
     <string name="group_invite_expired">초대가 만료됐어요. 다시 만들어 주세요.</string>
     <string name="group_btn_reissue">초대 다시 만들기</string>
+    <string name="group_btn_make_invite">초대 QR 만들기</string>
+    <string name="group_invite_none_hint">이 차가 새 선두차가 됐어요. 초대 QR을 만들면 함께 갈 차를 더 부를 수 있어요.</string>
     <string name="group_reissuing">만드는 중…</string>
     <string name="group_member_joined_hint">그룹에 연결됐어요. 선두차를 따라갑니다.</string>
     <string name="group_leader_label">선두차: %1$s</string>
@@ -204,9 +248,9 @@
     <string name="group_btn_open_drive">그룹 주행 화면 보기</string>
     <string name="drive_title">그룹 주행</string>
     <string name="drive_my_eta">내 ETA</string>
-    <string name="drive_conn_connected">연결됨</string>
+    <string name="drive_conn_connected">실시간 연결됨</string>
     <string name="drive_conn_reconnecting">다시 연결 중</string>
-    <string name="drive_conn_offline">연결 안 됨</string>
+    <string name="drive_conn_offline">연결 끊김</string>
     <string name="drive_snapshot_age">그룹 상태 %1$d초 전</string>
     <string name="drive_snapshot_none">그룹 상태 기다리는 중</string>
     <string name="drive_waiting_snapshot">서버에서 그룹 상태를 기다리는 중이에요 (2초마다 갱신)</string>
@@ -230,15 +274,26 @@
     <string name="drive_error_title">처리하지 못했어요</string>
     <string name="drive_ended_title">그룹 주행이 끝났어요</string>
     <string name="drive_ended_text">새 그룹을 만들거나 폰 공식 앱에서 초대 QR을 스캔해 다시 합류할 수 있어요.</string>
+    <!-- 그룹이 끝난 이유별(E115) — EndedPane -->
+    <string name="drive_ended_group_ended_title">선두차가 그룹을 끝냈어요</string>
+    <string name="drive_ended_offline_title">꺼져 있는 사이 그룹이 끝났어요</string>
+    <string name="drive_ended_offline_text">앱이 꺼져 있거나 연결이 끊긴 사이 그룹이 끝났거나 이 차가 빠졌어요. 새 그룹을 만들거나 초대 QR로 다시 합류할 수 있어요.</string>
+    <string name="drive_ended_removed_title">폰에서 이 차를 그룹에서 뺐어요</string>
+    <string name="drive_ended_removed_text">위치 공유를 멈췄어요. 다시 함께 가려면 선두차의 초대 QR을 폰으로 스캔하세요.</string>
+    <string name="drive_ended_left_title">그룹에서 나왔어요</string>
+    <string name="drive_ended_unpaired_title">차량 연결이 해제돼 그룹 공유를 멈췄어요</string>
+    <string name="drive_ended_unpaired_text">새 그룹을 만들려면 먼저 이 차를 내 폰과 다시 연결하세요.</string>
+    <string name="drive_ended_btn_new_group">새 그룹</string>
+    <string name="drive_ended_btn_repair">다시 연결</string>
     <string name="home_group_active">그룹: %1$s</string>
     <string name="home_group_active_leader">그룹: %1$s (선두)</string>
     <string name="home_btn_open_group">그룹 보기</string>
 
     <!-- T31 지연 측정 -->
-    <string name="drive_latency">지연 %1$s</string>
-    <string name="settings_latency_switch">지연 표시 (ms)</string>
-    <string name="settings_latency_hint">그룹 주행 화면에 서버 발행 → 수신 지연을 표시합니다. 차량 시계가 틀려도 서버 시각 기준으로 계산해요.</string>
-    <string name="diag_section_latency">지연 측정 (T31)</string>
+    <string name="drive_latency">서버 지연 %1$s</string>
+    <string name="settings_latency_switch">서버 지연 표시</string>
+    <string name="settings_latency_hint">정차 대시보드 아래에 서버 → 이 차 실시간 지연을 보여 줘요(개발자용). 차량 시계가 틀려도 서버 시각 기준으로 계산해요.</string>
+    <string name="diag_section_latency">실시간 지연</string>
     <string name="diag_lat_clock">서버 시계</string>
     <string name="diag_lat_event">이벤트 지연</string>
     <string name="diag_lat_state">상태 지연</string>
@@ -247,6 +302,11 @@
     <!-- 주행 대시보드 재설계안 (시안) -->
     <string name="dash_group_arrival">그룹 도착 예상</string>
     <string name="dash_my_arrival">내 도착</string>
+    <string name="dash_no_eta">도착 예상 시각 없음</string>
+    <string name="dash_no_eta_hint">순정 내비에서 %1$s 안내를 시작하면 모든 차의 도착 시각이 보여요</string>
+    <string name="dash_start_guidance">%1$s 안내 시작</string>
+    <string name="dash_all_arrived">모두 도착했어요</string>
+    <string name="dash_all_arrived_hint">그룹 전원이 %1$s에 있어요</string>
     <string name="dash_next_stop">다음 정차</string>
     <string name="dash_fuel">주유</string>
     <string name="dash_charge">충전</string>
@@ -255,9 +315,11 @@
     <string name="dash_ptt">무전</string>
     <string name="dash_ptt_seconds">%1$d초</string>
     <string name="dash_open_navi">내비 보기</string>
-    <string name="dash_connected">연결</string>
-    <string name="dash_reconnecting">재연결 중</string>
-    <string name="dash_latency">지연 %1$d ms</string>
+    <string name="dash_connected">실시간 연결됨</string>
+    <string name="dash_reconnecting">다시 연결 중</string>
+    <string name="dash_offline">연결 끊김</string>
+    <string name="dash_stale">%1$s 정보</string>
+    <string name="dash_latency">서버 지연 %1$d ms</string>
     <string name="dash_ptt_recording">녹음 중</string>
     <string name="dash_ptt_seconds_left">%1$d초 남음</string>
     <string name="dash_ptt_confirm_q">동행하는 차에게 보낼까요?</string>
@@ -267,15 +329,37 @@
     <string name="dash_ptt_sent">%1$d대에 보냈어요</string>
     <string name="dash_ptt_playing">%1$s 무전 재생 중</string>
     <string name="dash_presets">빠른 메시지</string>
-    <string name="dash_recent_events">지난 소식</string>
+    <string name="dash_recent_events">최근 소식</string>
     <string name="dash_unsent_ptt">보내지 않은 무전 %1$d개</string>
     <string name="dash_resend">다시 보내기</string>
     <string name="dash_manage_group">그룹 관리</string>
     <string name="dash_settings">설정</string>
-    <string name="dash_ptt_hint">핸들 버튼으로도 가능</string>
+    <string name="dash_ptt_hint">핸들 ▶‖ 버튼으로도 무전</string>
     <string name="dash_ptt_confirm_big">보낼까요?</string>
     <string name="dash_ptt_say">"네" 또는 "아니"라고 말하세요</string>
     <string name="dash_ptt_stop_hint">다시 누르면 녹음이 끝나요</string>
     <string name="dash_ptt_seconds_left_unit">초 남음</string>
     <string name="dash_ptt_playing_big">%1$s 무전 %2$s</string>
+    <!-- 정차 대시보드 '내 차 상태' 줄(차량 SDK 값, 5-3) -->
+    <string name="dash_my_energy_soc">내 차 배터리 %1$d%%</string>
+    <string name="dash_my_energy_fuel">내 차 연료 %1$d%%</string>
+
+    <!-- 예시 화면 둘러보기(심사·첫 실행 — 실제 연결 없이 예시 데이터로 그리는 화면, 2-1) -->
+    <string name="tour_band">예시 데이터 — 실제 연결 없이 보는 화면 (%1$d/%2$d)</string>
+    <string name="tour_next">다음</string>
+    <string name="tour_close">닫기</string>
+    <string name="tour_step_parked">정차 중 그룹 대시보드 — 대열·도착 예상·최근 소식</string>
+    <string name="tour_step_panel">주행 중 — 순정 내비 위 작은 패널(차 간격·도착 시각·무전)</string>
+    <string name="tour_step_danger">앞차 급제동 — 음성이 늦으면 패널 줄이 빨갛게 깜빡여요</string>
+    <string name="tour_step_ptt_confirm">무전 — 녹음 뒤 \'보낼까요?\'에 말로 답해요</string>
+    <string name="tour_step_ptt_playing">받은 무전 — 보낸 차 색 띠로 재생해요</string>
+
+    <!-- 권한 요청 전 안내 한 장(정차 중, 초대 QR 화면에서는 미룸) -->
+    <string name="perm_rationale_title">그룹 주행에 필요한 권한</string>
+    <string name="perm_rationale_location">• 위치 — 함께 가는 차들과 간격·도착 예상 시각을 나눠요.</string>
+    <string name="perm_rationale_mic">• 마이크 — 무전을 녹음할 때만 써요.</string>
+    <string name="perm_rationale_notifications">• 알림 — 앞차 급제동 같은 소식을 내비 위 카드로 보여 줘요.</string>
+    <string name="perm_rationale_footer">허용하지 않아도 그룹 주행은 계속돼요. 나중에 설정에서 바꿀 수 있어요.</string>
+    <string name="perm_rationale_continue">계속</string>
+    <string name="perm_rationale_later">나중에</string>
 </resources>

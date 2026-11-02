@@ -85,7 +85,8 @@ class FloatingPanelMapperTest {
             ),
         )
         assertEquals(listOf("아빠", "엄마", "막내"), ui.cars.map { it.name })
-        ui.cars.forEach { assertEquals("내 거리 모름 → —", DriveFormat.DASH, it.gapText); assertEquals("", it.gapUnit); assertEquals(DriveFormat.DASH, it.etaText) }
+        // 도착 시각을 모르면 "--:--"(머리줄 "경포해변 도착" 옆의 "—" 가 '도착함'으로 읽혔다, 4-3)
+        ui.cars.forEach { assertEquals("내 거리 모름 → —", DriveFormat.DASH, it.gapText); assertEquals("", it.gapUnit); assertEquals(DriveFormat.NO_CLOCK, it.etaText) }
         assertFalse(ui.cars[0].warn)
         assertTrue(ui.cars[1].offline); assertTrue(ui.cars[1].warn)
         assertTrue(ui.cars[2].offline); assertTrue(ui.cars[2].warn)
@@ -102,6 +103,9 @@ class FloatingPanelMapperTest {
         assertEquals("아빠 차와 같이 가기", FloatingPanelSamples.of("worst").groupName)
         assertEquals("경포해변 도착", FloatingPanelSamples.of("worst").etaLabel)
         assertTrue(FloatingPanelSamples.of("longdest").etaPlace.length > 10)
+        // panel_stale = 가장 긴 나이 + 긴 그룹 이름 — "연결 끊김 · 23시간 전"(≈ 211 dp)이 상한 안에 들어가 나이가 잘리지 않는다(E038)
+        assertEquals("23시간 전", FloatingPanelSamples.of("stale").staleText)
+        assertTrue(app.donghaeng.car.feature.drive.FloatingPanelSpec.STALE_LABEL_MAX_DP >= 211f)
     }
 
     @Test
@@ -146,6 +150,24 @@ class FloatingPanelMapperTest {
     }
 
     @Test
+    fun `while disconnected an old snapshot is marked stale and after a minute the gap numbers are hidden`() {
+        val members = listOf(member("veh_ME", "나", dist = 1_200), member("veh_A", "아빠", dist = 0, destTs = at(14, 28)))
+        fun mapAged(connected: Boolean, ageMs: Long?) =
+            FloatingPanelMapper.map(session, GroupState("grp_1", "veh_A", members), "veh_ME", emptyList(), PttUi(), connected = connected, nowMs = now, zone = zone, stateAgeMs = ageMs)
+        assertNull("연결돼 있으면 표시 없음", mapAged(true, 300_000).staleText)
+        assertNull("끊긴 지 15초 안", mapAged(false, 10_000).staleText)
+        val stale = mapAged(false, 20_000)
+        assertEquals("20초 전", stale.staleText)
+        assertEquals("1분 안이면 간격은 남긴다", "앞 1.2", stale.cars.single().gapText)
+        val old = mapAged(false, 125_000)
+        assertEquals("2분 전", old.staleText)
+        assertEquals("1분이 넘으면 간격을 지금 값처럼 보이지 않게", DriveFormat.DASH, old.cars.single().gapText)
+        assertEquals("", old.cars.single().gapUnit)
+        assertEquals("도착 시각(절대 시각)은 남긴다", "14:28", old.cars.single().etaText)
+        assertNull("나이를 모르면 표시 없음", mapAged(false, null).staleText)
+    }
+
+    @Test
     fun `gap and distance formatting`() {
         assertEquals("앞 990" to "m", DriveFormat.gap(-994).let { it.text to it.unit })
         assertEquals("앞 1.0" to "km", DriveFormat.gap(-995).let { it.text to it.unit })
@@ -153,7 +175,10 @@ class FloatingPanelMapperTest {
         assertEquals("뒤 10 km", DriveFormat.gap(9_960).full)
         assertEquals("뒤 12 km", DriveFormat.gap(12_400).full)
         assertEquals("앞 29 km", DriveFormat.gap(-28_500).full)
-        assertEquals("0 m", DriveFormat.gap(0).full)
+        // 50 m 미만은 "바로 옆"(같은 주차장 출발에서 "0 m" 가 고장처럼 보였다, 4-2) — 단위 없음
+        assertEquals("바로 옆", DriveFormat.gap(0).full)
+        assertEquals("바로 옆" to "", DriveFormat.gap(-49).let { it.text to it.unit })
+        assertEquals("뒤 50 m", DriveFormat.gap(50).full)
         assertEquals("뒤 120 km", DriveFormat.gap(120_000).full)
         assertEquals("—", DriveFormat.gap(null).full)
         assertEquals("9.5 km", DriveFormat.distance(9_500))

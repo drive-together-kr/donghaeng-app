@@ -41,8 +41,8 @@ object PanelLayout {
     const val WIDTH_RATIO = 0.22f
     const val HEIGHT_RATIO = 0.30f
     const val BASE_WIDTH_DP = 375f
-    /** 차 4대 + "외 N대" + 이벤트 줄 + [무전] 의 기준 높이(scale 1) */
-    const val BASE_HEIGHT_DP = 410f
+    /** 차 4대 + "외 N대" + 이벤트 줄 + [무전](76 dp, E037) 의 기준 높이(scale 1). Pleos 2560×1440 의 30%(432 px) 안이라 배율 1 그대로 */
+    const val BASE_HEIGHT_DP = 426f
     const val MIN_SCALE = 0.6f
     const val MAX_SCALE = 1.2f
 

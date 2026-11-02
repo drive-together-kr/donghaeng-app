@@ -167,6 +167,24 @@ class PairingViewModelTest {
     }
 
     @Test
+    fun `409 ALREADY_APPROVED 는 오류 화면 대신 새 코드를 받는다(C112)`() = runTest(dispatcher) {
+        val api = ScriptedIdentityApi().apply {
+            codeResponses += codeOk(deviceCode = "dc_old")
+            codeResponses += codeOk(deviceCode = "dc_new")
+            tokenResponses += pending()
+            tokenResponses += { Response.error(409, envelope(ErrorCodes.ALREADY_APPROVED)) }
+            tokenResponses += tokenOk()
+        }
+        val vm = createViewModel(api)
+        advanceUntilIdle()
+        assertEquals("409 뒤 새 코드를 한 번 더 받았다", 2, api.codeCalls)
+        assertEquals(PairingState.Connected("veh_01HTEST", "별명차"), vm.state.value)
+        // 다른 409(예: 이미 멤버)는 그대로 오류
+        assertTrue(PairingViewModel.isAlreadyApproved(app.donghaeng.car.core.network.ApiResult.HttpFailure.Other(409, app.donghaeng.protocol.rest.ErrorBody(ErrorCodes.ALREADY_APPROVED, "m", "t"))))
+        assertTrue(!PairingViewModel.isAlreadyApproved(app.donghaeng.car.core.network.ApiResult.HttpFailure.Other(409, app.donghaeng.protocol.rest.ErrorBody("GROUP_FULL", "m", "t"))))
+    }
+
+    @Test
     fun `410 CODE_EXPIRED 면 새 코드를 요청하고 3회를 넘기면 Error`() = runTest(dispatcher) {
         val api = ScriptedIdentityApi().apply {
             repeat(3) { codeResponses += codeOk(deviceCode = "dc_$it") }

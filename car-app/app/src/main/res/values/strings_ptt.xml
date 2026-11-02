@@ -4,6 +4,8 @@
 <resources>
     <!-- 상태 -->
     <string name="ptt_say_short">네 / 아니라고 말하세요</string>
+    <!-- 패널 확인 줄 보조 문구 — 줄을 누르면 취소된다는 것도 함께(E061) -->
+    <string name="ptt_say_or_cancel">네/아니로 답 · 누르면 취소</string>
     <string name="ptt_countdown_short">%1$d초 뒤 보낼게요</string>
     <string name="ptt_cancel_hint">무전 버튼 = 취소</string>
     <string name="ptt_press_to_cancel">누르면 취소</string>

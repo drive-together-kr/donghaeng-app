@@ -27,12 +27,17 @@ import kotlin.math.abs
  * - 이벤트 = [SurfaceEvents.banner]: 받은 지 10초 안 + 서버 시계로 60초 안에 생긴 것 중 가장 최근, 내 차가 출처인 이벤트는 제외(재접속 때 밀려 온 옛 이벤트는 빠진다).
  *   나이는 서버 시계 − 봉투 ts. 톤: 급제동·에어백 위험 / 저잔량·끊김·이탈 주의 / 그 밖 정보.
  *   위험 이벤트는 음성 시작이 3초를 넘기면(또는 늦을 게 분명하면) 빨간 강조 + 깜빡임([EventHighlightPolicy], `voiceCue`).
+ * - 도착 시각을 모르면 "--:--"(머리줄 "경포해변 도착" 옆의 "—" 가 '이미 도착'으로 읽혔다, 4-3). 간격이 50 m 미만이면 "바로 옆".
+ * - 실시간 연결이 끊긴 채 그룹 상태가 [STALE_AFTER_MS] 넘게 오래되면 [FloatingPanelUi.staleText]("2분 전" — 머리줄 "연결 끊김 · 2분 전", 차 줄 흐리게),
+ *   [STALE_DROP_MS] 넘으면 간격 숫자를 "—" 로(지금 값처럼 믿지 않게, E038). 도착 시각은 절대 시각이라 남긴다.
  */
 object FloatingPanelMapper {
     const val MAX_ROWS = 4
     const val EVENT_WINDOW_MS = SurfaceEvents.BANNER_WINDOW_MS
     const val WARN_GAP_M = 3_000
     const val LOW_ENERGY_PCT = 15
+    const val STALE_AFTER_MS = 15_000L
+    const val STALE_DROP_MS = 60_000L
 
     fun map(
         session: GroupSession,
@@ -47,13 +52,18 @@ object FloatingPanelMapper {
         serverNowMs: Long = nowMs,
         /** 음성 경로·지연·시작 신호 — 위험 이벤트 강조([EventHighlightPolicy]). null = 강조 없음 */
         voiceCue: VoiceCue? = null,
+        /** 마지막 그룹 상태를 받은 뒤 지난 시간(ms). null = 모름(오래됨 표시 없음) */
+        stateAgeMs: Long? = null,
     ): FloatingPanelUi {
         val members = state?.members.orEmpty()
         val me = members.firstOrNull { it.vehicleId == myVehicleId }
+        val stale = !connected && stateAgeMs != null && stateAgeMs >= STALE_AFTER_MS
+        val dropGap = stale && stateAgeMs!! >= STALE_DROP_MS
         val others = members
             .filter { it.vehicleId != myVehicleId }
             .sortedWith(compareBy(nullsLast()) { it.distanceToLeaderM })
             .map { car(it, me, zone) }
+            .map { if (dropGap) it.copy(gapText = DriveFormat.DASH, gapUnit = "") else it }
         return FloatingPanelUi(
             groupName = session.name,
             cars = others.take(MAX_ROWS),
@@ -62,6 +72,7 @@ object FloatingPanelMapper {
             ptt = ptt,
             connected = connected,
             etaPlace = session.destination.name,
+            staleText = if (stale) DriveFormat.ago(stateAgeMs!!) else null,
         )
     }
 
@@ -85,7 +96,7 @@ object FloatingPanelMapper {
             colorArgb = GroupDriveViewModel.parseColor(m.color),
             gapText = g.text,
             gapUnit = g.unit,
-            etaText = DriveFormat.clock(m.eta?.destTs, zone),
+            etaText = DriveFormat.panelClock(m.eta?.destTs, zone),
             lowEnergy = isLowEnergy(m.energy),
             warn = offline || (gap != null && abs(gap) > WARN_GAP_M),
             offline = offline,

@@ -4,7 +4,7 @@ package app.donghaeng.car.feature.drive
  * 시안·프리뷰용 샘플 데이터 (실제 데이터 연결은 2단계). 닉네임·장소는 가상.
  * 변형 이름: drive_landscape, drive_portrait, parked, ptt_recording, ptt_confirm, ptt_countdown, ptt_sending, ptt_sent, ptt_playing,
  * ptt_notice, ptt_mic(정차 + 마이크 권한 없음), drive_light,
- * panel_dark, panel_light, panel_full, panel_worst, panel_longdest, panel_recording, panel_confirm, panel_countdown, panel_sending, panel_sent,
+ * panel_dark, panel_light, panel_full, panel_worst, panel_longdest, panel_stale, panel_recording, panel_confirm, panel_countdown, panel_sending, panel_sent,
  * panel_playing, panel_notice, panel_mic(플로팅 패널 단독 — FloatingPanelSamples)
  */
 object DriveDashboardSamples {
@@ -61,8 +61,8 @@ object DriveDashboardSamples {
     )
     val past = listOf(
         PastPttUi("v3", "아빠 차 무전 0:05", BLUE, "1분 전"),
-        PastPttUi("v2", "삼촌 차 무전 0:11", PURPLE, "4분 전", statusText = "못 들음", tone = Tone.INFO),
-        PastPttUi("v1", "둘째 차 무전 0:03", GREEN, "9분 전", statusText = "다 못 들음", tone = Tone.INFO),
+        PastPttUi("v2", "삼촌 차 무전 0:11", PURPLE, "4분 전", statusText = "못 들음", tone = Tone.CAUTION),
+        PastPttUi("v1", "둘째 차 무전 0:03", GREEN, "9분 전", statusText = "다 못 들음", tone = Tone.CAUTION),
     )
 
     /** 가로 2창: 순정 내비가 옆에 보인다 → 휴식 추천 줄 */
@@ -105,7 +105,7 @@ object DriveDashboardSamples {
 
     val variants = listOf(
         "drive_landscape", "drive_portrait", "parked", "ptt_recording", "ptt_confirm", "ptt_countdown", "ptt_sending", "ptt_sent", "ptt_playing", "ptt_notice", "ptt_mic",
-        "drive_light", "panel_dark", "panel_light", "panel_full", "panel_worst", "panel_longdest",
+        "drive_light", "panel_dark", "panel_light", "panel_full", "panel_worst", "panel_longdest", "panel_stale",
         "panel_recording", "panel_confirm", "panel_countdown", "panel_sending", "panel_sent", "panel_playing", "panel_notice", "panel_mic",
     )
 }
