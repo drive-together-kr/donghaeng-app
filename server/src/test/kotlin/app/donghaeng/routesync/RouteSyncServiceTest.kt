@@ -109,12 +109,18 @@ class RouteSyncServiceTest {
         assertEquals(listOf("veh_B", "veh_C"), record.targets)
     }
 
+    /**
+     * RC-1: 그룹 이벤트 `ROUTE_CHANGED` 에는 음성 문구가 없다 — 차량 VoiceAnnouncer 는 speech 가 있으면 멤버 차에서 읽으므로, 문구를 넣으면
+     * 멤버가 경로 변경 하나를 "○○이 경로를 바꿨어요" + 제안 cmd 의 "따라갈까요?" 두 문장으로 듣는다(장면 8). 멤버가 듣는 말은 제안 cmd 의 문구 하나뿐.
+     */
     @Test
-    fun `the ROUTE_CHANGED group event carries a feed sentence naming the leader and the waypoint or destination`() {
+    fun `the ROUTE_CHANGED group event has no speech, members hear only the proposal question`() {
         service.onRouteChanged("veh_A", RouteChanged(destination = roster.destination!!, waypoints = listOf(restStop)))
-        assertEquals("아빠 차가 경로를 바꿨어요(경유지 덕평휴게소)", sink.recorded.last().speech)
+        assertNull(sink.recorded.last().speech, "경유지 추가")
         service.onRouteChanged("veh_A", RouteChanged(destination = Place(37.7719, 128.9479, "경포해변")))
-        assertEquals("아빠 차가 경로를 바꿨어요(목적지 경포해변)", sink.recorded.last().speech)
+        assertNull(sink.recorded.last().speech, "목적지만 변경")
+        val questions = publisher.sent.filter { it.topic == Topics.vehicleCmd("veh_B") }.map { DhJson.json.decodeFromString<RouteFollowProposal>(it.json).speech }
+        assertEquals(listOf("선두차가 덕평휴게소를 경유지로 추가했어요. 따라갈까요?", "선두차가 목적지를 경포해변으로 바꿨어요. 따라갈까요?"), questions)
     }
 
     @Test

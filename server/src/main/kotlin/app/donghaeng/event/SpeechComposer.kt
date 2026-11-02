@@ -72,14 +72,6 @@ class SpeechComposer {
         if (!waypointName.isNullOrBlank()) "선두차가 ${waypointName}${Josa.eulReul(waypointName)} 경유지로 추가했어요. 따라갈까요?"
         else "선두차가 목적지를 ${destinationName}${Josa.euroRo(destinationName)} 바꿨어요. 따라갈까요?"
 
-    /**
-     * 그룹 이벤트 `ROUTE_CHANGED` 문구(피드·카드·companion — docs/03 §5.4): `{nickname}이 경로를 바꿨어요(경유지 {name})`,
-     * 경유지 없이 목적지만 바뀌면 `{nickname}이 경로를 바꿨어요(목적지 {dest})`. 따라갈지 묻는 말은 멤버별 cmd `ROUTE_FOLLOW_PROPOSAL` 의 문구가 맡는다.
-     */
-    fun routeChanged(nickname: String, waypointName: String?, destinationName: String): String =
-        if (!waypointName.isNullOrBlank()) "${nickname}${Josa.iGa(nickname)} 경로를 바꿨어요(경유지 $waypointName)"
-        else "${nickname}${Josa.iGa(nickname)} 경로를 바꿨어요(목적지 $destinationName)"
-
     /** `{nickname}이 비상등을 켰어요.` */
     fun hazardOn(nickname: String): String = "${nickname}${Josa.iGa(nickname)} 비상등을 켰어요."
 

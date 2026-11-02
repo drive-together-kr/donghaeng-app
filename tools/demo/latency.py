@@ -27,6 +27,7 @@
   사용자 토큰 수명이 1시간이라 ③ 앞에서 새로 받고(캐시 토큰을 그대로 쓰지 않는다), 그래도 401 이면 메시지마다 한 번 다시 로그인해 다시 보낸다.
 - 메시지는 음성으로도 읽히므로 ③ 동안 두 차 음성을 잠시 끄고 끝나면 원래대로 돌린다(--keep-voice 면 그대로). 그룹 소식에 '지연 측정 i/K' 가 남는다 — 시험용 그룹에서.
 - 서버의 동승자 메시지는 그룹당 2초에 1건이다(2026-11 C106 — 넘으면 429 RATE_LIMITED, docs/03 §2.3). 기본 간격 2.5 s 는 그 제한과 수신·음성 처리가 겹치지 않게 둔 것.
+  더 짧게 줘서 429 가 나면 2.2 s 기다렸다가 그 메시지만 한 번 더 보낸다(경고 'HTTP 429 → … 한 번 더 보냄' — 그만큼 실제 간격이 늘어난다).
 - 출력·파일에 토큰·이메일·좌표·닉네임·메시지 원문 이외의 사용자 값은 남기지 않는다(서버 주소는 scheme://host[:port] 만).
 """
 import argparse
@@ -52,6 +53,10 @@ from demo import ADB, PKG, LogWatcher, adb, adb_devices, broadcast, device_conne
 OUT_DIR = os.path.join(HERE, "out")
 MSG_TYPE = "PASSENGER_MESSAGE"
 CARS = ("A", "B")
+# 서버의 동승자 메시지 빈도 제한 — 그룹당 2 s 1건(server dh.rate-limit.passenger-message-interval-ms, docs/03 §2.3 C106).
+# 429 를 받으면 이 간격보다 조금 더 기다렸다가 한 번만 다시 보낸다(RC-5 — 짧은 --msg-gap-s 에서도 표본이 빠지지 않게)
+SERVER_MSG_INTERVAL_S = 2.0
+RATE_LIMIT_RETRY_S = 2.2
 
 
 # ---------------------------------------------------------------- 순수 도우미(단위 테스트 대상)
@@ -703,7 +708,8 @@ class Runner:
     def send_messages(self):
         """K 개를 keep-alive 로 보낸다 → (메시지 목록, PC→서버 오프셋 표본).
         보내기 전에 토큰을 새로 받고(fresh_token), 그래도 401 이면 메시지마다 한 번만 다시 로그인해 같은 메시지를 다시 보낸다
-        (송신 시각은 다시 보낸 요청의 것 — 401 왕복은 지연에 들어가지 않는다)"""
+        (송신 시각은 다시 보낸 요청의 것 — 401 왕복은 지연에 들어가지 않는다).
+        429(그룹당 2 s 빈도 제한)면 RATE_LIMIT_RETRY_S 기다렸다가 메시지마다 한 번만 다시 보낸다 — 429 는 서버가 저장·팬아웃하지 않아 중복이 없다"""
         tag = secrets.token_hex(2)
         self.fresh_token()
         http_ = KeepAliveHttp(self.a.server)
@@ -718,7 +724,7 @@ class Runner:
             k = self.a.messages
             for i in range(1, k + 1):
                 body = json.dumps({"text": f"지연 측정 {i}/{k} #{tag}"}, ensure_ascii=False).encode("utf-8")
-                relogged = False
+                relogged = limited = False
                 while True:
                     try:
                         st, data, t0, t1, new = http_.request("POST", path, body=body, headers=headers())
@@ -731,6 +737,11 @@ class Runner:
                         if self.fresh_token():
                             self.warnings.append(f"메시지 {i} HTTP 401 → 다시 로그인해 한 번 더 보냄")
                             continue
+                    if st == 429 and not limited:
+                        limited = True
+                        self.warnings.append(f"메시지 {i} HTTP 429 → {RATE_LIMIT_RETRY_S}s 뒤 한 번 더 보냄")
+                        time.sleep(RATE_LIMIT_RETRY_S)
+                        continue
                     break
                 if st not in (0, 201):
                     self.warnings.append(f"메시지 {i} HTTP {st}")
@@ -843,11 +854,7 @@ def cmd_compare(a) -> int:
     return 0
 
 
-def main():
-    try:
-        sys.stdout.reconfigure(errors="replace")
-    except Exception:
-        pass
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -859,7 +866,8 @@ def main():
     p.add_argument("--email", default=os.environ.get("DH_DEMO_EMAIL"), help="dev 로그인 이메일(클라우드는 DH_DEV_LOGIN_KEY 환경 변수도)")
     p.add_argument("--group", help="메시지를 보낼 그룹 ID(기본: 내 활성 그룹 중 멤버 2대 이상인 첫 그룹)")
     p.add_argument("--messages", type=int, default=20, help="그룹 메시지 수 K")
-    p.add_argument("--msg-gap-s", type=float, default=2.5, help="메시지 간격(서버는 그룹당 2초에 1건 — 2 s 미만이면 429)")
+    p.add_argument("--msg-gap-s", type=float, default=2.5,
+                   help="메시지 간격(서버는 그룹당 2초에 1건 — 간격+왕복이 2 s 미만이면 429, 그때는 2.2 s 기다렸다 한 번 더 보낸다)")
     p.add_argument("--rtt-n", type=int, default=30, help="왕복 프로브 횟수(첫 표본 포함)")
     p.add_argument("--gap-ms", type=int, default=300, help="왕복 프로브 간격")
     p.add_argument("--settle-s", type=float, default=5.0, help="마지막 메시지 뒤 수신 대기")
@@ -875,8 +883,15 @@ def main():
     p.add_argument("second", help="예: out/latency_cloud_….json")
     p.add_argument("--out-file", help="비교표 .md 경로(기본 out/latency_compare_<a>_<b>_<시각>.md)")
     p.set_defaults(fn=cmd_compare)
+    return ap
 
-    a = ap.parse_args()
+
+def main():
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
+    a = build_parser().parse_args()
     if a.cmd == "run" and (a.messages < 1 or a.rtt_n < 2):
         print("--messages ≥ 1, --rtt-n ≥ 2")
         sys.exit(2)

@@ -92,7 +92,7 @@ $env:DH_DEV_LOGIN_KEY = "<VM infra/.env 값>"   # 클라우드 dev 로그인 접
 python tools/demo/latency.py run --server https://<VM-IP>.sslip.io --label cloud --car-a emulator-5556 --car-b emulator-5558 --email <dev 이메일>
 python tools/demo/latency.py compare out/latency_local_<시각>.json out/latency_cloud_<시각>.json
 ```
-- 순서: ① PC → 서버 HTTP(keep-alive, 첫 표본 따로) ② 차마다 `latency_reset` → `net_rtt`(`fresh` — 첫 표본에 연결 수립) → `net_mqtt_rtt` ③ 메시지 K 개(`--messages 20`, 간격 `--msg-gap-s 1.5`, 그동안 음성 끔) ④ `latency_dump` ⑤ 결과 파일.
+- 순서: ① PC → 서버 HTTP(keep-alive, 첫 표본 따로) ② 차마다 `latency_reset` → `net_rtt`(`fresh` — 첫 표본에 연결 수립) → `net_mqtt_rtt` ③ 메시지 K 개(`--messages 20`, 간격 `--msg-gap-s 2.5` — 서버는 동승자 메시지를 그룹당 2 s 에 1건만 받는다(429 면 2.2 s 뒤 한 번 더 보냄), 그동안 음성 끔) ④ `latency_dump` ⑤ 결과 파일.
 - 'PC 송신 → 차 수신' 은 호스트 시계와 기기 시계를 잇는다: 상주 `adb shell -T` 세션에서 `date +%s%N` 을 15번 재 최소 왕복 표본으로 오프셋(±왕복/2), 메시지 앞뒤로 재서 평균(+표류/2). 앱 ClockSync 경로로 한 번 더 계산해 교차 확인한다. 방법과 오차는 결과 `.md` 의 '시계 보정' 에.
 - 차가 `--server` 와 다른 서버를 보면(숨은 메뉴 주소·빌드 기본값) 결과 `.md` '주의' 에 남는다. 서버를 바꾸면 토큰이 지워져 다시 페어링해야 하므로 로컬 측정을 먼저 한다.
 

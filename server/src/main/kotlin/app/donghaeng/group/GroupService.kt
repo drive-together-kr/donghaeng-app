@@ -222,11 +222,18 @@ class GroupService(
     /**
      * `GET /v1/vehicles/me/group` (계약 1, docs/03 §2.3) — 차량 JWT 의 차가 **지금** 들어가 있는 진행 중 그룹을 cmd `GROUP_JOINED` 본문과 같은 모양으로.
      * 없으면 null(→ 204). 차량 앱이 앱 시작·MQTT 재접속 때 로컬 세션을 서버와 맞춘다(놓친 GROUP_ENDED·MEMBER_LEFT·GROUP_JOINED 복구).
-     * 진실(DB) 기준으로 답하고, Redis 소속 캐시가 다르면 커밋 뒤 고친다(C101 read-repair). 해제·이전된 차량 토큰은 403.
+     * 진실(DB) 기준으로 답하고, Redis 소속 캐시가 다르면 커밋 뒤 고친다(C101 read-repair).
+     *
+     * 해제·소유권 이전된 차량의 (서명상 아직 유효한) 토큰도 **null(204 '진행 중 그룹 없음')** — 계약 1. 다른 그룹 API 처럼 403 을 주면 차량 앱이
+     * 결과를 모름(Unknown)으로 보고 옛 그룹 세션을 남긴다(RC-2, T33: 오프라인 중 해제돼 TOKEN_REVOKED·MEMBER_LEFT 를 놓친 차). 204 를 받은 차는 세션을 지우고,
+     * 자격 증명은 refresh 401 경로가 정리한다. 이전된 차의 옛 토큰에는 새 소유자의 그룹을 알려 주지 않고, 그 차의 소속 캐시(새 소유자 것)도 건드리지 않는다.
      */
     @Transactional(readOnly = true)
     fun currentGroupOf(caller: Caller.Vehicle): GroupJoined? {
-        val vehicle = requireActiveVehicle(caller)
+        val vehicle = activeVehicleOrNull(caller) ?: run {
+            log.info("vehicle group reconcile: revoked or transferred token → none vehicleId={}", caller.vehicleId)
+            return null
+        }
         val membership = members.findActiveMembershipOf(vehicle.vehicleId)
         val group = membership?.let { groups.findById(it.groupId) }?.takeIf { it.active }
         val cached = cache.activeGroupOf(vehicle.vehicleId)
@@ -440,10 +447,14 @@ class GroupService(
      * 차량 토큰의 차량이 아직 연결(페어링)된 상태이고, 토큰의 `owner` 클레임이 현재 소유자와 같은지 — 아니면 403.
      * (다른 계정이 같은 차를 다시 페어링하면 이전 소유자 때 발급된 24h 토큰은 서명은 유효해도 여기서 막힌다)
      */
-    private fun requireActiveVehicle(caller: Caller.Vehicle): VehicleInfo {
-        val vehicle = identity.vehicle(caller.vehicleId) ?: throw GroupErrors.vehicleRevoked()
-        if (!vehicle.active) throw GroupErrors.vehicleRevoked()
-        if (caller.ownerId != null && caller.ownerId != vehicle.ownerId) throw GroupErrors.vehicleRevoked()
+    private fun requireActiveVehicle(caller: Caller.Vehicle): VehicleInfo =
+        activeVehicleOrNull(caller) ?: throw GroupErrors.vehicleRevoked()
+
+    /** [requireActiveVehicle] 와 같은 판정 — 없거나 해제됐거나 토큰의 `owner` 가 현재 소유자와 다르면 null */
+    private fun activeVehicleOrNull(caller: Caller.Vehicle): VehicleInfo? {
+        val vehicle = identity.vehicle(caller.vehicleId) ?: return null
+        if (!vehicle.active) return null
+        if (caller.ownerId != null && caller.ownerId != vehicle.ownerId) return null
         return vehicle
     }
 

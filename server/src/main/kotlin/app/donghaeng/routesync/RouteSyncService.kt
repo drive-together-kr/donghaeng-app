@@ -172,7 +172,8 @@ object RouteRules {
  * - 선두차(그룹 leader)의 `ROUTE_CHANGED` 만 받는다. 다른 멤버가 보내면 무시(로그). 값은 [RouteRules] 로 검증·정리한다(C105).
  * - **그룹 경로를 갱신한다(C032)**: [GroupRouteApi.updateRoute] 로 그룹 목적지·경유지를 바꿔(그룹 행 FOR UPDATE, 지금도 방장인지 다시 확인)
  *   늦게 합류한 차의 `GROUP_JOINED`·초대 미리보기·스냅샷 ARRIVED 판정이 최신 경로를 쓴다. 합류한 차에는 [onVehicleJoined] 가 경유지 제안을 다시 보낸다.
- * - 그룹 이벤트 `ROUTE_CHANGED` 를 남긴다 — 문구 `{닉네임}이 경로를 바꿨어요(경유지 {이름})`(피드·카드·companion). 멤버는 따라갈지 묻는 cmd 의 문구도 듣는다.
+ * - 그룹 이벤트 `ROUTE_CHANGED` 를 남긴다(피드용) — **음성 문구는 없다**(`speech = null`, 피드·companion 은 라벨 '경로 변경'). 차량 VoiceAnnouncer 는 문구가 있는
+ *   이벤트를 멤버 차에서 읽으므로, 문구를 넣으면 멤버가 경로 변경 하나를 두 문장(알림 + 제안 질문)으로 듣는다(RC-1). 멤버는 제안 cmd 의 문구 하나만 듣는다.
  * - 멤버마다 cmd `ROUTE_FOLLOW_PROPOSAL { proposalId, destination, waypoints, speech }` 를 **커밋 뒤에** 보낸다(C076 — 기록이 롤백되면 나가지 않는다).
  * - ACK 는 제안별로 모아 둔다(15분). 형식이 틀린 ID·모르는 제안·대상이 아닌 차의 ACK 는 버린다(C110). 전원이 답하면 요약 로그.
  */
@@ -209,10 +210,9 @@ class RouteSyncService(
         val proposalId = Ids.proposal()
         val cmd = proposalCmd(proposalId, change.destination, change.waypoints)
         proposals.save(ProposalRecord(proposalId, groupId, vehicleId, targets, clock.millis()))
-        val nickname = roster.members.firstOrNull { it.vehicleId == vehicleId }?.nickname ?: vehicleId
         sink.record(
-            groupId, GroupEventType.ROUTE_CHANGED, vehicleId, Severity.INFO,
-            speech = speech.routeChanged(nickname, RouteRules.speechName(change.waypoints.lastOrNull()?.name), RouteRules.speechName(change.destination.name) ?: "목적지"),
+            // 문구 없음(RC-1) — 멤버가 듣는 말은 아래 제안 cmd 의 "…따라갈까요?" 하나
+            groupId, GroupEventType.ROUTE_CHANGED, vehicleId, Severity.INFO, speech = null,
             payload = buildJsonObject {
                 put("proposalId", proposalId)
                 put("destination", DhJson.json.encodeToJsonElement(Place.serializer(), change.destination))

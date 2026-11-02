@@ -728,11 +728,39 @@ class GroupFlowIT {
         vehicleGroup(a.vehicleToken).assertOk()
         assertEquals(created.groupId, redisTemplate.opsForValue().get(vehicleGroupKey(a.vehicleId)))
 
-        // 해제된 차의 (아직 유효한) 토큰 → 403, 끝난 그룹 → 204
+        // 끝난 그룹 → 204
         call(HttpMethod.POST, ApiPaths.groupEnd(created.groupId), bearer = a.vehicleToken).assertOk(204)
         assertEquals(204, vehicleGroup(a.vehicleToken).statusCode.value())
-        call(HttpMethod.DELETE, ApiPaths.meVehicle(a.vehicleId), bearer = a.userToken).assertOk(204)
-        vehicleGroup(a.vehicleToken).assertError(403, ErrorCodes.FORBIDDEN)
+    }
+
+    /**
+     * RC-2: 해제·소유권 이전된 차의 (서명상 아직 유효한) 토큰도 계약 1 대로 204('진행 중 그룹 없음') — 403 이면 차량 앱이 Unknown 으로 보고 옛 세션을 남긴다(T33).
+     * 옛 토큰으로는 새 소유자의 그룹을 보지 못하고, 새 소유자의 소속 캐시도 건드리지 않는다. 자격 증명 정리는 refresh 401 경로가 맡는다.
+     */
+    @Test
+    fun `RC-2 - an unpaired or transferred car token gets 204 from GET v1 vehicles me group, never the new owner's group`() {
+        val a = driver("rc2-a", "아빠 차")
+        val b = driver("rc2-b", "엄마 차")
+        val created = create(a)
+        join(b, created.invite.token).assertOk()
+        assertEquals(created.groupId, vehicleGroup(b.vehicleToken).assertOk().decode<GroupJoined>().groupId)
+
+        // 폰에서 해제 → 그 차의 옛 토큰은 204(차가 세션을 지운다)
+        call(HttpMethod.DELETE, ApiPaths.meVehicle(b.vehicleId), bearer = b.userToken).assertOk(204)
+        assertEquals(204, vehicleGroup(b.vehicleToken).statusCode.value(), "해제된 차")
+
+        // 다른 계정이 a 의 차를 다시 페어링해 새 그룹을 만든다 → a 의 옛 토큰은 204, 새 그룹을 보지 못한다
+        val d = login("rc2-d")
+        val taken = pair(d, "넘겨받은 차", carId = a.carInfoId)
+        assertEquals(a.vehicleId, taken.vehicle.vehicleId)
+        val newGroup: GroupCreateResponse = call(HttpMethod.POST, ApiPaths.GROUPS, json.encodeToString(GroupCreateRequest("새 주인", DEST)), taken.vehicleAccessToken).assertOk(201).decode()
+        val stale = vehicleGroup(a.vehicleToken)
+        assertEquals(204, stale.statusCode.value(), "소유권이 넘어간 차의 옛 토큰")
+        assertNull(stale.body, "본문 없음 — 새 소유자의 그룹을 알려 주지 않는다")
+        assertEquals(newGroup.groupId, redisTemplate.opsForValue().get(vehicleGroupKey(a.vehicleId)), "옛 토큰은 새 소유자의 소속 캐시를 고치지 않는다")
+        assertEquals(newGroup.groupId, vehicleGroup(taken.vehicleAccessToken).assertOk().decode<GroupJoined>().groupId, "새 토큰은 새 그룹")
+        // 다른 그룹 API 는 그대로 403(자격 거절)
+        detail(newGroup.groupId, a.vehicleToken).assertError(403, ErrorCodes.FORBIDDEN)
     }
 
     @Test
@@ -777,7 +805,7 @@ class GroupFlowIT {
         assertNotNull(routeSync.onRouteChanged(a.vehicleId, RouteChanged(sokcho, listOf(restStop))))
         assertEquals(sokcho, detailOk(created.groupId, a.vehicleToken).destination, "그룹 목적지가 바뀐다")
         val routeEvent = detailOk(created.groupId, b.userToken).recentEvents.ofType(GroupEventType.ROUTE_CHANGED).single()
-        assertEquals("아빠 차가 경로를 바꿨어요(경유지 덕평휴게소)", routeEvent.speech)
+        assertNull(routeEvent.speech, "RC-1: 그룹 이벤트에는 문구가 없다(피드는 라벨 '경로 변경', 멤버는 제안 cmd 문구만 듣는다)")
         val previewHeaders = HttpHeaders().apply { accept = listOf(MediaType.APPLICATION_JSON) }
         val preview: InvitePreviewResponse = rest.exchange(java.net.URI(created.invite.url).path, HttpMethod.GET, HttpEntity<Void>(previewHeaders), String::class.java).decode()
         assertEquals(sokcho, preview.destination)
