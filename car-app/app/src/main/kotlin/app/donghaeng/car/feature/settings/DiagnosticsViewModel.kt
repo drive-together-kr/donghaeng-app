@@ -124,8 +124,18 @@ data class T33DiagState(
     val nowMs: Long = 0L,
 )
 
-/** 진단 화면의 경로 동기화 확인용 동작(T28) */
+/** 진단 화면의 경로 동기화 확인용 동작(T28) — debug 빌드·정차 중에만(E035) */
 enum class RouteSyncDebugAction { PUBLISH_TEST, ACCEPT, DECLINE, TOGGLE_AUTO }
+
+/**
+ * 진단 카드에 새로 보이는 값(도메인 배치) — 재접속 때 서버와 그룹 맞추기([reconcile]), 그룹 서비스 마지막 시작 실패([lastStartFailure]),
+ * 무전 통계([pttStats] — micBlocked 포함). 좌표·닉네임·토큰 없음.
+ */
+data class DiagExtraState(
+    val reconcile: app.donghaeng.car.domain.session.ReconcileState = app.donghaeng.car.domain.session.ReconcileState(),
+    val lastStartFailure: String? = null,
+    val pttStats: app.donghaeng.car.domain.ptt.PttStats = app.donghaeng.car.domain.ptt.PttStats(),
+)
 
 /** 진단 화면의 음성 확인용 동작(T27). SAMPLE = '예시 안내 듣기'(심사 환경 재현 — 체인으로 [DiagnosticsViewModel.SAMPLE_SENTENCE]) */
 enum class VoiceDebugAction { SPEAK_TEST, TOGGLE, SAMPLE }
@@ -164,6 +174,7 @@ class DiagnosticsViewModel @Inject constructor(
     tokenRefresher: TokenRefresher,
     sessionStore: GroupSessionStore,
     serverConfig: ServerConfig,
+    ptt: app.donghaeng.car.domain.ptt.PttController,
 ) : ViewModel() {
 
     private val naviActionResult = MutableStateFlow<String?>(null)
@@ -179,6 +190,11 @@ class DiagnosticsViewModel @Inject constructor(
             delay(2_000L)
         }
     }
+
+    /** 재접속 맞추기·그룹 서비스 시작 실패·무전 통계 */
+    val extraState: StateFlow<DiagExtraState> = combine(sessionManager.reconcileState, driveSessionController.lastStartFailure, ptt.state) { rc, fail, p ->
+        DiagExtraState(rc, fail, p.stats)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DiagExtraState())
 
     /** T33 토큰·저장소·로그 카드 */
     val t33State: StateFlow<T33DiagState> = combine(
@@ -230,8 +246,16 @@ class DiagnosticsViewModel @Inject constructor(
         mqttAddress = MqttAddressDisplay.of(server, pairedMqttUri),
     )
 
-    /** 내비 요청 → 결과는 [DiagnosticsUiState.naviActionResult] 와 내비 카드의 콜백 수로 확인한다 */
+    /**
+     * 내비 요청 → 결과는 [DiagnosticsUiState.naviActionResult] 와 내비 카드의 콜백 수로 확인한다.
+     * 경로 요청·내비 화면은 실제 내비를 바꾸므로 debug 빌드·정차 중에만(E035 — 화면 버튼도 같은 조건). 목적지 조회는 읽기만이라 정차 중이면 된다.
+     */
     fun onNaviAction(action: NaviDebugAction) {
+        if (isDrivingNow()) {
+            DhLog.w("diag: 내비 요청 무시(주행 중) $action")
+            return
+        }
+        if (action != NaviDebugAction.QUERY_DESTINATION && !BuildConfig.DEBUG) return
         viewModelScope.launch {
             val name = when (action) {
                 NaviDebugAction.REQUEST_ROUTE -> "requestRoute(${DEBUG_DESTINATION.name})"
@@ -251,6 +275,7 @@ class DiagnosticsViewModel @Inject constructor(
     }
 
     fun onLocationAction(action: LocationDebugAction) {
+        if (isDrivingNow()) return
         when (action) {
             LocationDebugAction.RESTART -> locationFeed.restart()
             LocationDebugAction.REQUEST_PERMISSION -> locationFeed.refreshPermissions()   // 실제 요청은 Route 의 런처
@@ -264,12 +289,23 @@ class DiagnosticsViewModel @Inject constructor(
         vehicleSignals.restart()
     }
 
-    fun restartVehicleSignals() = vehicleSignals.restart()
+    fun restartVehicleSignals() {
+        if (isDrivingNow()) return
+        vehicleSignals.restart()
+    }
 
     /** T31 진단 '지금 동기화' */
     fun resyncClock() = clockSync.resync()
 
+    /**
+     * 경로 동기화 확인용 동작 — 테스트 발행은 그룹 전체에 제안·음성이 나가고, 수락은 내 내비 경로를 바꾼다.
+     * debug 빌드·정차 중에만(E035 — 대시보드에서 주행 중 잠긴 수락을 여기서 우회하지 않게). 화면 버튼도 같은 조건.
+     */
     fun onRouteSyncAction(action: RouteSyncDebugAction) {
+        if (!BuildConfig.DEBUG || isDrivingNow()) {
+            DhLog.w("diag: 경로 동기화 동작 무시 $action (debug=${BuildConfig.DEBUG} driving=${isDrivingNow()})")
+            return
+        }
         when (action) {
             RouteSyncDebugAction.PUBLISH_TEST -> routeSync.publishTestRouteChange(RouteSyncEngine.DEMO_WAYPOINT)
             RouteSyncDebugAction.ACCEPT -> viewModelScope.launch { routeSync.accept() }
@@ -280,8 +316,9 @@ class DiagnosticsViewModel @Inject constructor(
 
     fun onVoiceAction(action: VoiceDebugAction) {
         when (action) {
-            VoiceDebugAction.SPEAK_TEST -> voiceAnnouncer.speakTest()
-            VoiceDebugAction.TOGGLE -> voiceAnnouncer.setEnabled(!voiceAnnouncer.state.value.enabled)
+            // 테스트 발화·켜기/끄기는 debug 빌드·정차 중에만(E035). '예시 안내 듣기'는 release 에도(정차 중)
+            VoiceDebugAction.SPEAK_TEST -> if (BuildConfig.DEBUG && !isDrivingNow()) voiceAnnouncer.speakTest()
+            VoiceDebugAction.TOGGLE -> if (BuildConfig.DEBUG && !isDrivingNow()) voiceAnnouncer.setEnabled(!voiceAnnouncer.state.value.enabled)
             VoiceDebugAction.SAMPLE -> {
                 // 정차 중에만(화면 버튼도 주행 중 비활성). 체인 경로로 읽는다 — 로그 `voice: speak SAMPLE …` + 경로별 시작 지연
                 if (isDrivingNow()) return

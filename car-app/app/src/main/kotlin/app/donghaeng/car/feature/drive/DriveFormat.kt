@@ -21,13 +21,22 @@ object DriveFormat {
         val full: String get() = if (unit.isEmpty()) text else "$text $unit"
     }
 
+    /** 이보다 가까우면(|간격| < 50 m) 숫자 대신 "바로 옆" — 같은 주차장 출발·붙어 달리기에서 "0 m" 가 고장처럼 보였다(4-2) */
+    const val NEAR_M = 50
+    const val NEAR_TEXT = "바로 옆"
+
+    /** 도착 예상 시각을 모를 때 패널 숫자 자리 — "—" 는 '도착함'으로 읽혔다(4-3) */
+    const val NO_CLOCK = "--:--"
+
     /**
-     * [gapM] = 상대.distanceToLeaderM − 나.distanceToLeaderM. 음수 = 상대가 앞("앞"), 양수 = 뒤("뒤"), 0 = 방향 없음.
-     * 1 km 미만은 10 m 단위 반올림 m, 10 km 미만은 소수 1자리 km, 그 이상은 정수 km(패널 폭 22% 안에 "뒤 28 km" 가 잘리지 않게 — 2026-10-28 실측 "뒤 28.5 km" 의 단위가 잘림).
+     * [gapM] = 상대.distanceToLeaderM − 나.distanceToLeaderM. 음수 = 상대가 앞("앞"), 양수 = 뒤("뒤").
+     * |간격| < [NEAR_M] 이면 "바로 옆"(단위 없음). 1 km 미만은 10 m 단위 반올림 m, 10 km 미만은 소수 1자리 km,
+     * 그 이상은 정수 km(패널 폭 22% 안에 "뒤 28 km" 가 잘리지 않게 — 2026-10-28 실측 "뒤 28.5 km" 의 단위가 잘림).
      */
     fun gap(gapM: Int?): Gap {
         if (gapM == null) return Gap(DASH, "")
         val a = abs(gapM)
+        if (a < NEAR_M) return Gap(NEAR_TEXT, "")
         val dir = when {
             gapM < 0 -> "앞 "
             gapM > 0 -> "뒤 "
@@ -48,6 +57,9 @@ object DriveFormat {
 
     /** 도착 예상 시각(epoch ms) → 기기 시간대 "13:12". 없으면 "—" */
     fun clock(epochMs: Long?, zone: ZoneId): String = epochMs?.let { HH_MM.format(Instant.ofEpochMilli(it).atZone(zone)) } ?: DASH
+
+    /** 패널용 도착 시각 — 모르면 "--:--"([NO_CLOCK]). 머리줄 "경포해변 도착" 옆의 "—" 가 '이미 도착'으로 읽혀서 바꿨다 */
+    fun panelClock(epochMs: Long?, zone: ZoneId): String = epochMs?.let { HH_MM.format(Instant.ofEpochMilli(it).atZone(zone)) } ?: NO_CLOCK
 
     /** 경과·남은 시간 → "1시간 42분" / "9분" */
     fun duration(seconds: Long): String {
@@ -75,10 +87,11 @@ object DriveFormat {
     /** 이벤트 문구 — 서버 음성 문구, 없으면 종류 라벨 */
     fun eventText(type: String, speech: String?): String = speech?.trim()?.takeIf { it.isNotEmpty() } ?: EventsViewModel.labelOf(type)
 
-    /** 이벤트 톤(색+아이콘): 급제동·에어백 = 위험, 저잔량·연결 끊김·경로 이탈 = 주의, 그 밖 = 정보 */
+    /** 이벤트 톤(색+아이콘): 급제동·에어백 = 위험, 저잔량·연결 끊김·경로 이탈 = 주의, 정차·재출발 = 중립(초록 '완료'로 읽히지 않게, 4-4), 그 밖 = 정보 */
     fun eventTone(type: String): Tone = when (type) {
         "HARD_BRAKE", "AIRBAG_DEPLOYED" -> Tone.DANGER
         "LOW_ENERGY", "MEMBER_OFFLINE", "DEVIATION" -> Tone.CAUTION
+        "STOPPED", "RESUMED" -> Tone.NEUTRAL
         else -> Tone.INFO
     }
 }

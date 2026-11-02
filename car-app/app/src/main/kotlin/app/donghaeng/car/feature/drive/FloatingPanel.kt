@@ -54,8 +54,8 @@ import app.donghaeng.car.domain.ptt.PttNotice
 /*
  * 주행 중 순정 내비 위에 얹히는 플로팅 패널 (docs/05 §5.2, 사용자 확정 2026-10-28).
  *
- * 크기: 폭 ≤ 내비 화면 폭의 22%(Pleos 가로 2창 = 1707 dp × 22% ≈ 375 dp), 높이 ≤ 디스플레이 높이 30%(차 4대 + 이벤트 줄 + [무전] 기준 ≈ 375 dp,
- *       5대 이상이면 4대 + "외 N대" 줄 ≈ 410 dp). 실제 폭·배율은 surface.PanelLayout 이 디스플레이에서 계산해 [width]·[scale] 로 준다.
+ * 크기: 폭 ≤ 내비 화면 폭의 22%(Pleos 가로 2창 = 1707 dp × 22% ≈ 375 dp), 높이 ≤ 디스플레이 높이 30%(차 4대 + 이벤트 줄 + [무전] 76 dp 기준 ≈ 391 dp,
+ *       5대 이상이면 4대 + "외 N대" 줄 ≈ 426 dp). 실제 폭·배율은 surface.PanelLayout 이 디스플레이에서 계산해 [width]·[scale] 로 준다.
  * 가독성(사용자 지시): 거리·도착 시각 숫자 31sp(시안 24sp의 1.3배), 이름 29sp(1.2배), 행 간격 10 dp 이상. 머리줄·이벤트 줄·무전 줄도 1.2배.
  *       이름 열(100 dp)에 안 들어가는 긴 닉네임("DemoCarB")은 20sp 까지 줄여 맞추고, 그래도 넘치면 말줄임(2026-10-28 실측 "De…" 개선).
  *       간격 숫자도 남은 폭에 안 들어가면(저잔량 아이콘 + "뒤 9.9 km" 처럼) 24sp 까지 줄여 단위 "km/m" 가 잘리지 않게 한다.
@@ -93,6 +93,11 @@ data class FloatingPanelUi(
     val etaPlace: String,
     /** 4대를 넘는 나머지 차 수 — "외 N대" (0 이면 줄 없음) */
     val moreCount: Int = 0,
+    /**
+     * 실시간 연결이 끊긴 채 그룹 상태가 15초 넘게 오래됨 — "2분 전"(E038). 있으면 머리줄 기준 문구 자리에 "연결 끊김 · 2분 전"(주의 색),
+     * 차 줄은 흐리게. null = 새 정보
+     */
+    val staleText: String? = null,
 ) {
     /** 머리줄 기준 문구 전체 — "경포해변 도착" */
     val etaLabel: String get() = etaPlace + FloatingPanelSpec.ETA_SUFFIX
@@ -121,6 +126,8 @@ object FloatingPanelSpec {
     const val UNIT_SP = 18f
     const val EVENT_SP = 24f
     const val PTT_SP = 31f
+    /** [무전] 줄 높이 — 차량 기준 최소 터치 76 dp(E037) */
+    const val PTT_ROW_DP = 76f
     const val ROW_GAP_DP = 10f
 }
 
@@ -141,10 +148,10 @@ private val DarkPalette = PanelPalette(
     danger = DriveTone.danger, caution = DriveTone.caution, info = DriveTone.info, eventAlpha = 0.22f, border = null,
 )
 
-/** 주간 — 밝은 반투명 바탕 + 짙은 글씨(톤 색은 흰 바탕 대비 4.5:1 이상으로 진하게) */
+/** 주간 — 밝은 반투명 바탕 + 짙은 글씨(톤 색은 흰 바탕 대비 4.5:1 이상으로 진하게 — 정차 대시보드 주간 톤과 같은 값 [DriveTone.light]) */
 private val LightPalette = PanelPalette(
     bg = Color(0xEDFAFBFC), text = Color(0xFF14171C), muted = Color(0xFF4A515C),
-    danger = Color(0xFFC62828), caution = Color(0xFFB45309), info = Color(0xFF15803D), eventAlpha = 0.14f, border = Color(0x26000000),
+    danger = DriveTone.light.danger, caution = DriveTone.light.caution, info = DriveTone.light.info, eventAlpha = 0.14f, border = Color(0x26000000),
 )
 
 private fun PanelPalette.tone(tone: Tone): Color = when (tone) {
@@ -169,16 +176,26 @@ fun FloatingPanel(
     val sized = modifier.width(width).let { if (maxHeight != Dp.Unspecified) it.heightIn(max = maxHeight) else it }
     Surface(sized, shape = RoundedCornerShape(s.dp(22f)), color = p.bg, shadowElevation = 8.dp, border = p.border?.let { BorderStroke(1.dp, it) }) {
         Column(Modifier.padding(horizontal = s.dp(14f), vertical = s.dp(12f)), verticalArrangement = Arrangement.spacedBy(s.dp(10f))) {
-            // 머리줄: 그룹 이름(남는 폭, 넘치면 이것만 말줄임) · 기준 문구(자기 폭, 상한 180 dp) · 연결 점
+            // 머리줄: 그룹 이름(남는 폭, 넘치면 이것만 말줄임) · 기준 문구(자기 폭, 상한 180 dp) · 연결 점.
+            // 연결이 끊긴 채 오래된 값이면 기준 문구 자리에 "연결 끊김 · 2분 전"(주의 색, E038)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(ui.groupName, color = p.muted, fontSize = s.sp(FloatingPanelSpec.HEADER_SP), lineHeight = s.sp(26f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 Spacer(Modifier.width(s.dp(8f)))
-                EtaHeaderLabel(ui.etaPlace, p.muted, s)
+                val stale = ui.staleText
+                if (stale != null) {
+                    Text(
+                        stringResource(R.string.surface_panel_stale, stale), color = p.caution, fontSize = s.sp(FloatingPanelSpec.HEADER_SP), lineHeight = s.sp(26f),
+                        fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = s.dp(FloatingPanelSpec.HEADER_LABEL_MAX_DP)),
+                    )
+                } else {
+                    EtaHeaderLabel(ui.etaPlace, p.muted, s)
+                }
                 Spacer(Modifier.width(s.dp(8f)))
                 Box(Modifier.size(s.dp(12f)).clip(CircleShape).background(if (ui.connected) p.info else p.caution))
             }
-            // 차별 한 줄(선두부터): 색 점 + 이름 + 간격(내 차 기준) + 도착 시각
-            Column(verticalArrangement = Arrangement.spacedBy(s.dp(FloatingPanelSpec.ROW_GAP_DP))) {
+            // 차별 한 줄(선두부터): 색 점 + 이름 + 간격(내 차 기준) + 도착 시각. 오래된 값이면 흐리게
+            Column(Modifier.alpha(if (ui.staleText != null) 0.5f else 1f), verticalArrangement = Arrangement.spacedBy(s.dp(FloatingPanelSpec.ROW_GAP_DP))) {
                 if (ui.cars.isEmpty()) {
                     Text(stringResource(R.string.surface_panel_waiting), color = p.muted, fontSize = s.sp(FloatingPanelSpec.HEADER_SP), lineHeight = s.sp(28f))
                 }
@@ -196,7 +213,7 @@ fun FloatingPanel(
                     modifier = Modifier.fillMaxWidth().alpha(highlightAlpha(e.highlight)).clip(RoundedCornerShape(s.dp(12f)))
                         .background(if (hl) p.danger else c.copy(alpha = p.eventAlpha)).padding(horizontal = s.dp(10f), vertical = s.dp(8f)),
                 ) {
-                    Icon(DriveTone.icon(e.tone), contentDescription = null, tint = if (hl) Color.White else c, modifier = Modifier.size(s.dp(26f)))
+                    Icon(EventIcons.of(e.type, e.tone), contentDescription = null, tint = if (hl) Color.White else c, modifier = Modifier.size(s.dp(26f)))
                     Spacer(Modifier.width(s.dp(8f)))
                     Text(e.text, color = if (hl) Color.White else p.text, fontSize = s.sp(FloatingPanelSpec.EVENT_SP), lineHeight = s.sp(28f), fontWeight = if (hl) FontWeight.Bold else FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
@@ -331,7 +348,8 @@ private fun PanelPttRow(ptt: PttUi, s: Scaler, onPtt: () -> Unit) {
         PttDisplayKind.PLAYING, PttDisplayKind.PLAYED -> Color(ptt.fromColorArgb ?: DriveDashboardSamples.BLUE) to Color.White
     }
     val big = s.sp(FloatingPanelSpec.PTT_SP)
-    Surface(onClick = onPtt, shape = RoundedCornerShape(s.dp(16f)), color = bg, modifier = Modifier.fillMaxWidth().height(s.dp(60f))) {
+    // 주행 중 내비 위에서 받는 유일한 탭 — 차량 기준 76 dp(E037, 예전 60 dp)
+    Surface(onClick = onPtt, shape = RoundedCornerShape(s.dp(16f)), color = bg, modifier = Modifier.fillMaxWidth().height(s.dp(FloatingPanelSpec.PTT_ROW_DP))) {
         Row(Modifier.padding(horizontal = s.dp(16f)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
             when (kind) {
                 PttDisplayKind.IDLE -> {
@@ -356,7 +374,8 @@ private fun PanelPttRow(ptt: PttUi, s: Scaler, onPtt: () -> Unit) {
                     Text(stringResource(R.string.dash_ptt_seconds_left, ptt.seconds), color = fg, fontSize = s.sp(26f), fontWeight = FontWeight.Bold)
                 }
                 PttDisplayKind.CONFIRM_VOICE -> {
-                    TwoLine(stringResource(R.string.dash_ptt_confirm_big), stringResource(R.string.ptt_say_short), fg, s, Modifier.weight(1f), titleSp = 26f)
+                    // 이 줄을 누르면 '네'가 아니라 취소다 — 보조 줄에 함께 말한다(E061, 대시보드 버튼의 "누르면 취소"와 같은 뜻)
+                    TwoLine(stringResource(R.string.dash_ptt_confirm_big), stringResource(R.string.ptt_say_or_cancel), fg, s, Modifier.weight(1f), titleSp = 26f)
                     MiniCountdownRing(ptt.seconds, ptt.totalSeconds, fg, s)
                 }
                 PttDisplayKind.CONFIRM_COUNTDOWN -> {

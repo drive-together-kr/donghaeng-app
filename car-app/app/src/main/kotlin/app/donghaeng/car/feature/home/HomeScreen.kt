@@ -11,12 +11,18 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -30,6 +36,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.donghaeng.car.BuildConfig
 import app.donghaeng.car.R
 import app.donghaeng.car.adapter.sdk.ProbeLine
 import app.donghaeng.car.core.common.TokenClearReason
@@ -45,32 +52,41 @@ fun HomeRoute(
     onOpenGroup: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenDiagnostics: () -> Unit,
+    onOpenTour: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     HomeScreen(
         state = state,
-        onPairPhone = onPairPhone,
-        onStartGroup = { if (state.groupSession != null) onOpenGroup() else onStartGroup() },
+        onPrimary = {
+            when (state.primaryAction) {
+                HomeAction.PAIR_PHONE -> onPairPhone()
+                HomeAction.START_GROUP -> onStartGroup()
+                HomeAction.OPEN_GROUP -> onOpenGroup()
+            }
+        },
         onOpenSettings = onOpenSettings,
         onOpenDiagnostics = onOpenDiagnostics,
+        onOpenTour = onOpenTour,
         onRetryStore = viewModel::retryTokenStore,
     )
 }
 
 /**
  * 홈 화면. 세로·가로 모두 지원:
- * - 넓은 화면(가로, Pleos 2560x1440)에서는 좌 = 상태·버튼, 우 = 빌드 정보·SDK 점검 두 단
+ * - 넓은 화면(가로, Pleos 2560x1440)에서는 좌 = 상태·주 버튼, 우 = '동행은 이렇게 써요'(그룹 없을 때) / 빌드 정보(debug 빌드만)
  * - 좁은 화면(세로)에서는 한 단으로 쌓고 스크롤
- * 연결 상태(T12)는 TokenStore 에서, 진단(T11)·설정 버튼은 보조 행에 둔다.
+ * 상태별 주 버튼은 하나(2-2·E117): 연결 안 됨 [내 폰과 연결하기] / 연결됨 [같이 가기 시작] / 그룹 있음 [그룹 보기]. 다시 연결은 설정 '연결 해제'로.
+ * 개발 정보(빌드 변형·서버·MQTT 주소·SDK 클래스명)는 release 홈에 두지 않고(E040) 한 줄 상태 칩 "차량 SDK 5/5 · 실시간 연결됨 ›"(누르면 진단)으로 줄였다.
+ * 폰이 없어도 [예시 화면 둘러보기](2-1)로 그룹 주행 화면을 예시 데이터로 볼 수 있다.
  */
 @Composable
 fun HomeScreen(
     state: HomeUiState,
-    onPairPhone: () -> Unit,
-    onStartGroup: () -> Unit,
+    onPrimary: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenDiagnostics: () -> Unit,
+    onOpenTour: () -> Unit = {},
     onRetryStore: () -> Unit = {},
 ) {
     Scaffold { innerPadding ->
@@ -83,35 +99,34 @@ fun HomeScreen(
             val contentModifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 32.dp, vertical = 24.dp)
+                .padding(horizontal = 40.dp, vertical = 28.dp)
 
             if (twoPane) {
-                Row(modifier = contentModifier, horizontalArrangement = Arrangement.spacedBy(32.dp)) {
+                Row(modifier = contentModifier, horizontalArrangement = Arrangement.spacedBy(40.dp)) {
                     Column(modifier = Modifier.weight(1f)) {
-                        HeaderSection(state)
+                        HeaderSection(state, onOpenDiagnostics)
                         StatusBanner(state, onRetryStore)
-                        Spacer(Modifier.height(24.dp))
-                        ActionSection(state, onPairPhone, onStartGroup, onOpenSettings, onOpenDiagnostics)
+                        Spacer(Modifier.height(28.dp))
+                        ActionSection(state, onPrimary, onOpenSettings, onOpenTour)
                     }
-                    Column(modifier = Modifier.weight(1f)) {
-                        BuildInfoCard(state)
-                        if (state.showSdkProbe) {
-                            Spacer(Modifier.height(16.dp))
-                            SdkProbeCard(state.sdkProbe)
-                        }
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        if (state.groupSession == null) HowToCard()
+                        if (BuildConfig.DEBUG) BuildInfoCard(state)
                     }
                 }
             } else {
                 Column(modifier = contentModifier) {
-                    HeaderSection(state)
+                    HeaderSection(state, onOpenDiagnostics)
                     StatusBanner(state, onRetryStore)
-                    Spacer(Modifier.height(24.dp))
-                    ActionSection(state, onPairPhone, onStartGroup, onOpenSettings, onOpenDiagnostics)
-                    Spacer(Modifier.height(24.dp))
-                    BuildInfoCard(state)
-                    if (state.showSdkProbe) {
+                    Spacer(Modifier.height(28.dp))
+                    ActionSection(state, onPrimary, onOpenSettings, onOpenTour)
+                    if (state.groupSession == null) {
+                        Spacer(Modifier.height(24.dp))
+                        HowToCard()
+                    }
+                    if (BuildConfig.DEBUG) {
                         Spacer(Modifier.height(16.dp))
-                        SdkProbeCard(state.sdkProbe)
+                        BuildInfoCard(state)
                     }
                 }
             }
@@ -120,7 +135,7 @@ fun HomeScreen(
 }
 
 @Composable
-private fun HeaderSection(state: HomeUiState) {
+private fun HeaderSection(state: HomeUiState, onOpenDiagnostics: () -> Unit) {
     Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
     Text(
         stringResource(R.string.app_tagline),
@@ -136,10 +151,12 @@ private fun HeaderSection(state: HomeUiState) {
             if (state.nickname.isNullOrBlank()) stringResource(R.string.home_connection_connected)
             else stringResource(R.string.home_connection_connected_nick, state.nickname)
     }
+    // '폰 계정 연결'(페어링)이 됐어도 서버 실시간 연결이 끊긴 배너가 있으면 초록으로 칠하지 않는다(E122 — 한 화면에 '연결됨'과 '끊김')
+    val good = state.connection == VehicleConnection.CONNECTED && state.banner !is HomeBanner.ServerDisconnected
     Text(
         "${stringResource(R.string.home_vehicle_connection)}: $connectionText",
         style = MaterialTheme.typography.titleLarge,
-        color = if (state.connection == VehicleConnection.CONNECTED) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface,
+        color = if (good) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface,
     )
     if (state.connection == VehicleConnection.CONNECTED && state.vehicleIdMasked != null) {
         Text(
@@ -161,10 +178,35 @@ private fun HeaderSection(state: HomeUiState) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+    Spacer(Modifier.height(12.dp))
+    StatusChip(state, onOpenDiagnostics)
+}
+
+/** 한 줄 상태 칩 — "차량 SDK 5/5 · 실시간 연결됨 ›"(fake 는 "가상 차량 신호"). 누르면 진단(읽기 전용 화면이라 주행 중에도 열 수 있다) */
+@Composable
+private fun StatusChip(state: HomeUiState, onOpenDiagnostics: () -> Unit) {
+    val vehicle = when {
+        !state.showSdkProbe -> stringResource(R.string.home_chip_fake)
+        state.sdkAvailable == null || state.sdkTotal == null -> stringResource(R.string.home_chip_sdk_pending)
+        else -> stringResource(R.string.home_chip_sdk, state.sdkAvailable!!, state.sdkTotal!!)
+    }
+    val realtime = when (state.realtime) {
+        Realtime.CONNECTED -> stringResource(R.string.home_chip_realtime_on)
+        Realtime.CONNECTING -> stringResource(R.string.home_chip_realtime_connecting)
+        Realtime.OFF -> stringResource(R.string.home_chip_realtime_off)
+    }
+    AssistChip(
+        onClick = onOpenDiagnostics,
+        label = { Text("$vehicle · $realtime", style = MaterialTheme.typography.bodyLarge) },
+        trailingIcon = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = stringResource(R.string.home_chip_desc), modifier = Modifier.padding(end = 4.dp)) },
+        colors = AssistChipDefaults.assistChipColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.heightIn(min = 56.dp),
+    )
 }
 
 /**
- * T33 상태 배너 — 저장소 오류('다시 시도') / 다시 연결 필요 / 서버 연결 끊김(30초 이상). 주행 중엔 버튼 없이 문구만.
+ * T33 상태 배너 — 저장소 오류('다시 시도') / 다시 연결 필요 / 서버 실시간 연결 끊김(30초 이상). 주행 중엔 버튼 없이 문구만.
+ * 원인은 사람 말로 분류해 보이고(시간 초과·주소 설정·네트워크·인증), 예외 원문은 진단 화면에만 둔다(E119). 경과는 60초부터 'N분째'.
  */
 @Composable
 private fun StatusBanner(state: HomeUiState, onRetryStore: () -> Unit) {
@@ -173,8 +215,8 @@ private fun StatusBanner(state: HomeUiState, onRetryStore: () -> Unit) {
         // 세 번째 = 버튼 동작(없으면 null)
         is HomeBanner.StorageUnavailable -> Triple<String, String, (() -> Unit)?>(
             stringResource(R.string.t33_banner_storage_title),
-            if (banner.exhausted) stringResource(R.string.t33_banner_storage_exhausted, banner.reason)
-            else stringResource(R.string.t33_banner_storage_body, banner.reason, banner.attempts, banner.maxAttempts),
+            if (banner.exhausted) stringResource(R.string.t33_banner_storage_exhausted)
+            else stringResource(R.string.t33_banner_storage_body, banner.attempts, banner.maxAttempts),
             onRetryStore,
         )
         is HomeBanner.RepairNeeded -> Triple<String, String, (() -> Unit)?>(
@@ -187,15 +229,18 @@ private fun StatusBanner(state: HomeUiState, onRetryStore: () -> Unit) {
             banner.expiresAtMs?.let { stringResource(R.string.t33_banner_repair_soon, formatShortTime(it)) } ?: stringResource(R.string.t33_banner_repair_soon_unknown),
             null,
         )
-        is HomeBanner.ServerDisconnected -> Triple<String, String, (() -> Unit)?>(
-            stringResource(R.string.t33_banner_server_title),
-            stringResource(
-                R.string.t33_banner_server_body,
-                banner.seconds.toInt(),
-                if (banner.authRejected) stringResource(R.string.t33_banner_server_auth) else banner.lastError.orEmpty(),
-            ),
-            null,
-        )
+        is HomeBanner.ServerDisconnected -> {
+            val elapsed = if (banner.seconds >= 60) stringResource(R.string.t33_banner_server_body_min, (banner.seconds / 60).toInt())
+            else stringResource(R.string.t33_banner_server_body, banner.seconds.toInt())
+            val reason = when (banner.reason) {
+                HomeBanner.ServerReason.AUTH -> stringResource(R.string.t33_banner_server_auth)
+                HomeBanner.ServerReason.TIMEOUT -> stringResource(R.string.t33_banner_server_timeout)
+                HomeBanner.ServerReason.REFUSED -> stringResource(R.string.t33_banner_server_refused)
+                HomeBanner.ServerReason.UNREACHABLE -> stringResource(R.string.t33_banner_server_unreachable)
+                HomeBanner.ServerReason.OTHER -> ""
+            }
+            Triple<String, String, (() -> Unit)?>(stringResource(R.string.t33_banner_server_title), listOf(elapsed, reason).filter { it.isNotEmpty() }.joinToString(" "), null)
+        }
     }
     Spacer(Modifier.height(16.dp))
     Card(
@@ -206,7 +251,7 @@ private fun StatusBanner(state: HomeUiState, onRetryStore: () -> Unit) {
             Text(title, style = MaterialTheme.typography.titleLarge)
             Text(body, style = MaterialTheme.typography.bodyLarge)
             if (action != null && !state.isDriving) {
-                Button(onClick = action, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.t33_banner_retry)) }
+                Button(onClick = action, modifier = Modifier.heightIn(min = 76.dp)) { Text(stringResource(R.string.t33_banner_retry)) }
             }
         }
     }
@@ -215,50 +260,76 @@ private fun StatusBanner(state: HomeUiState, onRetryStore: () -> Unit) {
 @Composable
 private fun ActionSection(
     state: HomeUiState,
-    onPairPhone: () -> Unit,
-    onStartGroup: () -> Unit,
+    onPrimary: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenDiagnostics: () -> Unit,
+    onOpenTour: () -> Unit,
 ) {
+    val label = when (state.primaryAction) {
+        HomeAction.PAIR_PHONE -> stringResource(R.string.home_btn_pair_phone)
+        HomeAction.START_GROUP -> stringResource(R.string.home_btn_start_group)
+        HomeAction.OPEN_GROUP -> stringResource(R.string.home_btn_open_group)
+    }
     Button(
-        onClick = onPairPhone,
-        enabled = state.canPairPhone && !state.isDriving,
+        onClick = onPrimary,
+        enabled = state.primaryEnabled,
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 64.dp),
+            .heightIn(min = 84.dp),
     ) {
-        Text(stringResource(R.string.home_btn_pair_phone))
+        Text(label, style = MaterialTheme.typography.titleLarge)
     }
-    Spacer(Modifier.height(12.dp))
-    OutlinedButton(
-        onClick = onStartGroup,
-        enabled = state.canStartGroup && (state.groupSession != null || !state.isDriving),
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 64.dp),
-    ) {
-        Text(if (state.groupSession != null) stringResource(R.string.home_btn_open_group) else stringResource(R.string.home_btn_start_group))
-    }
-    Spacer(Modifier.height(8.dp))
+    Spacer(Modifier.height(10.dp))
     if (state.isDriving) {
         Text(stringResource(R.string.home_driving_hint), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.tertiary)
+    } else if (state.primaryAction == HomeAction.PAIR_PHONE) {
+        // 첫 단계 안내는 연결 전에만(연결된 뒤에도 '연결된 뒤 쓸 수 있어요'가 남아 헷갈렸다, E117)
+        Text(
+            stringResource(R.string.home_buttons_hint),
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
-    Text(
-        stringResource(R.string.home_buttons_hint),
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    Spacer(Modifier.height(16.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-        OutlinedButton(onClick = onOpenSettings, modifier = Modifier.weight(1f).heightIn(min = 56.dp)) {
+    Spacer(Modifier.height(20.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = onOpenSettings, modifier = Modifier.weight(1f).heightIn(min = 76.dp)) {
             Text(stringResource(R.string.home_btn_settings))
         }
-        OutlinedButton(onClick = onOpenDiagnostics, modifier = Modifier.weight(1f).heightIn(min = 56.dp)) {
-            Text(stringResource(R.string.home_btn_diagnostics))
+        // 폰(공식 앱)이 없어도 그룹 주행 화면을 예시 데이터로 본다(2-1) — 그룹이 없을 때만, 정차 중에만
+        if (state.groupSession == null) {
+            OutlinedButton(onClick = onOpenTour, enabled = !state.isDriving, modifier = Modifier.weight(1f).heightIn(min = 76.dp)) {
+                Text(stringResource(R.string.home_btn_tour))
+            }
+        }
+    }
+    if (state.groupSession == null && state.primaryAction == HomeAction.PAIR_PHONE) {
+        Spacer(Modifier.height(8.dp))
+        Text(stringResource(R.string.home_tour_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** '동행은 이렇게 써요' 3단계 — 그룹이 없을 때 홈 오른쪽(또는 아래) */
+@Composable
+private fun HowToCard() {
+    Card(modifier = Modifier.fillMaxWidth().widthIn(max = 960.dp)) {
+        Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text(stringResource(R.string.home_howto_title), style = MaterialTheme.typography.titleLarge)
+            HorizontalDivider()
+            HowToStep(R.string.home_howto_1_title, R.string.home_howto_1_body)
+            HowToStep(R.string.home_howto_2_title, R.string.home_howto_2_body)
+            HowToStep(R.string.home_howto_3_title, R.string.home_howto_3_body)
         }
     }
 }
 
+@Composable
+private fun HowToStep(titleRes: Int, bodyRes: Int) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(stringResource(titleRes), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+        Text(stringResource(bodyRes), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** 개발용 빌드 정보 — debug 빌드 홈에만(release 는 진단 화면의 빌드 카드에서 본다, E040) */
 @Composable
 private fun BuildInfoCard(state: HomeUiState) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
@@ -286,41 +357,9 @@ private fun InfoRow(label: String, value: String) {
             label,
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(120.dp),
+            modifier = Modifier.width(160.dp),
         )
         Text(value, style = MaterialTheme.typography.bodyLarge)
-    }
-}
-
-@Composable
-private fun SdkProbeCard(lines: List<ProbeLine>?) {
-    Card {
-        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(stringResource(R.string.home_sdk_probe_title), style = MaterialTheme.typography.titleMedium)
-            HorizontalDivider()
-            if (lines == null) {
-                Text(stringResource(R.string.home_sdk_probe_pending), style = MaterialTheme.typography.bodyMedium)
-            } else {
-                lines.forEach { line ->
-                    Row(verticalAlignment = Alignment.Top) {
-                        Text(
-                            if (line.available) "OK" else "--",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = if (line.available) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error,
-                            modifier = Modifier.width(44.dp),
-                        )
-                        Column {
-                            Text(line.name, style = MaterialTheme.typography.bodyLarge)
-                            Text(
-                                line.detail,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -335,13 +374,14 @@ private fun HomeScreenPreview() {
                 connection = VehicleConnection.CONNECTED,
                 nickname = "아빠차",
                 vehicleIdMasked = "veh_…7Q",
+                canStartGroup = true,
+                realtime = Realtime.CONNECTED,
                 sdkProbe = listOf(
                     ProbeLine("Vehicle 2.3.2", true, "ai.pleos.playground.vehicle.Vehicle"),
                     ProbeLine("NaviHelper 3.0.5", false, "ClassNotFoundException"),
                 ),
             ),
-            onPairPhone = {},
-            onStartGroup = {},
+            onPrimary = {},
             onOpenSettings = {},
             onOpenDiagnostics = {},
         )

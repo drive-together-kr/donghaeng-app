@@ -48,6 +48,11 @@ data class ArrivalCardUi(
     val myArrivalText: String,
     /** "9.5 km · 9분" */
     val myRemainText: String,
+    /**
+     * 그룹·내 도착 예상이 둘 다 없을 때(순정 내비 안내 전) 목적지 이름 — 카드가 84sp "—" 대신 "도착 예상 시각 없음" + "순정 내비에서 {목적지} 안내를
+     * 시작하면…" 을 보이고, 정차 중이면 [목적지 안내 시작] 버튼을 둔다(4-3·5-1). 하나라도 있으면 null
+     */
+    val noEtaPlace: String? = null,
 )
 
 /** 휴게소 도착 예상 — 이름+시각, 가장 늦은 차는 굵게 */
@@ -79,6 +84,9 @@ data class MyDriveLineUi(
     val drivingTimeWarn: Boolean = false,
     /** "다음 휴식 추천: 덕평휴게소" — 순정 내비가 같은 화면에 보일 때 제한속도·회전 대신 크게 */
     val restSuggestionText: String? = null,
+    /** 내 차 잔량(그룹 스냅샷의 차량 SDK 값, 5-3) — EV 면 배터리 %, 아니면 연료 %. null = 모름 */
+    val myEnergyPct: Int? = null,
+    val myEnergyEv: Boolean = false,
 )
 
 /**
@@ -88,7 +96,8 @@ data class MyDriveLineUi(
  */
 enum class EventHighlight { NONE, BLINK, STEADY }
 
-data class EventBannerUi(val text: String, val tone: Tone, val ageS: Int, val highlight: EventHighlight = EventHighlight.NONE)
+/** [type] = 그룹 이벤트 종류(종류별 아이콘 — [EventIcons], 4-4). null 이면 톤 아이콘 */
+data class EventBannerUi(val text: String, val tone: Tone, val ageS: Int, val highlight: EventHighlight = EventHighlight.NONE, val type: String? = null)
 
 enum class PttPhase { IDLE, RECORDING, CONFIRMING, SENT, PLAYING }
 
@@ -126,7 +135,7 @@ data class PttUi(
     val unsentCount: Int = 0,
 )
 
-data class RecentEventUi(val text: String, val tone: Tone, val whenText: String)
+data class RecentEventUi(val text: String, val tone: Tone, val whenText: String, val type: String? = null)
 
 /** '보내지 않은 무전' 한 줄(정차 대시보드, F16) — [다시 보내기]·[지우기]는 정차 중에만 */
 data class UnsentPttUi(
@@ -163,6 +172,13 @@ data class DriveDashboardUi(
     val event: EventBannerUi?,
     val ptt: PttUi = PttUi(),
     val connected: Boolean = true,
+    /** 실시간 연결이 끊김(시도도 멈춤) — "연결 끊김". false 면 [connected] 가 아닐 때 "다시 연결 중"(E038) */
+    val offline: Boolean = false,
+    /**
+     * 실시간 연결이 끊긴 채 그룹 상태가 [DriveDashboardMapper.STALE_AFTER_MS] 넘게 오래됨 — "2분 전"(아래 줄 "2분 전 정보"·대열·도착 카드 흐리게, E038).
+     * 연결돼 있거나 아직 새것이면 null
+     */
+    val staleText: String? = null,
     val latencyMs: Int? = null,
     /** T31 지연 문구("이벤트 12 ms · 상태 30 ms") — 있으면 [latencyMs] 대신 쓴다 */
     val latencyText: String? = null,

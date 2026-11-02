@@ -129,6 +129,32 @@ data class GroupDriveUiState(
 ) {
     val hasSnapshot: Boolean get() = members.isNotEmpty()
     val proposalRemainingS: Long? get() = proposal?.let { ((it.expiresAtMs - nowMs) / 1_000).coerceAtLeast(0) }
+
+    /**
+     * 제안 카드 아래 줄(E006·E034): 주행 중이라 정차까지 보류 중이면([RouteProposal.heldUntilParked]) 남은 초 대신 "정차하면 답할 수 있어요" —
+     * 보류 중 [RouteProposal.expiresAtMs] 는 보류 상한(최대 10분)이라 초를 세면 오해를 준다. 정차가 5초 이어지면 엔진이 보류를 풀고 30초를 센다.
+     */
+    val proposalStatus: ProposalStatus?
+        get() {
+            val p = proposal ?: return null
+            return when {
+                p.heldUntilParked && isDriving -> ProposalStatus.Held
+                p.heldUntilParked -> ProposalStatus.Settling
+                else -> ProposalStatus.Countdown(proposalRemainingS ?: 0)
+            }
+        }
+}
+
+/** 제안 카드 상태 줄 — 화면 문구는 strings.xml(drive_proposal_*) */
+sealed interface ProposalStatus {
+    /** 주행 중 보류 — "정차하면 답할 수 있어요" */
+    data object Held : ProposalStatus
+
+    /** 보류 중인데 정차함 — 정차가 이어지는지 확인하는 몇 초(엔진 PARK_SETTLE) */
+    data object Settling : ProposalStatus
+
+    /** "N초 뒤 자동으로 거절돼요" */
+    data class Countdown(val seconds: Long) : ProposalStatus
 }
 
 /**
@@ -262,9 +288,30 @@ class GroupDriveViewModel @Inject constructor(
                 is ApiResult.Success -> DhLog.i("group drive: ${if (session.isLeader) "ended" else "left"} group")
                 is ApiResult.HttpFailure -> error.value = result.error?.message ?: "요청에 실패했어요 (HTTP ${result.status})"
                 is ApiResult.NetworkFailure -> error.value = "서버에 연결할 수 없어요"
-                is ApiResult.UnexpectedFailure -> error.value = "예상치 못한 오류가 났어요 (${result.cause.javaClass.simpleName})"
+                // 예외 클래스 이름은 화면에 보이지 않는다(E119) — 로그에만
+                is ApiResult.UnexpectedFailure -> {
+                    DhLog.w("group drive: end/leave 실패 ${result.summary}")
+                    error.value = "처리하지 못했어요. 잠시 후 다시 시도해 주세요"
+                }
             }
             busy.value = false
+        }
+    }
+
+    /**
+     * 정차 대시보드 [목적지 안내 시작](4-3·5-1) — 순정 내비에 그룹 목적지 경로 안내를 요청한다(NaviHelper requestRoute).
+     * 안내가 시작되면 TripInfo 로 ETA 가 생겨 모든 차의 도착 예상이 채워진다. 주행 중이면 무시(화면 버튼도 정차 중에만).
+     */
+    fun startGuidance() {
+        val session = sessionManager.session.value ?: return
+        if (uiState.value.isDriving) {
+            DhLog.w("group drive: 안내 시작 무시(주행 중)")
+            return
+        }
+        viewModelScope.launch {
+            runCatching { navi.requestRoute(session.destination) }
+                .onSuccess { DhLog.i("group drive: 목적지 안내 시작 요청") }
+                .onFailure { DhLog.w("group drive: 목적지 안내 요청 실패 ${it.javaClass.simpleName}") }
         }
     }
 

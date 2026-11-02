@@ -13,6 +13,8 @@ import dagger.hilt.android.AndroidEntryPoint
  *
  * 인텐트 extra `screen`(home | drive | events | create | settings | diagnostics)이 오면 그 화면으로 이동한다 — 시연 스크립트(`tools/demo`, debug 리시버 `open`)와
  * 알림 탭에서 쓴다. 없으면 홈.
+ * B125: 헤드업 카드에서 온 인텐트(`from=card`)는 **주행 중이면** 그룹 주행 화면으로 가지 않고 순정 내비를 앞에 둔다(규칙 6 — 앞 화면은 늘 순정 내비).
+ * 정차 중 올린 카드(탭 가능)를 출발 직후 5초 수명 안에 눌러도 여기서 막힌다([CardTapPolicy]).
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -27,6 +29,10 @@ class MainActivity : ComponentActivity() {
 
     @javax.inject.Inject
     lateinit var sessionManager: app.donghaeng.car.domain.session.MqttSessionManager
+
+    /** B125: 카드 탭 때 지금 주행 중인지(표면 상태의 주행 값) */
+    @javax.inject.Inject
+    lateinit var surfaceState: app.donghaeng.car.surface.SurfaceState
 
     private val requestedRoute = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
 
@@ -56,7 +62,19 @@ class MainActivity : ComponentActivity() {
         requestedRoute.value = routeOf(intent)
     }
 
-    private fun routeOf(intent: android.content.Intent?): String? = when (intent?.getStringExtra(EXTRA_SCREEN)) {
+    private fun routeOf(intent: android.content.Intent?): String? {
+        val from = intent?.getStringExtra(EXTRA_FROM)
+        val driving = runCatching { surfaceState.isDriving.value }.getOrDefault(false)
+        if (!CardTapPolicy.opensScreen(from, driving)) {
+            // 주행 중 카드 탭 — 동행 화면으로 덮지 않고 순정 내비를 앞으로(실패하면 그대로 둔다)
+            app.donghaeng.car.core.common.DhLog.i("card tap while driving → 순정 내비 유지(B125)")
+            if (!app.donghaeng.car.surface.NaviLauncher.bringToFront(this, pleosBuild = BuildConfig.ADAPTER == "pleos")) moveTaskToBack(true)
+            return null
+        }
+        return screenRouteOf(intent)
+    }
+
+    private fun screenRouteOf(intent: android.content.Intent?): String? = when (intent?.getStringExtra(EXTRA_SCREEN)) {
         "home" -> app.donghaeng.car.ui.navigation.DhRoutes.HOME
         "drive", "group_drive" -> app.donghaeng.car.ui.navigation.DhRoutes.GROUP_DRIVE
         "events" -> app.donghaeng.car.ui.navigation.DhRoutes.EVENTS
@@ -82,5 +100,14 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val EXTRA_SCREEN = "screen"
         const val EXTRA_VARIANT = "variant"
+
+        /** 인텐트 출처 — 헤드업 카드면 [FROM_CARD](B125) */
+        const val EXTRA_FROM = "from"
+        const val FROM_CARD = "card"
     }
+}
+
+/** 카드 탭 인텐트 처리 규칙(B125, 순수 — 단위 테스트): 카드에서 왔고 지금 주행 중이면 화면을 열지 않는다 */
+object CardTapPolicy {
+    fun opensScreen(from: String?, drivingNow: Boolean): Boolean = !(from == MainActivity.FROM_CARD && drivingNow)
 }

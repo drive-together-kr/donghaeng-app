@@ -481,7 +481,9 @@ class AndroidCardPoster(context: Context) : CardPoster {
         }
         val open = PendingIntent.getActivity(
             context, card.notificationId,
-            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP).putExtra(MainActivity.EXTRA_SCREEN, "drive"),
+            // from=card — 누른 순간 주행 중이면 MainActivity 가 화면을 열지 않고 순정 내비를 둔다(B125, 정차 중 올린 카드를 출발 직후 눌러도)
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(MainActivity.EXTRA_SCREEN, "drive").putExtra(MainActivity.EXTRA_FROM, MainActivity.FROM_CARD),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val icon = when (card.tone) {

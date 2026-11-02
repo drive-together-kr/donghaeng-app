@@ -65,6 +65,7 @@ object SurfaceEvents {
                 tone = DriveFormat.eventTone(e.event.type),
                 ageS = (ageMs(e, serverNowMs) / 1_000).toInt(),
                 highlight = cue?.let { EventHighlightPolicy.decide(e.event.type, e.event.eventId, e.receivedAtMs, nowMs, it) } ?: EventHighlight.NONE,
+                type = e.event.type,
             )
         }
 

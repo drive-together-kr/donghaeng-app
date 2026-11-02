@@ -111,8 +111,17 @@ class SurfaceState(
             launch {
                 session.flatMapLatest { s ->
                     if (s == null) flowOf(null)
-                    else combine(groupState, _recent, _connected, ptt, ticker()) { g, ev, c, p, now ->
-                        FloatingPanelMapper.map(s, g, myVehicleId(), ev, p, c, nowMs = now, zone = zone(), serverNowMs = serverClock(), voiceCue = voiceCue())
+                    else {
+                        // E038: 그룹 상태가 바뀐(새 스냅샷이 온) 시각 — 연결이 끊겨 스냅샷이 멈추면 나이가 늘어 패널이 '연결 끊김 · N분 전'으로 바뀐다
+                        var lastState: GroupState? = null
+                        var stateAtMs = clock()
+                        combine(groupState, _recent, _connected, ptt, ticker()) { g, ev, c, p, now ->
+                            if (g !== lastState) { lastState = g; stateAtMs = now }
+                            FloatingPanelMapper.map(
+                                s, g, myVehicleId(), ev, p, c, nowMs = now, zone = zone(), serverNowMs = serverClock(), voiceCue = voiceCue(),
+                                stateAgeMs = if (g == null) null else (now - stateAtMs).coerceAtLeast(0),
+                            )
+                        }
                     }
                 }.collect { ui -> logHighlight(ui?.event); _panelUi.value = ui }
             }

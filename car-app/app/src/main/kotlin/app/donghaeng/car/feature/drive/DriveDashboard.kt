@@ -1,5 +1,6 @@
 package app.donghaeng.car.feature.drive
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -50,6 +51,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
@@ -83,21 +85,42 @@ import app.donghaeng.car.domain.ptt.PttFormat
 
 // ---------------------------------------------------------------- 톤 색
 
+/** 톤 색 한 벌(위험·주의·정보) — 다크/주간 두 벌을 둔다 */
+data class ToneColors(val danger: Color, val caution: Color, val info: Color)
+
+/**
+ * 톤 색(E041): 다크 바탕용 밝은 톤([dark] — 바탕 대비 8~10:1)과 주간 흰 바탕용 진한 톤([light] — 플로팅 패널 LightPalette 와 같은 값, 흰 바탕 대비 4.5:1 이상).
+ * 글자·아이콘·선은 [tones]/[color] 로 화면 바탕에 맞는 쪽을 쓴다. [danger]·[caution]·[info] 그대로 쓰는 곳은 꽉 찬 바탕(흰·검정 글자를 얹음)뿐이다.
+ */
 object DriveTone {
     val danger = Color(0xFFFF4D4F)
     val caution = Color(0xFFFF9F1C)
     val info = Color(0xFF2ECC71)
 
-    /** [무전] 버튼 — 다크 배경에서 검정 글자와 대비 ≥ 4.5:1 (라임) */
+    val dark = ToneColors(danger, caution, info)
+    val light = ToneColors(danger = Color(0xFFC62828), caution = Color(0xFFB45309), info = Color(0xFF15803D))
+
+    /** [무전] 버튼 — 다크 배경에서 검정 글자와 대비 ≥ 4.5:1 (라임). 흰 바탕에선 경계가 안 보여 주간엔 진한 테두리를 함께 그린다 */
     val ptt = Color(0xFFC6FF3D)
     val onPtt = Color(0xFF101400)
+    val pttBorderLight = Color(0xFF4D6B00)
+
+    /** 지금 화면 바탕(밝기)에 맞는 톤 색 */
+    @Composable
+    fun tones(): ToneColors = if (isLightBackground()) light else dark
 
     @Composable
-    fun color(tone: Tone): Color = when (tone) {
-        Tone.DANGER -> danger
-        Tone.CAUTION -> caution
-        Tone.INFO -> info
-        Tone.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant
+    fun isLightBackground(): Boolean = MaterialTheme.colorScheme.background.luminance() > 0.5f
+
+    @Composable
+    fun color(tone: Tone): Color {
+        val t = tones()
+        return when (tone) {
+            Tone.DANGER -> t.danger
+            Tone.CAUTION -> t.caution
+            Tone.INFO -> t.info
+            Tone.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant
+        }
     }
 
     fun icon(tone: Tone): ImageVector = when (tone) {
@@ -109,6 +132,9 @@ object DriveTone {
 
 private val FORMATION_HEIGHT = 236.dp
 private val LADDER_HEIGHT = 330.dp
+
+/** 연결이 끊긴 채 오래된 값의 불투명도(E038) */
+private const val STALE_ALPHA = 0.5f
 
 // ---------------------------------------------------------------- 화면
 
@@ -135,29 +161,35 @@ fun DriveDashboardScreen(
     onHome: (() -> Unit)? = null,
     /** 플로팅 창 권한 설정 화면 열기 — 기기에 그 화면이 없으면 null(버튼 숨김) */
     onOpenOverlaySettings: (() -> Unit)? = null,
+    /** 도착 예상이 없을 때(순정 내비 안내 전) [목적지 안내 시작] — 정차 중에만 보인다. null 이면 버튼 없음(4-3·5-1) */
+    onStartGuidance: (() -> Unit)? = null,
 ) {
     Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val landscape = maxWidth > maxHeight
             val narrow = maxWidth < 900.dp
+            // E038: 실시간 연결이 끊긴 채 오래된 값은 흐리게(아래 줄에 "2분 전 정보")
+            val staleAlpha = if (ui.staleText != null) STALE_ALPHA else 1f
+            val guidance = if (ui.parked) onStartGuidance else null
             Column(Modifier.fillMaxSize()) {
-                // 안내 문구는 늘 보이고 [권한 열기](설정 화면으로 이동)는 정차 중에만 — 주행 중 입력 UI 비활성(CLAUDE.md 규칙 6)
-                if (ui.overlayNotice) OverlayNotice(if (ui.parked) onOpenOverlaySettings else null)
+                // 안내 문구는 늘 보이고 [권한 열기](설정 화면으로 이동)는 정차 중에만 — 주행 중 입력 UI 비활성(CLAUDE.md 규칙 6).
+                // 권한 화면이 없는 기기(깨끗한 Pleos AVD, docs/10 R16)는 정차 중에 설치 안내 한 줄을 더한다(E039)
+                if (ui.overlayNotice) OverlayNotice(if (ui.parked) onOpenOverlaySettings else null, showNoSettingsHint = ui.parked && onOpenOverlaySettings == null)
                 PttTopBand(ui.ptt)
                 Box(Modifier.weight(1f)) {
                     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         if (narrow) {
-                            FormationLadder(ui.formation, ui.groupName, Modifier.fillMaxWidth().height(LADDER_HEIGHT))
-                            ArrivalCard(ui.arrival, Modifier.fillMaxWidth())
+                            FormationLadder(ui.formation, ui.groupName, Modifier.fillMaxWidth().height(LADDER_HEIGHT).alpha(staleAlpha))
+                            ArrivalCard(ui.arrival, Modifier.fillMaxWidth().alpha(staleAlpha), onStartGuidance = guidance)
                             ui.nextStop?.let { NextStopCard(it, Modifier.fillMaxWidth(), compact = true) }
                             if (ui.naviVisible) RestRow(ui.myDrive, Modifier.fillMaxWidth()) else MyDriveLine(ui.myDrive, Modifier.fillMaxWidth(), compact = true)
                             ui.event?.let { EventBanner(it, Modifier.fillMaxWidth()) }
                             if (ui.parked) ParkedExtras(ui, false, Modifier.weight(1f), onPreset, onManageGroup, onSettings, onResendUnsent, onDeleteUnsent, onReplayPast, onOpenEvents, onHome) else Spacer(Modifier.weight(1f))
                         } else {
-                            FormationBar(ui.formation, ui.groupName, Modifier.fillMaxWidth().height(FORMATION_HEIGHT))
+                            FormationBar(ui.formation, ui.groupName, Modifier.fillMaxWidth().height(FORMATION_HEIGHT).alpha(staleAlpha))
                             // 카드가 남는 높이를 전부 가진다(이벤트 띠가 없으면 그만큼 더 커진다)
                             Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                ArrivalCard(ui.arrival, Modifier.weight(1f).fillMaxHeight(), big = true)
+                                ArrivalCard(ui.arrival, Modifier.weight(1f).fillMaxHeight().alpha(staleAlpha), big = true, onStartGuidance = guidance)
                                 ui.nextStop?.let { NextStopCard(it, Modifier.weight(1.45f).fillMaxHeight(), big = true) }
                             }
                             if (ui.naviVisible) RestRow(ui.myDrive, Modifier.fillMaxWidth(), big = true) else MyDriveLine(ui.myDrive, Modifier.fillMaxWidth(), big = true)
@@ -175,16 +207,25 @@ fun DriveDashboardScreen(
     }
 }
 
-/** '알림 카드 + 음성' 모드 안내 1줄(플로팅 창 권한 없음) — 설정 화면이 있는 기기·정차 중에만 [권한 열기] */
+/**
+ * '알림 카드 + 음성' 모드 안내 1줄(플로팅 창 권한 없음) — 설정 화면이 있는 기기·정차 중에만 [권한 열기].
+ * 설정 화면이 없는 기기(깨끗한 Pleos AVD)면 정차 중에 [showNoSettingsHint] — 설치 안내(README)의 한 줄 명령으로 켤 수 있다는 안내(E039).
+ */
 @Composable
-private fun OverlayNotice(onOpenSettings: (() -> Unit)?) {
+private fun OverlayNotice(onOpenSettings: (() -> Unit)?, showNoSettingsHint: Boolean = false) {
+    val caution = DriveTone.tones().caution
     Surface(Modifier.fillMaxWidth(), color = DriveTone.caution.copy(alpha = 0.16f)) {
-        Row(Modifier.padding(horizontal = 24.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Filled.Info, contentDescription = null, tint = DriveTone.caution, modifier = Modifier.size(28.dp))
-            Spacer(Modifier.width(12.dp))
-            Text(stringResource(R.string.surface_cards_only_notice), fontSize = 22.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            onOpenSettings?.let { open ->
-                OutlinedButton(onClick = open, modifier = Modifier.height(52.dp)) { Text(stringResource(R.string.surface_open_permission), fontSize = 18.sp) }
+        Column(Modifier.padding(horizontal = 24.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Info, contentDescription = null, tint = caution, modifier = Modifier.size(28.dp))
+                Spacer(Modifier.width(12.dp))
+                Text(stringResource(R.string.surface_cards_only_notice), fontSize = 22.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                onOpenSettings?.let { open ->
+                    OutlinedButton(onClick = open, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.surface_open_permission), fontSize = 20.sp) }
+                }
+            }
+            if (showNoSettingsHint) {
+                Text(stringResource(R.string.surface_overlay_no_settings), fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 40.dp, top = 2.dp), maxLines = 2)
             }
         }
     }
@@ -194,6 +235,9 @@ private fun OverlayNotice(onOpenSettings: (() -> Unit)?) {
 
 private data class Label(val cx: Float, val text: String)
 
+/** [fitLabels] 결과 — [fits] = false 면 가장 작은 크기·약칭으로도 겹친다(그리는 쪽이 위아래로 엇갈리게 둔다) */
+private data class FittedLabels(val labels: List<Label>, val style: TextStyle, val fits: Boolean)
+
 /** 인접 라벨이 [gapPx] 이상 떨어지도록 글자 크기(22→20→18→16sp)를 고르고, 그래도 겹치면 [abbreviate] 로 줄인다 */
 private fun fitLabels(
     measurer: TextMeasurer,
@@ -201,7 +245,7 @@ private fun fitLabels(
     styleOf: (Int) -> TextStyle,
     gapPx: Float,
     abbreviate: ((String) -> String)? = null,
-): Pair<List<Label>, TextStyle> {
+): FittedLabels {
     val sizes = listOf(22, 20, 18, 16)
     fun fits(ls: List<Label>, style: TextStyle): Boolean {
         var lastRight = Float.NEGATIVE_INFINITY
@@ -214,43 +258,49 @@ private fun fitLabels(
     }
     for (sp in sizes) {
         val st = styleOf(sp)
-        if (fits(labels, st)) return labels to st
+        if (fits(labels, st)) return FittedLabels(labels, st, true)
     }
     if (abbreviate != null) {
         val shorter = labels.map { it.copy(text = abbreviate(it.text)) }
         for (sp in sizes) {
             val st = styleOf(sp)
-            if (fits(shorter, st)) return shorter to st
+            if (fits(shorter, st)) return FittedLabels(shorter, st, true)
         }
-        return shorter to styleOf(16)
+        return FittedLabels(shorter, styleOf(16), false)
     }
-    return labels to styleOf(16)
+    return FittedLabels(labels, styleOf(16), false)
 }
 
 private fun shortName(name: String): String {
+    if (name.contains('·') || name.endsWith("함께")) return name   // 묶음 라벨("아빠·둘째", "3대 함께")은 그대로
     val base = name.removeSuffix(" 차").removeSuffix("차").trim()
     return if (base.length <= 2) base else base.take(2) + "…"
 }
 
 // ---------------------------------------------------------------- 1. 대열 막대
 
+/**
+ * 가로 대열 막대. 막대 끝 = max(다음 정차지, 선두)([FormationLayout.endKm]). 화면에서 원 지름 + 8 dp 보다 가까운 차는 한 묶음 —
+ * 원을 살짝 겹쳐 쌓고(내 차를 맨 위에) 라벨 하나("아빠·둘째" / "3대 함께")만 그린다(E036). 라벨이 끝까지 겹치면 위아래로 엇갈린다.
+ */
 @Composable
 fun FormationBar(ui: FormationBarUi, groupName: String, modifier: Modifier = Modifier) {
     val measurer = rememberTextMeasurer()
     val onSurface = MaterialTheme.colorScheme.onSurface
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val track = MaterialTheme.colorScheme.surfaceVariant
+    val tones = DriveTone.tones()
     val nameStyleOf = { sp: Int -> TextStyle(fontSize = sp.sp, fontWeight = FontWeight.SemiBold, color = onSurface) }
     val gapStyleOf = { sp: Int -> TextStyle(fontSize = sp.sp, color = muted) }
-    val gapWarnStyleOf = { sp: Int -> TextStyle(fontSize = sp.sp, color = DriveTone.caution, fontWeight = FontWeight.SemiBold) }
+    val gapWarnStyleOf = { sp: Int -> TextStyle(fontSize = sp.sp, color = tones.caution, fontWeight = FontWeight.SemiBold) }
     val stopStyle = TextStyle(fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
     val destStyle = TextStyle(fontSize = 20.sp, color = muted)
     Surface(modifier, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(groupName, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.weight(1f))
-                Text(ui.formationLengthText, fontSize = 22.sp, fontWeight = FontWeight.Medium, color = muted)
+                Text(groupName, fontSize = 26.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.width(12.dp))
+                Text(ui.formationLengthText, fontSize = 22.sp, fontWeight = FontWeight.Medium, color = muted, maxLines = 1)
             }
             Canvas(Modifier.fillMaxWidth().weight(1f)) {
                 val y = size.height * 0.56f
@@ -258,48 +308,64 @@ fun FormationBar(ui: FormationBarUi, groupName: String, modifier: Modifier = Mod
                 val x1 = size.width * 0.90f
                 val sorted = ui.cars.sortedBy { it.offsetKm }
                 val minKm = sorted.firstOrNull()?.offsetKm ?: 0f
-                val endKm = ui.nextStopOffsetKm ?: ((sorted.lastOrNull()?.offsetKm ?: 0f) + 2f)
+                val endKm = FormationLayout.endKm(sorted, ui.nextStopOffsetKm)
                 val span = (endKm - minKm).coerceAtLeast(0.1f)
                 fun xOf(km: Float) = x0 + (x1 - x0) * ((km - minKm) / span).coerceIn(0f, 1f)
 
                 drawLine(track, Offset(size.width * 0.02f, y), Offset(size.width * 0.98f, y), strokeWidth = 10.dp.toPx(), cap = StrokeCap.Round)
                 sorted.zipWithNext().forEach { (rear, ahead) ->
-                    if (rear.gapWarn) drawLine(DriveTone.caution, Offset(xOf(rear.offsetKm), y), Offset(xOf(ahead.offsetKm), y), strokeWidth = 10.dp.toPx(), cap = StrokeCap.Round)
+                    if (rear.gapWarn) drawLine(tones.caution, Offset(xOf(rear.offsetKm), y), Offset(xOf(ahead.offsetKm), y), strokeWidth = 10.dp.toPx(), cap = StrokeCap.Round)
                 }
                 ui.nextStopName?.let { stop ->
-                    val sx = xOf(endKm)
+                    val sx = xOf(ui.nextStopOffsetKm ?: endKm)
                     drawLine(onSurface, Offset(sx, y - 16.dp.toPx()), Offset(sx, y + 16.dp.toPx()), strokeWidth = 4.dp.toPx(), cap = StrokeCap.Round)
                     val t = measurer.measure(stop, stopStyle)
                     val iconSize = 24.dp.toPx()
                     val totalW = iconSize + 8.dp.toPx() + t.size.width
                     val left = (sx - totalW / 2f).coerceAtMost(size.width - totalW - 4.dp.toPx())
-                    drawFuel(Offset(left, y - 60.dp.toPx() - iconSize / 2f), iconSize, DriveTone.info)
+                    drawFuel(Offset(left, y - 60.dp.toPx() - iconSize / 2f), iconSize, tones.info)
                     drawText(t, topLeft = Offset(left + iconSize + 8.dp.toPx(), y - 60.dp.toPx() - t.size.height / 2f))
                 }
                 val dest = measurer.measure(ui.destinationText, destStyle)
                 drawText(dest, topLeft = Offset(size.width - dest.size.width, y + 26.dp.toPx()))
 
                 val r = 19.dp.toPx()
-                sorted.forEach { car ->
-                    val cx = xOf(car.offsetKm)
-                    val color = Color(car.colorArgb)
-                    if (car.isMe) drawCircle(color.copy(alpha = 0.25f), r + 10.dp.toPx(), Offset(cx, y))
-                    drawCircle(color, r, Offset(cx, y))
-                    if (car.offline) drawCircle(onSurface.copy(alpha = 0.5f), r, Offset(cx, y), style = Stroke(3.dp.toPx()))
-                    if (car.isLeader) drawCircle(Color.White, 6.dp.toPx(), Offset(cx, y))
-                    if (car.isMe) drawCircle(Color.White, r, Offset(cx, y), style = Stroke(3.dp.toPx()))
+                val xs = sorted.map { xOf(it.offsetKm) }
+                val groups = FormationLayout.clusters(xs, 2 * r + 8.dp.toPx())
+                val myKm = sorted.firstOrNull { it.isMe }?.offsetKm
+                data class Cluster(val cars: List<FormationCar>, val cx: Float)
+                val clusters = groups.map { g -> Cluster(g.map { sorted[it] }, g.map { xs[it] }.average().toFloat()) }
+                clusters.forEach { c ->
+                    // 자리는 대열 순서대로(뒤 → 앞), 그리는 순서는 내 차를 맨 마지막(맨 위)
+                    val placedXs = if (c.cars.size == 1) listOf(c.cx) else FormationLayout.stackXs(c.cars.size, c.cx, r * 0.9f)
+                    val placed = c.cars.zip(placedXs).sortedBy { it.first.isMe }
+                    placed.forEach { (car, cx) ->
+                        val color = Color(car.colorArgb)
+                        if (car.isMe) drawCircle(color.copy(alpha = 0.25f), r + 10.dp.toPx(), Offset(cx, y))
+                        drawCircle(color, r, Offset(cx, y))
+                        if (car.offline) drawCircle(onSurface.copy(alpha = 0.5f), r, Offset(cx, y), style = Stroke(3.dp.toPx()))
+                        if (car.isLeader) drawCircle(Color.White, 6.dp.toPx(), Offset(cx, y))
+                        if (car.isMe || c.cars.size > 1) drawCircle(Color.White, r, Offset(cx, y), style = Stroke(if (car.isMe) 3.dp.toPx() else 1.5.dp.toPx()))
+                    }
                 }
-                val (names, nameStyle) = fitLabels(measurer, sorted.map { Label(xOf(it.offsetKm), it.name) }, nameStyleOf, 8.dp.toPx(), ::shortName)
-                names.forEachIndexed { i, l ->
-                    val t = measurer.measure(l.text, nameStyle)
-                    val top = y - 52.dp.toPx() - t.size.height / 2f
+                val fitted = fitLabels(measurer, clusters.map { Label(it.cx, FormationLayout.clusterLabel(it.cars.map { car -> car.name })) }, nameStyleOf, 8.dp.toPx(), ::shortName)
+                fitted.labels.forEachIndexed { i, l ->
+                    val t = measurer.measure(l.text, fitted.style)
+                    // 끝까지 겹치면(아주 촘촘한 대열) 홀수 번째를 한 줄 위로 — 겹쳐 그리지 않는다
+                    val raise = if (!fitted.fits && i % 2 == 1) 30.dp.toPx() else 0f
+                    val top = y - 52.dp.toPx() - raise - t.size.height / 2f
                     drawText(t, topLeft = Offset(l.cx - t.size.width / 2f, top))
-                    if (sorted[i].lowEnergy) drawFuel(Offset(l.cx + t.size.width / 2f + 4.dp.toPx(), top + t.size.height / 2f - 9.dp.toPx()), 18.dp.toPx(), DriveTone.caution)
+                    if (clusters[i].cars.any { it.lowEnergy }) drawFuel(Offset(l.cx + t.size.width / 2f + 4.dp.toPx(), top + t.size.height / 2f - 9.dp.toPx()), 18.dp.toPx(), tones.caution)
                 }
-                val gapCars = sorted.filter { it.gapToMeText != null }
-                val (gapLabels, gapStyle) = fitLabels(measurer, gapCars.map { Label(xOf(it.offsetKm), it.gapToMeText!!) }, gapStyleOf, 6.dp.toPx()) { it.replace(" km", "") }
-                gapLabels.forEachIndexed { i, l ->
-                    val st = if (gapCars[i].gapWarn) gapWarnStyleOf(gapStyle.fontSize.value.toInt()) else gapStyle
+                // 간격 라벨 — 묶음마다 하나(내 차 묶음은 없음). 묶음에서 내 차에 가장 가까운 차의 간격
+                val gapPicks = clusters.mapNotNull { c ->
+                    if (c.cars.any { it.isMe }) return@mapNotNull null
+                    val pick = c.cars.filter { it.gapToMeText != null }.minByOrNull { kotlin.math.abs(it.offsetKm - (myKm ?: it.offsetKm)) } ?: return@mapNotNull null
+                    c.cx to pick
+                }
+                val gaps = fitLabels(measurer, gapPicks.map { (cx, car) -> Label(cx, car.gapToMeText!!) }, gapStyleOf, 6.dp.toPx()) { it.replace(" km", "") }
+                gaps.labels.forEachIndexed { i, l ->
+                    val st = if (gapPicks[i].second.gapWarn) gapWarnStyleOf(gaps.style.fontSize.value.toInt()) else gaps.style
                     val t = measurer.measure(l.text, st)
                     drawText(t, topLeft = Offset(l.cx - t.size.width / 2f, y + 30.dp.toPx()))
                 }
@@ -330,7 +396,8 @@ fun FormationLadder(ui: FormationBarUi, groupName: String, modifier: Modifier = 
     val track = MaterialTheme.colorScheme.surfaceVariant
     val nameStyle = TextStyle(fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
     val gapStyle = TextStyle(fontSize = 22.sp, color = muted)
-    val gapWarnStyle = TextStyle(fontSize = 22.sp, color = DriveTone.caution, fontWeight = FontWeight.SemiBold)
+    val tones = DriveTone.tones()
+    val gapWarnStyle = TextStyle(fontSize = 22.sp, color = tones.caution, fontWeight = FontWeight.SemiBold)
     val stopStyle = TextStyle(fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
     val destStyle = TextStyle(fontSize = 20.sp, color = muted)
     Surface(modifier, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
@@ -346,12 +413,12 @@ fun FormationLadder(ui: FormationBarUi, groupName: String, modifier: Modifier = 
                 val n = sorted.size
                 fun yOf(rank: Int) = if (n <= 1) (top + bottom) / 2 else bottom - (bottom - top) * rank / (n - 1)
                 drawLine(track, Offset(x, top - 24.dp.toPx()), Offset(x, bottom), strokeWidth = 10.dp.toPx(), cap = StrokeCap.Round)
-                sorted.forEachIndexed { i, rear -> if (i < n - 1 && rear.gapWarn) drawLine(DriveTone.caution, Offset(x, yOf(i)), Offset(x, yOf(i + 1)), strokeWidth = 10.dp.toPx(), cap = StrokeCap.Round) }
+                sorted.forEachIndexed { i, rear -> if (i < n - 1 && rear.gapWarn) drawLine(tones.caution, Offset(x, yOf(i)), Offset(x, yOf(i + 1)), strokeWidth = 10.dp.toPx(), cap = StrokeCap.Round) }
                 ui.nextStopName?.let { stop ->
                     val sy = top - 24.dp.toPx()
                     drawLine(onSurface, Offset(x - 14.dp.toPx(), sy), Offset(x + 14.dp.toPx(), sy), strokeWidth = 4.dp.toPx(), cap = StrokeCap.Round)
                     val iconSize = 24.dp.toPx()
-                    drawFuel(Offset(x + 28.dp.toPx(), sy - iconSize / 2f), iconSize, DriveTone.info)
+                    drawFuel(Offset(x + 28.dp.toPx(), sy - iconSize / 2f), iconSize, tones.info)
                     val t = measurer.measure(stop, stopStyle)
                     drawText(t, topLeft = Offset(x + 28.dp.toPx() + iconSize + 8.dp.toPx(), sy - t.size.height / 2f))
                 }
@@ -369,7 +436,7 @@ fun FormationLadder(ui: FormationBarUi, groupName: String, modifier: Modifier = 
                     val tx = x + 34.dp.toPx()
                     drawText(name, topLeft = Offset(tx, cy - name.size.height / 2f))
                     var cursor = tx + name.size.width + 10.dp.toPx()
-                    if (car.lowEnergy) { drawFuel(Offset(cursor, cy - 10.dp.toPx()), 20.dp.toPx(), DriveTone.caution); cursor += 34.dp.toPx() }
+                    if (car.lowEnergy) { drawFuel(Offset(cursor, cy - 10.dp.toPx()), 20.dp.toPx(), tones.caution); cursor += 34.dp.toPx() }
                     car.gapToMeText?.let { g ->
                         val t = measurer.measure(g, if (car.gapWarn) gapWarnStyle else gapStyle)
                         drawText(t, topLeft = Offset(cursor, cy - t.size.height / 2f))
@@ -392,12 +459,30 @@ private fun CardBox(modifier: Modifier, fill: Boolean, content: @Composable () -
     }
 }
 
+/**
+ * 그룹 도착 카드. 도착 예상을 하나도 모르면(순정 내비 안내 전, [ArrivalCardUi.noEtaPlace]) 84sp "—" 대신 "도착 예상 시각 없음" +
+ * "순정 내비에서 {목적지} 안내를 시작하면…" 을 보이고, 정차 중이면 [목적지 안내 시작](NaviHelper requestRoute — 4-3·5-1).
+ */
 @Composable
-fun ArrivalCard(ui: ArrivalCardUi, modifier: Modifier = Modifier, big: Boolean = false) {
+fun ArrivalCard(ui: ArrivalCardUi, modifier: Modifier = Modifier, big: Boolean = false, onStartGuidance: (() -> Unit)? = null) {
     val numSp = if (big) 84.sp else 56.sp
     val subSp = if (big) 24.sp else 20.sp
     CardBox(modifier, fill = big) {
         Text(stringResource(R.string.dash_group_arrival), fontSize = subSp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        val place = ui.noEtaPlace
+        if (place != null) {
+            Text(stringResource(R.string.dash_no_eta), fontSize = if (big) 36.sp else 28.sp, lineHeight = if (big) 44.sp else 34.sp, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.dash_no_eta_hint, place), fontSize = if (big) 22.sp else 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            onStartGuidance?.let { start ->
+                Spacer(Modifier.height(4.dp))
+                Button(onClick = start, modifier = Modifier.heightIn(min = 76.dp), shape = RoundedCornerShape(18.dp)) {
+                    Icon(EventIcons.vectorOf(EventIconKind.ROUTE), contentDescription = null, modifier = Modifier.size(28.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text(stringResource(R.string.dash_start_guidance, place), fontSize = 22.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            return@CardBox
+        }
         Row(verticalAlignment = Alignment.Bottom) {
             Text(ui.groupArrivalText, fontSize = numSp, lineHeight = numSp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.width(16.dp))
@@ -417,6 +502,7 @@ fun ArrivalCard(ui: ArrivalCardUi, modifier: Modifier = Modifier, big: Boolean =
 fun NextStopCard(ui: NextStopCardUi, modifier: Modifier = Modifier, compact: Boolean = false, big: Boolean = false) {
     val numSp = if (big) 84.sp else 56.sp
     val subSp = if (big) 24.sp else 20.sp
+    val tones = DriveTone.tones()
     CardBox(modifier, fill = big) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(stringResource(R.string.dash_next_stop), fontSize = subSp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -424,13 +510,13 @@ fun NextStopCard(ui: NextStopCardUi, modifier: Modifier = Modifier, compact: Boo
             Text(ui.name, fontSize = if (big) 32.sp else 26.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
             if (ui.fuelAvailable) Row(verticalAlignment = Alignment.CenterVertically) {
-                Canvas(Modifier.size(24.dp)) { drawFuel(Offset.Zero, size.height, DriveTone.info) }
+                Canvas(Modifier.size(24.dp)) { drawFuel(Offset.Zero, size.height, tones.info) }
                 Spacer(Modifier.width(6.dp)); Text(stringResource(R.string.dash_fuel), fontSize = subSp)
             }
             if (ui.chargeAvailable) {
                 Spacer(Modifier.width(14.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Canvas(Modifier.size(24.dp)) { drawBolt(size, DriveTone.info) }
+                    Canvas(Modifier.size(24.dp)) { drawBolt(size, tones.info) }
                     Spacer(Modifier.width(6.dp)); Text(stringResource(R.string.dash_charge), fontSize = subSp)
                 }
             }
@@ -444,15 +530,18 @@ fun NextStopCard(ui: NextStopCardUi, modifier: Modifier = Modifier, compact: Boo
                 Text(c.etaText, fontSize = subSp, fontWeight = if (c.latest) FontWeight.Bold else FontWeight.Normal)
             }
         }
-        val (icon, color) = when (ui.reachable) {
-            true -> Icons.Filled.CheckCircle to DriveTone.info
-            false -> Icons.Filled.Warning to DriveTone.caution
-            null -> Icons.Filled.Info to MaterialTheme.colorScheme.onSurfaceVariant
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(if (big) 30.dp else 24.dp))
-            Spacer(Modifier.width(10.dp))
-            Text(ui.reachableText, fontSize = subSp, fontWeight = FontWeight.Medium, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        // 도달 가능 여부를 모르면(아직 계산 안 함) 아이콘 + "—" 줄을 그리지 않는다(E121)
+        if (ui.reachable != null || ui.reachableText != DriveFormat.DASH) {
+            val (icon, color) = when (ui.reachable) {
+                true -> Icons.Filled.CheckCircle to tones.info
+                false -> Icons.Filled.Warning to tones.caution
+                null -> Icons.Filled.Info to MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(if (big) 30.dp else 24.dp))
+                Spacer(Modifier.width(10.dp))
+                Text(ui.reachableText, fontSize = subSp, fontWeight = FontWeight.Medium, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
     }
 }
@@ -471,15 +560,17 @@ fun DrawScope.drawBolt(size: Size, color: Color) {
 @Composable
 fun RestRow(ui: MyDriveLineUi, modifier: Modifier = Modifier, big: Boolean = false) {
     val sp = if (big) 30.sp else 24.sp
-    val warnColor = if (ui.drivingTimeWarn) DriveTone.caution else MaterialTheme.colorScheme.onSurface
+    val tones = DriveTone.tones()
+    val warnColor = if (ui.drivingTimeWarn) tones.caution else MaterialTheme.colorScheme.onSurface
     Surface(modifier, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
         Row(Modifier.padding(horizontal = 20.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (ui.drivingTimeWarn) { Icon(Icons.Filled.Warning, contentDescription = null, tint = DriveTone.caution, modifier = Modifier.size(30.dp)); Spacer(Modifier.width(10.dp)) }
+            if (ui.drivingTimeWarn) { Icon(Icons.Filled.Warning, contentDescription = null, tint = tones.caution, modifier = Modifier.size(30.dp)); Spacer(Modifier.width(10.dp)) }
             Text(ui.drivingTimeText, fontSize = sp, fontWeight = FontWeight.SemiBold, color = warnColor)
-            if (ui.drivingTimeWarn) { Spacer(Modifier.width(12.dp)); Text(stringResource(R.string.dash_rest_hint), fontSize = if (big) 24.sp else 20.sp, color = DriveTone.caution) }
+            if (ui.drivingTimeWarn) { Spacer(Modifier.width(12.dp)); Text(stringResource(R.string.dash_rest_hint), fontSize = if (big) 24.sp else 20.sp, color = tones.caution) }
+            MyEnergy(ui, if (big) 24.sp else 20.sp)
             Spacer(Modifier.weight(1f))
             ui.restSuggestionText?.let { rest ->
-                Canvas(Modifier.size(if (big) 30.dp else 24.dp)) { drawFuel(Offset.Zero, size.height, DriveTone.info) }
+                Canvas(Modifier.size(if (big) 30.dp else 24.dp)) { drawFuel(Offset.Zero, size.height, tones.info) }
                 Spacer(Modifier.width(10.dp))
                 Text(rest, fontSize = sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
@@ -491,6 +582,7 @@ fun RestRow(ui: MyDriveLineUi, modifier: Modifier = Modifier, big: Boolean = fal
 @Composable
 fun MyDriveLine(ui: MyDriveLineUi, modifier: Modifier = Modifier, compact: Boolean = false, big: Boolean = false) {
     val signSize = if (big) 76.dp else 64.dp
+    val tones = DriveTone.tones()
     Surface(modifier, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(24.dp)) {
@@ -509,7 +601,7 @@ fun MyDriveLine(ui: MyDriveLineUi, modifier: Modifier = Modifier, compact: Boole
                 // 회전 안내가 없으면(정차 대시보드 — 회전은 순정 내비 몫) 그 자리에 다음 휴식 추천
                 if (ui.nextTurnText == null) ui.restSuggestionText?.let { rest ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Canvas(Modifier.size(if (big) 30.dp else 24.dp)) { drawFuel(Offset.Zero, size.height, DriveTone.info) }
+                        Canvas(Modifier.size(if (big) 30.dp else 24.dp)) { drawFuel(Offset.Zero, size.height, tones.info) }
                         Spacer(Modifier.width(10.dp))
                         Text(rest, fontSize = if (big) 28.sp else 24.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
@@ -524,11 +616,28 @@ fun MyDriveLine(ui: MyDriveLineUi, modifier: Modifier = Modifier, compact: Boole
 
 @Composable
 private fun DrivingTime(ui: MyDriveLineUi, sp: TextUnit) {
+    val tones = DriveTone.tones()
     Row(verticalAlignment = Alignment.CenterVertically) {
-        if (ui.drivingTimeWarn) { Icon(Icons.Filled.Warning, contentDescription = null, tint = DriveTone.caution, modifier = Modifier.size(26.dp)); Spacer(Modifier.width(8.dp)) }
-        Text(ui.drivingTimeText, fontSize = sp, color = if (ui.drivingTimeWarn) DriveTone.caution else MaterialTheme.colorScheme.onSurface, fontWeight = if (ui.drivingTimeWarn) FontWeight.SemiBold else FontWeight.Normal)
-        if (ui.drivingTimeWarn) { Spacer(Modifier.width(10.dp)); Text(stringResource(R.string.dash_rest_hint), fontSize = sp, color = DriveTone.caution) }
+        if (ui.drivingTimeWarn) { Icon(Icons.Filled.Warning, contentDescription = null, tint = tones.caution, modifier = Modifier.size(26.dp)); Spacer(Modifier.width(8.dp)) }
+        Text(ui.drivingTimeText, fontSize = sp, color = if (ui.drivingTimeWarn) tones.caution else MaterialTheme.colorScheme.onSurface, fontWeight = if (ui.drivingTimeWarn) FontWeight.SemiBold else FontWeight.Normal)
+        if (ui.drivingTimeWarn) { Spacer(Modifier.width(10.dp)); Text(stringResource(R.string.dash_rest_hint), fontSize = sp, color = tones.caution) }
+        MyEnergy(ui, sp)
     }
+}
+
+/** 내 차 상태(5-3) — 차량 SDK 잔량("내 차 배터리 82%"). 저잔량이면 주의 색 */
+@Composable
+private fun MyEnergy(ui: MyDriveLineUi, sp: TextUnit) {
+    val pct = ui.myEnergyPct ?: return
+    val low = pct <= app.donghaeng.car.surface.FloatingPanelMapper.LOW_ENERGY_PCT
+    Spacer(Modifier.width(18.dp))
+    Text(
+        stringResource(if (ui.myEnergyEv) R.string.dash_my_energy_soc else R.string.dash_my_energy_fuel, pct),
+        fontSize = sp,
+        color = if (low) DriveTone.tones().caution else MaterialTheme.colorScheme.onSurfaceVariant,
+        fontWeight = if (low) FontWeight.SemiBold else FontWeight.Normal,
+        maxLines = 1,
+    )
 }
 
 fun DrawScope.drawTurn(kind: TurnKind, size: Size, color: Color) {
@@ -562,7 +671,7 @@ fun EventBanner(ui: EventBannerUi, modifier: Modifier = Modifier, big: Boolean =
     val alpha = (if (faded && !hl) 0.55f else 1f) * highlightAlpha(ui.highlight)
     Surface(modifier.heightIn(min = if (big) 92.dp else 72.dp).alpha(alpha), shape = RoundedCornerShape(20.dp), color = if (hl) DriveTone.danger else color.copy(alpha = 0.16f)) {
         Row(Modifier.padding(horizontal = 22.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(DriveTone.icon(ui.tone), contentDescription = null, tint = if (hl) Color.White else color, modifier = Modifier.size(if (big) 42.dp else 34.dp))
+            Icon(EventIcons.of(ui.type, ui.tone), contentDescription = null, tint = if (hl) Color.White else color, modifier = Modifier.size(if (big) 42.dp else 34.dp))
             Spacer(Modifier.width(16.dp))
             Text(ui.text, color = if (hl) Color.White else Color.Unspecified, fontSize = if (big) 32.sp else 26.sp, lineHeight = if (big) 40.sp else 32.sp, fontWeight = if (hl) FontWeight.Bold else FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
@@ -583,6 +692,9 @@ fun BottomBar(ui: DriveDashboardUi, onPtt: () -> Unit, onOpenNavi: () -> Unit, c
         else -> DriveTone.ptt
     }
     val content = if (recording || confirming) Color.White else DriveTone.onPtt
+    val tones = DriveTone.tones()
+    // 주간(흰 바탕)에서는 라임 버튼 경계가 거의 안 보인다(1.1:1) — 진한 테두리를 함께 그린다(3-3)
+    val pttBorder = if (!recording && !confirming && DriveTone.isLightBackground()) BorderStroke(3.dp, DriveTone.pttBorderLight) else null
     Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             Column(Modifier.weight(1.3f), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -591,6 +703,7 @@ fun BottomBar(ui: DriveDashboardUi, onPtt: () -> Unit, onOpenNavi: () -> Unit, c
                     modifier = Modifier.fillMaxWidth().height(84.dp),
                     shape = RoundedCornerShape(22.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = container, contentColor = content),
+                    border = pttBorder,
                 ) {
                     Canvas(Modifier.size(34.dp)) { drawMic(size, content) }
                     Spacer(Modifier.width(14.dp))
@@ -607,15 +720,16 @@ fun BottomBar(ui: DriveDashboardUi, onPtt: () -> Unit, onOpenNavi: () -> Unit, c
                 when {
                     // 마이크 권한 없음 — 안내는 늘, [권한 열기]는 정차 중에만(주행 중 입력 UI 비활성, CLAUDE.md 규칙 6)
                     ui.ptt.micDenied -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
-                        Icon(Icons.Filled.Warning, contentDescription = null, tint = DriveTone.caution, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Filled.Warning, contentDescription = null, tint = tones.caution, modifier = Modifier.size(22.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text(stringResource(R.string.ptt_mic_denied), fontSize = 16.sp, color = DriveTone.caution, fontWeight = FontWeight.SemiBold)
+                        Text(stringResource(R.string.ptt_mic_denied), fontSize = 20.sp, color = tones.caution, fontWeight = FontWeight.SemiBold)
                         if (ui.parked && onOpenMicPermission != null) {
-                            Spacer(Modifier.width(6.dp))
-                            TextButton(onClick = onOpenMicPermission, modifier = Modifier.height(36.dp)) { Text(stringResource(R.string.ptt_open_mic_permission), fontSize = 16.sp) }
+                            Spacer(Modifier.width(8.dp))
+                            OutlinedButton(onClick = onOpenMicPermission, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.ptt_open_mic_permission), fontSize = 20.sp) }
                         }
                     }
-                    ui.pttKeyHint -> Text(stringResource(R.string.dash_ptt_hint), fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+                    // 핸들 버튼 안내 — 주행 중에도 보이는 보조 글자라 18sp 이상(3-7·5-6)
+                    ui.pttKeyHint -> Text(stringResource(R.string.dash_ptt_hint), fontSize = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
                 }
             }
             OutlinedButton(onClick = onOpenNavi, modifier = Modifier.weight(1f).height(84.dp), shape = RoundedCornerShape(22.dp)) {
@@ -623,14 +737,26 @@ fun BottomBar(ui: DriveDashboardUi, onPtt: () -> Unit, onOpenNavi: () -> Unit, c
                 Spacer(Modifier.width(10.dp))
                 Text(stringResource(R.string.dash_open_navi), fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
             }
-            Column(horizontalAlignment = Alignment.End, modifier = Modifier.widthIn(min = if (compact) 84.dp else 110.dp)) {
+            // 실시간 연결 상태(E038·4-9): 연결됨 / 다시 연결 중 / 연결 끊김 + 끊긴 채 오래된 값이면 "2분 전 정보"
+            Column(horizontalAlignment = Alignment.End, modifier = Modifier.widthIn(min = if (compact) 120.dp else 180.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(14.dp).clip(CircleShape).background(if (ui.connected) DriveTone.info else DriveTone.caution))
+                    Box(Modifier.size(16.dp).clip(CircleShape).background(if (ui.connected) tones.info else tones.caution))
                     Spacer(Modifier.width(8.dp))
-                    Text(if (ui.connected) stringResource(R.string.dash_connected) else stringResource(R.string.dash_reconnecting), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        when {
+                            ui.connected -> stringResource(R.string.dash_connected)
+                            ui.offline -> stringResource(R.string.dash_offline)
+                            else -> stringResource(R.string.dash_reconnecting)
+                        },
+                        fontSize = 20.sp,
+                        fontWeight = if (ui.connected) FontWeight.Normal else FontWeight.SemiBold,
+                        color = if (ui.connected) MaterialTheme.colorScheme.onSurfaceVariant else tones.caution,
+                        maxLines = 1,
+                    )
                 }
+                ui.staleText?.let { Text(stringResource(R.string.dash_stale, it), fontSize = 20.sp, color = tones.caution, fontWeight = FontWeight.SemiBold, maxLines = 1) }
                 val latency = ui.latencyText?.let { stringResource(R.string.drive_latency, it) } ?: ui.latencyMs?.let { stringResource(R.string.dash_latency, it) }
-                latency?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, textAlign = TextAlign.End) }
+                latency?.let { Text(it, fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, textAlign = TextAlign.End) }
             }
         }
     }
@@ -714,7 +840,7 @@ fun PttCenterOverlay(ptt: PttUi, topInset: Dp, modifier: Modifier = Modifier) {
                         Spacer(Modifier.height(20.dp))
                         Waveform(ptt.level, DriveTone.danger, Modifier.width(520.dp).height(96.dp), bars = 21)
                         Spacer(Modifier.height(12.dp))
-                        Text(stringResource(R.string.dash_ptt_recording), fontSize = 32.sp, fontWeight = FontWeight.SemiBold, color = DriveTone.danger)
+                        Text(stringResource(R.string.dash_ptt_recording), fontSize = 32.sp, fontWeight = FontWeight.SemiBold, color = DriveTone.tones().danger)
                         Row(verticalAlignment = Alignment.Bottom) {
                             Text("${ptt.seconds}", fontSize = 120.sp, lineHeight = 120.sp, fontWeight = FontWeight.Bold)
                             Spacer(Modifier.width(10.dp))
@@ -795,7 +921,7 @@ fun ParkedExtras(
         if (ui.presets.isNotEmpty()) Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
             Row(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(stringResource(R.string.dash_presets), fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                ui.presets.forEach { p -> OutlinedButton(onClick = { onPreset(p) }, modifier = Modifier.height(60.dp), shape = RoundedCornerShape(16.dp)) { Text(p, fontSize = 20.sp) } }
+                ui.presets.forEach { p -> OutlinedButton(onClick = { onPreset(p) }, modifier = Modifier.height(76.dp), shape = RoundedCornerShape(16.dp)) { Text(p, fontSize = 20.sp) } }
             }
         }
         val lists: @Composable (Modifier) -> Unit = { m ->
@@ -803,12 +929,12 @@ fun ParkedExtras(
                 Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(stringResource(R.string.dash_recent_events), fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
-                        onOpenEvents?.let { open -> TextButton(onClick = open) { Text(stringResource(R.string.surface_more_events), fontSize = 18.sp) } }
+                        onOpenEvents?.let { open -> OutlinedButton(onClick = open, modifier = Modifier.heightIn(min = 56.dp), shape = RoundedCornerShape(14.dp)) { Text(stringResource(R.string.surface_more_events), fontSize = 20.sp) } }
                     }
                     if (ui.recentEvents.isEmpty()) Text(stringResource(R.string.dash_no_event), fontSize = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     ui.recentEvents.take(5).forEach { e ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(DriveTone.icon(e.tone), contentDescription = null, tint = DriveTone.color(e.tone), modifier = Modifier.size(22.dp))
+                            Icon(EventIcons.of(e.type, e.tone), contentDescription = null, tint = DriveTone.color(e.tone), modifier = Modifier.size(24.dp))
                             Spacer(Modifier.width(10.dp))
                             Text(e.text, fontSize = 20.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(e.whenText, fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -825,9 +951,10 @@ fun ParkedExtras(
                 // 지난 무전(F16) — 탭하면 다시 듣기. 없으면 숨긴다
                 if (ui.pastPtt.isNotEmpty()) PastPttBlock(ui.pastPtt, onReplayPast)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedButton(onClick = onManageGroup, modifier = Modifier.weight(1f).height(64.dp), shape = RoundedCornerShape(16.dp)) { Text(stringResource(R.string.dash_manage_group), fontSize = 20.sp) }
-                    OutlinedButton(onClick = onSettings, modifier = Modifier.weight(1f).height(64.dp), shape = RoundedCornerShape(16.dp)) { Text(stringResource(R.string.dash_settings), fontSize = 20.sp) }
-                    onHome?.let { home -> OutlinedButton(onClick = home, modifier = Modifier.weight(0.7f).height(64.dp), shape = RoundedCornerShape(16.dp)) { Text(stringResource(R.string.surface_home), fontSize = 20.sp) } }
+                    // 정차 블록 버튼 — 차량 기준 76 dp(E037)
+                    OutlinedButton(onClick = onManageGroup, modifier = Modifier.weight(1f).height(76.dp), shape = RoundedCornerShape(16.dp)) { Text(stringResource(R.string.dash_manage_group), fontSize = 22.sp) }
+                    OutlinedButton(onClick = onSettings, modifier = Modifier.weight(1f).height(76.dp), shape = RoundedCornerShape(16.dp)) { Text(stringResource(R.string.dash_settings), fontSize = 22.sp) }
+                    onHome?.let { home -> OutlinedButton(onClick = home, modifier = Modifier.weight(0.7f).height(76.dp), shape = RoundedCornerShape(16.dp)) { Text(stringResource(R.string.surface_home), fontSize = 22.sp) } }
                 }
             }
         }
@@ -844,20 +971,20 @@ private fun UnsentPttBlock(rows: List<UnsentPttUi>, onResend: (String) -> Unit, 
             Text(stringResource(R.string.dash_unsent_ptt, rows.size), fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             rows.forEach { u ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    val tint = if (u.failed) DriveTone.caution else MaterialTheme.colorScheme.onSurfaceVariant
+                    val tint = if (u.failed) DriveTone.tones().caution else MaterialTheme.colorScheme.onSurfaceVariant
                     Canvas(Modifier.size(22.dp)) { drawMic(size, tint) }
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
                         Text(u.text, fontSize = 20.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(u.reasonText, fontSize = 16.sp, color = tint, maxLines = 1)
                     }
-                    OutlinedButton(onClick = { onResend(u.id) }, modifier = Modifier.height(52.dp), shape = RoundedCornerShape(14.dp)) {
+                    OutlinedButton(onClick = { onResend(u.id) }, modifier = Modifier.heightIn(min = 56.dp), shape = RoundedCornerShape(14.dp)) {
                         Icon(Icons.Filled.Send, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(6.dp))
                         Text(stringResource(R.string.dash_resend), fontSize = 18.sp)
                     }
                     Spacer(Modifier.width(6.dp))
-                    TextButton(onClick = { onDelete(u.id) }, modifier = Modifier.height(52.dp)) { Text(stringResource(R.string.dash_delete_unsent), fontSize = 18.sp) }
+                    TextButton(onClick = { onDelete(u.id) }, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.dash_delete_unsent), fontSize = 20.sp) }
                 }
             }
         }
@@ -875,7 +1002,7 @@ private fun PastPttBlock(rows: List<PastPttUi>, onReplay: (String) -> Unit) {
                 Text(stringResource(R.string.dash_past_ptt_hint), fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             rows.forEach { v ->
-                Surface(onClick = { onReplay(v.voiceId) }, shape = RoundedCornerShape(14.dp), color = Color.Transparent, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
+                Surface(onClick = { onReplay(v.voiceId) }, shape = RoundedCornerShape(14.dp), color = Color.Transparent, modifier = Modifier.fillMaxWidth().heightIn(min = 76.dp)) {
                     Row(Modifier.padding(horizontal = 4.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(14.dp).clip(CircleShape).background(v.colorArgb?.let { Color(it) } ?: MaterialTheme.colorScheme.onSurfaceVariant))
                         Spacer(Modifier.width(10.dp))

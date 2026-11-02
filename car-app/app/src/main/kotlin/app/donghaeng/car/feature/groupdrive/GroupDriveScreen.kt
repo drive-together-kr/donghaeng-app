@@ -93,6 +93,10 @@ fun GroupDriveRoute(
     onOpenEvents: () -> Unit = {},
     onManageGroup: () -> Unit = onOpenInvite,
     onOpenSettings: () -> Unit = {},
+    /** 그룹이 끝난 화면의 [새 그룹](그룹 생성) */
+    onNewGroup: () -> Unit = onOpenInvite,
+    /** 그룹이 끝난 화면의 [다시 연결](페어링) — 차량 연결이 해제돼 끝났을 때 */
+    onRepair: () -> Unit = onBack,
     viewModel: GroupDriveViewModel = hiltViewModel(),
     pttViewModel: PttDashboardViewModel = hiltViewModel(),
 ) {
@@ -100,7 +104,10 @@ fun GroupDriveRoute(
     val ptt by pttViewModel.input.collectAsStateWithLifecycle()
     val dashboard = remember(state, ptt) { DriveDashboardMapper.map(state, ptt = ptt) }
     if (dashboard == null) {
-        GroupDriveScreen(state = state, onBack = onBack, onOpenInvite = onOpenInvite, onEndOrLeave = { viewModel.endOrLeave() }, onClearError = viewModel::clearError, onOpenEvents = onOpenEvents, onAcceptProposal = viewModel::acceptProposal, onDeclineProposal = viewModel::declineProposal)
+        GroupDriveScreen(
+            state = state, onBack = onBack, onOpenInvite = onOpenInvite, onEndOrLeave = { viewModel.endOrLeave() }, onClearError = viewModel::clearError, onOpenEvents = onOpenEvents,
+            onAcceptProposal = viewModel::acceptProposal, onDeclineProposal = viewModel::declineProposal, onNewGroup = onNewGroup, onRepair = onRepair,
+        )
         return
     }
     val context = LocalContext.current
@@ -132,6 +139,7 @@ fun GroupDriveRoute(
             onDeleteUnsent = pttViewModel::deleteUnsent,
             onReplayPast = pttViewModel::replay,
             onOpenMicPermission = { micLauncher.launch(Manifest.permission.RECORD_AUDIO) },
+            onStartGuidance = viewModel::startGuidance,
         )
         state.proposal?.let { p ->
             ProposalCard(state, p, viewModel::acceptProposal, viewModel::declineProposal, Modifier.align(Alignment.TopCenter).padding(top = 24.dp, start = 24.dp, end = 24.dp).widthIn(max = 960.dp))
@@ -161,6 +169,8 @@ fun GroupDriveScreen(
     onOpenEvents: () -> Unit = {},
     onAcceptProposal: () -> Unit = {},
     onDeclineProposal: () -> Unit = {},
+    onNewGroup: () -> Unit = onOpenInvite,
+    onRepair: () -> Unit = onBack,
 ) {
     var confirmLeave by remember { mutableStateOf(false) }
     Scaffold { innerPadding ->
@@ -169,7 +179,7 @@ fun GroupDriveScreen(
             Column(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Header(state, onBack)
                 if (state.session == null) {
-                    EndedPane(onBack)
+                    EndedPane(state.endReason ?: SessionEndReason.OTHER, isDriving = state.isDriving, onBack = onBack, onNewGroup = onNewGroup, onRepair = onRepair)
                 } else if (landscape) {
                     Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                         MemberPane(state, Modifier.weight(1f).fillMaxHeight())
@@ -195,8 +205,8 @@ fun GroupDriveScreen(
             onDismissRequest = { confirmLeave = false },
             title = { Text(if (leader) stringResource(R.string.drive_confirm_end_title) else stringResource(R.string.drive_confirm_leave_title)) },
             text = { Text(if (leader) stringResource(R.string.drive_confirm_end_text) else stringResource(R.string.drive_confirm_leave_text)) },
-            confirmButton = { TextButton(onClick = { confirmLeave = false; onEndOrLeave() }) { Text(if (leader) stringResource(R.string.group_btn_end) else stringResource(R.string.group_btn_leave)) } },
-            dismissButton = { TextButton(onClick = { confirmLeave = false }) { Text(stringResource(R.string.drive_cancel)) } },
+            confirmButton = { Button(onClick = { confirmLeave = false; onEndOrLeave() }, enabled = !state.isDriving) { Text(if (leader) stringResource(R.string.group_btn_end) else stringResource(R.string.group_btn_leave)) } },
+            dismissButton = { OutlinedButton(onClick = { confirmLeave = false }) { Text(stringResource(R.string.drive_cancel)) } },
         )
     }
     state.error?.let { message ->
@@ -232,7 +242,7 @@ private fun Header(state: GroupDriveUiState, onBack: () -> Unit) {
 private fun ConnectionChip(state: GroupDriveUiState) {
     val (label, color) = when (state.connection) {
         ConnState.CONNECTED -> stringResource(R.string.drive_conn_connected) to MaterialTheme.colorScheme.secondary
-        ConnState.RECONNECTING -> stringResource(R.string.drive_conn_reconnecting) to MaterialTheme.colorScheme.tertiary
+        ConnState.RECONNECTING -> stringResource(R.string.drive_conn_reconnecting) to MaterialTheme.colorScheme.tertiary   // 주간 #8A5A00 — 흰 바탕 대비 4.5:1 이상(E041)
         ConnState.OFFLINE -> stringResource(R.string.drive_conn_offline) to MaterialTheme.colorScheme.error
     }
     Column(horizontalAlignment = Alignment.End) {
@@ -337,20 +347,29 @@ private fun MapPane(state: GroupDriveUiState, modifier: Modifier) {
     }
 }
 
-/** T28 — 선두 경로 제안: 따라가기/아니요. 주행 중에는 버튼을 막고 30초 뒤 자동 거절(남은 초 표시) */
+/**
+ * T28 — 선두 경로 제안: 따라가기/아니요. 주행 중에는 버튼을 막는다. 아래 줄은 [GroupDriveUiState.proposalStatus] —
+ * 정차 중이면 "N초 뒤 자동으로 거절돼요", 주행 중 보류면 "정차하면 답할 수 있어요"(E006·E034), 보류 뒤 막 정차했으면 "정차를 확인하는 중이에요…".
+ */
 @Composable
 internal fun ProposalCard(state: GroupDriveUiState, p: app.donghaeng.car.domain.routesync.RouteProposal, onAccept: () -> Unit, onDecline: () -> Unit, modifier: Modifier = Modifier) {
     Card(modifier = modifier, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(stringResource(R.string.drive_proposal_title), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
             Text(p.speech, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onPrimaryContainer)
             val route = (p.waypoints.map { it.name } + p.destination.name).joinToString(" → ")
             Text(route, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onPrimaryContainer)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = onAccept, enabled = !state.isDriving, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.drive_proposal_accept)) }
-                OutlinedButton(onClick = onDecline, enabled = !state.isDriving, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.drive_proposal_decline)) }
+                Button(onClick = onAccept, enabled = !state.isDriving, modifier = Modifier.heightIn(min = 76.dp)) { Text(stringResource(R.string.drive_proposal_accept)) }
+                OutlinedButton(onClick = onDecline, enabled = !state.isDriving, modifier = Modifier.heightIn(min = 76.dp)) { Text(stringResource(R.string.drive_proposal_decline)) }
                 Spacer(Modifier.width(8.dp))
-                Text(stringResource(R.string.drive_proposal_countdown, state.proposalRemainingS ?: 0), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                val status = when (val st = state.proposalStatus) {
+                    ProposalStatus.Held -> stringResource(R.string.drive_proposal_held)
+                    ProposalStatus.Settling -> stringResource(R.string.drive_proposal_settling)
+                    is ProposalStatus.Countdown -> stringResource(R.string.drive_proposal_countdown, st.seconds.toInt())
+                    null -> ""
+                }
+                Text(status, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
             }
         }
     }
@@ -362,7 +381,7 @@ private fun EventsStrip(state: GroupDriveUiState, onOpenEvents: () -> Unit) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(stringResource(R.string.group_recent_events), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                TextButton(onClick = onOpenEvents) { Text(stringResource(R.string.drive_btn_events)) }
+                OutlinedButton(onClick = onOpenEvents) { Text(stringResource(R.string.drive_btn_events)) }
             }
             if (state.events.isEmpty()) Text(stringResource(R.string.events_empty_short), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             state.events.take(3).forEach { e ->
@@ -392,13 +411,43 @@ private fun ActionBar(state: GroupDriveUiState, onOpenInvite: () -> Unit, onLeav
     }
 }
 
+/**
+ * 그룹이 끝났을 때(E115·A115) — 끝난 이유([SessionEndReason])별 제목·설명과 주 버튼([EndedPaneSpec]): 차량 연결 해제 → [다시 연결](페어링),
+ * 나머지 → [새 그룹](그룹 생성). 주행 중에는 버튼을 막는다(규칙 6).
+ */
 @Composable
-private fun EndedPane(onBack: () -> Unit) {
-    Card {
-        Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(stringResource(R.string.drive_ended_title), style = MaterialTheme.typography.titleLarge)
-            Text(stringResource(R.string.drive_ended_text), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Button(onClick = onBack, modifier = Modifier.heightIn(min = 56.dp)) { Text(stringResource(R.string.group_back)) }
+private fun EndedPane(reason: SessionEndReason, isDriving: Boolean, onBack: () -> Unit, onNewGroup: () -> Unit, onRepair: () -> Unit) {
+    val spec = EndedPaneSpec.of(reason)
+    Card(Modifier.widthIn(max = 960.dp).fillMaxWidth()) {
+        Column(Modifier.padding(28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text(stringResource(spec.titleRes), style = MaterialTheme.typography.headlineSmall)
+            Text(stringResource(spec.textRes), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Button(
+                    onClick = if (spec.action == EndedAction.REPAIR) onRepair else onNewGroup,
+                    enabled = !isDriving,
+                    modifier = Modifier.heightIn(min = 76.dp),
+                ) { Text(stringResource(if (spec.action == EndedAction.REPAIR) R.string.drive_ended_btn_repair else R.string.drive_ended_btn_new_group)) }
+                OutlinedButton(onClick = onBack, modifier = Modifier.heightIn(min = 76.dp)) { Text(stringResource(R.string.group_back)) }
+            }
+            if (isDriving) Text(stringResource(R.string.drive_locked_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/** 끝난 화면의 주 버튼 */
+enum class EndedAction { NEW_GROUP, REPAIR }
+
+/** 끝난 이유 → 제목·설명·주 버튼(순수 — 단위 테스트) */
+data class EndedPaneSpec(val titleRes: Int, val textRes: Int, val action: EndedAction) {
+    companion object {
+        fun of(reason: SessionEndReason): EndedPaneSpec = when (reason) {
+            SessionEndReason.GROUP_ENDED -> EndedPaneSpec(R.string.drive_ended_group_ended_title, R.string.drive_ended_text, EndedAction.NEW_GROUP)
+            SessionEndReason.ENDED_WHILE_OFFLINE -> EndedPaneSpec(R.string.drive_ended_offline_title, R.string.drive_ended_offline_text, EndedAction.NEW_GROUP)
+            SessionEndReason.REMOVED -> EndedPaneSpec(R.string.drive_ended_removed_title, R.string.drive_ended_removed_text, EndedAction.NEW_GROUP)
+            SessionEndReason.LEFT -> EndedPaneSpec(R.string.drive_ended_left_title, R.string.drive_ended_text, EndedAction.NEW_GROUP)
+            SessionEndReason.UNPAIRED -> EndedPaneSpec(R.string.drive_ended_unpaired_title, R.string.drive_ended_unpaired_text, EndedAction.REPAIR)
+            SessionEndReason.OTHER -> EndedPaneSpec(R.string.drive_ended_title, R.string.drive_ended_text, EndedAction.NEW_GROUP)
         }
     }
 }
