@@ -5,6 +5,7 @@ import app.donghaeng.car.domain.model.Priority
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
@@ -158,27 +159,103 @@ class ChainedVoiceAdapter(
      * F16(무전 "보낼까요?" 뒤에만 마이크, 수신 무전은 "○○ 무전" 알림 뒤 재생): 지금 경로로 읽고 그 문장이 끝날 때까지 기다린다 — 경로와 무관하게
      * [signals] 로 판정한다(전용 꼬리표 `wait-N`; 이벤트 eventId 가 아니라 위험 강조와 섞이지 않는다). Done → SPOKEN, 화면만(NoAudio) → FALLBACK,
      * Failed·Dropped → FAILED, 상한 → TIMEOUT. 신호를 놓치지 않게 구독을 먼저 시작하고(UNDISPATCHED) 읽는다.
+     * **상한을 넘기거나 기다리던 쪽이 취소되면 그 문장을 버린다**([cancel], B012) — 늦게 나온 "보낼까요?"·"○○ 무전"이 열린 마이크·녹음 재생과
+     * 겹치지 않게. 다른 문장(급제동 HIGH 등)은 그대로 둔다. 로그 `voice: wait result=… len=… path=… ms=…`(문장 원문 없음).
      */
-    override suspend fun speakAndWait(text: String, priority: Priority, timeoutMs: Long): SpeakResult = coroutineScope {
+    override suspend fun speakAndWait(text: String, priority: Priority, timeoutMs: Long): SpeakResult {
         val tag = "wait-${waitSeq.incrementAndGet()}"
-        val end = async(start = CoroutineStart.UNDISPATCHED) {
-            _signals.first { it.tag == tag && it !is UtteranceSignal.Started }
+        val t0 = clock()
+        var ended = false
+        try {
+            val result = coroutineScope {
+                val end = async(start = CoroutineStart.UNDISPATCHED) {
+                    _signals.first { it.tag == tag && it !is UtteranceSignal.Started }
+                }
+                speak(text, priority, tag)
+                val sig = withTimeoutOrNull(timeoutMs) { end.await() }
+                if (sig == null) end.cancel() else ended = true
+                when (sig) {
+                    is UtteranceSignal.Done -> SpeakResult.SPOKEN
+                    is UtteranceSignal.NoAudio -> SpeakResult.FALLBACK
+                    is UtteranceSignal.Failed, is UtteranceSignal.Dropped -> SpeakResult.FAILED
+                    null -> SpeakResult.TIMEOUT
+                    else -> SpeakResult.UNKNOWN
+                }
+            }
+            DhLog.i("voice: wait result=$result len=${text.length} path=${currentPath} ms=${clock() - t0}")
+            return result
+        } finally {
+            // 끝 신호를 못 받았다(상한·취소) — 그 문장만 버린다(늦게 나와 마이크·재생과 겹치지 않게)
+            if (!ended) cancel(tag)
         }
-        speak(text, priority, tag)
-        val sig = withTimeoutOrNull(timeoutMs) { end.await() }
-        if (sig == null) end.cancel()
-        when (sig) {
-            is UtteranceSignal.Done -> SpeakResult.SPOKEN
-            is UtteranceSignal.NoAudio -> SpeakResult.FALLBACK
-            is UtteranceSignal.Failed, is UtteranceSignal.Dropped -> SpeakResult.FAILED
-            null -> SpeakResult.TIMEOUT
-            else -> SpeakResult.UNKNOWN
+    }
+
+    /**
+     * 두 단계 상한(RB-3, [VoiceAdapter.speakAndWaitStaged]) — 그 문장의 시작 신호(Started, 화면만이면 NoAudio)를 [startTimeoutMs] 까지, 시작한 뒤 끝 신호를
+     * [doneTimeoutMs] 까지 기다린다. 시작 없이 끝 신호가 오면(Done·Failed·Dropped) 그것으로 끝. 상한을 넘기거나 기다리던 쪽이 취소되면 [speakAndWait] 처럼
+     * 그 문장만 버린다(B012). 로그 `voice: wait result=… len=… path=… ms=… start=…ms`(문장 원문 없음).
+     */
+    override suspend fun speakAndWaitStaged(
+        text: String,
+        priority: Priority,
+        startTimeoutMs: Long,
+        doneTimeoutMs: Long,
+        onStarted: () -> Unit,
+    ): SpeakResult {
+        val tag = "wait-${waitSeq.incrementAndGet()}"
+        val t0 = clock()
+        var ended = false
+        var startMs: Long? = null
+        try {
+            val result = coroutineScope {
+                val mine = Channel<UtteranceSignal>(Channel.UNLIMITED)
+                // 신호를 놓치지 않게 구독을 먼저(UNDISPATCHED — 첫 중단 전에 구독이 걸린다) 시작하고 읽는다
+                val sub = launch(start = CoroutineStart.UNDISPATCHED) { _signals.collect { if (it.tag == tag) mine.send(it) } }
+                try {
+                    speak(text, priority, tag)
+                    var sig = withTimeoutOrNull(startTimeoutMs) { mine.receive() }
+                    if (sig is UtteranceSignal.Started || sig is UtteranceSignal.NoAudio) {
+                        startMs = clock() - t0
+                        runCatching(onStarted).onFailure { DhLog.w("voice: wait onStarted 실패 ${it.javaClass.simpleName}") }
+                    }
+                    if (sig is UtteranceSignal.Started) {
+                        sig = withTimeoutOrNull(doneTimeoutMs) {
+                            var s: UtteranceSignal = mine.receive()
+                            while (s is UtteranceSignal.Started) s = mine.receive()
+                            s
+                        }
+                    }
+                    if (sig != null) ended = true
+                    when (sig) {
+                        is UtteranceSignal.Done -> SpeakResult.SPOKEN
+                        is UtteranceSignal.NoAudio -> SpeakResult.FALLBACK
+                        is UtteranceSignal.Failed, is UtteranceSignal.Dropped -> SpeakResult.FAILED
+                        null -> SpeakResult.TIMEOUT
+                        is UtteranceSignal.Started -> SpeakResult.UNKNOWN
+                    }
+                } finally {
+                    sub.cancel()
+                }
+            }
+            DhLog.i("voice: wait result=$result len=${text.length} path=${currentPath} ms=${clock() - t0} start=${startMs?.let { "${it}ms" } ?: "-"}")
+            return result
+        } finally {
+            // 끝 신호를 못 받았다(시작 상한·끝 상한·취소) — 그 문장만 버린다(늦게 나와 마이크·재생과 겹치지 않게)
+            if (!ended) cancel(tag)
         }
     }
 
     override fun stop() {
         routes.forEach { r -> runCatching { r.stop() } }
     }
+
+    /** 꼬리표 하나만 버린다 — 모든 후보에 묻는다(그 꼬리표를 가진 후보만 반응한다). 신호는 후보가 낸다(Dropped "cancelled"·"interrupted") */
+    override fun cancel(tag: String) {
+        routes.forEach { r -> runCatching { r.cancel(tag) } }
+    }
+
+    /** 체인은 꼬리표 붙인 문장마다 끝 신호를 낸다 — 화면만(NoAudio)·speak 예외(Failed)·후보 신호(Done·Failed·Dropped) */
+    override val reportsEnd: Boolean get() = true
 
     private fun onSignal(s: UtteranceSignal) {
         synchronized(lock) {

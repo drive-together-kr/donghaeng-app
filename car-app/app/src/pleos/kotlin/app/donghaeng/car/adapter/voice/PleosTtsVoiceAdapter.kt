@@ -39,7 +39,8 @@ import java.util.Locale
  *    `stop()` 은 재생 중지(onStop), `release()` 는 서비스 연결 해제 — 시도를 놓을 때·불가 확정 때만 부른다(준비되면 앱 수명 동안 유지).
  * SERVER·HYBRID 모드는 Pleos 앱 키(registerApp)가 필요해 쓰지 않는다.
  *
- * 리스너가 문장 구분 없는 전역 콜백이라 [SerialUtterancePlayer] 가 한 문장씩 넘기고 시작·끝·시간 초과를 맞춘다(요청 → onStart 지연 측정 포함).
+ * 리스너가 문장 구분 없는 전역 콜백이라 [SerialUtterancePlayer] 가 한 문장씩 넘기고 시작·끝·시간 초과를 맞춘다(요청 → onStart 지연 측정 포함,
+ * 큐는 우선순위 → 도착순, [cancel] 은 꼬리표 하나만 버린다).
  * 오디오 포커스는 Android 후보와 같은 정책([AudioFocusGuard]). 부하가 크면 요청 → 시작 5~9 s(실측) — 위험 이벤트는 화면 강조가 먼저 뜬다(docs/05 §5.2).
  * 문장 원문은 로그에 남기지 않는다(길이만).
  */
@@ -231,6 +232,9 @@ class PleosTtsVoiceAdapter(
     }
 
     override fun stop() = player.stopAll()
+
+    /** 꼬리표 하나만 버린다(큐에서 빼거나 읽는 중이면 끊는다) — PTT 안내 시간 초과·녹음 시작(B012·B013) */
+    override fun cancel(tag: String) = player.cancel(tag)
 
     private fun onPlayerSignal(s: UtteranceSignal) {
         when (s) {

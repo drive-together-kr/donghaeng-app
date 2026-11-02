@@ -3,6 +3,8 @@ package app.donghaeng.car.adapter.speech
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.ptt.YesNo
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.filterNotNull
@@ -72,14 +74,23 @@ class RecognizerChain(
         "check-${e.javaClass.simpleName}"
     }
 
+    /**
+     * 단계별 준비를 **나란히** 한다(B064) — 차례로 하면 Pleos STT 초기화(최대 3 s)가 끝나야 Vosk 모델 적재(수 초)가 시작돼, 첫 무전의 확인 단계에서
+     * Vosk 가 아직 적재 중일 수 있다. 실패는 단계마다 로그만.
+     */
     override suspend fun prepare() {
-        stages.filter { usable(it) || (injectedWav != null && it.wavUnavailableReason() == null) }.forEach { s ->
-            try {
-                s.prepare()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                DhLog.w("ptt: recognizer ${s.kind} prepare 실패 ${e.javaClass.simpleName}")
+        val targets = stages.filter { usable(it) || (injectedWav != null && it.wavUnavailableReason() == null) }
+        coroutineScope {
+            targets.forEach { s ->
+                launch {
+                    try {
+                        s.prepare()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        DhLog.w("ptt: recognizer ${s.kind} prepare 실패 ${e.javaClass.simpleName}")
+                    }
+                }
             }
         }
     }

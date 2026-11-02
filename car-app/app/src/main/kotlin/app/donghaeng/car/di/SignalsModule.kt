@@ -173,6 +173,8 @@ object SignalsModule {
         VoiceAnnouncer(
             events = sessionManager.groupEventsReceived, myVehicleId = { sessionManager.myVehicleId }, voice = voice,
             groupState = { sessionManager.groupState.value }, clock = { clockSync.serverNow() },
+            // 그룹이 끝나거나 바뀌면 옛 그룹 문장을 버린다(B060)
+            groupIds = kotlinx.coroutines.flow.flow { sessionManager.session.collect { emit(it?.groupId) } },
         )
 
     /** T31: 서버 시각 동기화 — 시작 직후·5분마다 `GET /v1/time` 3회, 왕복 최소 표본 */

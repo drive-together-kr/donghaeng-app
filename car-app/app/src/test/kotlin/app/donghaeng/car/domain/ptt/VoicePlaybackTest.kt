@@ -47,13 +47,20 @@ class VoicePlaybackTest {
     private class RecordingVoice : VoiceAdapter {
         val waited = mutableListOf<String>()
         var announceMs = 0L
-        /** stop() 호출 수 — 알림을 읽다 끊기면 TTS 큐를 비운다 */
+        /** stop() 호출 수 — 전체 멈춤(급제동 안내까지 지운다)은 쓰지 않는다(B012) */
         var stops = 0
+        /** 기다리다 취소된 알림 수 — 체인의 speakAndWait 는 취소되면 그 알림 문장만 버린다 */
+        var cancelledWaits = 0
         override val status: StateFlow<VoiceAdapterStatus> = MutableStateFlow(VoiceAdapterStatus(ready = true))
         override suspend fun speak(text: String, priority: Priority) = Unit
         override suspend fun speakAndWait(text: String, priority: Priority, timeoutMs: Long): SpeakResult {
             waited += text
-            delay(announceMs)
+            try {
+                delay(announceMs)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                cancelledWaits++
+                throw e
+            }
             return SpeakResult.SPOKEN
         }
         override fun stop() {
@@ -310,7 +317,8 @@ class VoicePlaybackTest {
         assertFalse("알림 중(아직 소리 재생 전)", r.player.playing)
         r.playback.interrupt("ptt-press")
         runCurrent()
-        assertEquals("알림 TTS 를 멈췄다", 1, r.voice.stops)
+        assertEquals("알림 문장만 버렸다(기다림 취소 → 체인이 그 꼬리표를 취소)", 1, r.voice.cancelledWaits)
+        assertEquals("TTS 전체를 멈추지 않는다 — 같은 때 읽던 급제동 안내가 지워지지 않게(B012)", 0, r.voice.stops)
         advanceTimeBy(5_000); runCurrent()
         assertTrue("받은 무전을 재생하지 않는다", r.player.played.isEmpty())
         assertEquals(PastStatus.INTERRUPTED, r.state.past.single().status)
@@ -328,7 +336,8 @@ class VoicePlaybackTest {
         assertTrue(file.exists())
         r.session.value = null
         runCurrent()
-        assertEquals(1, r.voice.stops)
+        assertEquals(1, r.voice.cancelledWaits)
+        assertEquals(0, r.voice.stops)
         advanceTimeBy(5_000); runCurrent()
         assertTrue(r.player.played.isEmpty())
         assertTrue(r.state.past.isEmpty())

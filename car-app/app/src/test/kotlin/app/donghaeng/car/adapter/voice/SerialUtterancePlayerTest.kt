@@ -142,6 +142,64 @@ class SerialUtterancePlayerTest {
     }
 
     @Test
+    fun `HIGH goes ahead of LOW sentences already in the queue - same priority keeps arrival order (B011)`() = runTest {
+        val p = player()
+        p.enqueue("합류1", Priority.LOW, "low_1")
+        runCurrent()   // low_1 이 재생 차례
+        p.enqueue("합류2", Priority.LOW, "low_2")
+        p.enqueue("정차", Priority.LOW, "low_3")
+        p.enqueue("급제동", Priority.HIGH, "high_1")
+        p.enqueue("이탈", Priority.HIGH, "high_2")
+        p.enqueue("저잔량", Priority.NORMAL, "normal_1")
+        runCurrent()
+        // 재생 중인 문장은 HIGH 가 끊지 않는다
+        assertEquals(listOf("합류1"), backend.spoken)
+        repeat(4) { p.onStart(); runCurrent(); p.onDone(); runCurrent() }
+        assertEquals(listOf("합류1", "급제동", "이탈", "저잔량", "합류2"), backend.spoken)
+        p.onStart(); runCurrent(); p.onDone(); runCurrent()
+        assertEquals("정차", backend.spoken.last())
+    }
+
+    @Test
+    fun `cancel drops a queued sentence and interrupts the current one, other sentences stay (B012)`() = runTest {
+        val p = player()
+        p.enqueue("보낼까요?", Priority.NORMAL, "wait-1")
+        runCurrent()   // "보낼까요?" 가 재생 차례(시작을 기다림)
+        p.enqueue("급제동", Priority.HIGH, "evt_brake")
+        p.enqueue("보냈어요.", Priority.NORMAL, "ptt-1")
+        runCurrent()
+        assertEquals(listOf("보낼까요?"), backend.spoken)
+        // 대기 중인 문장 하나만 뺀다
+        p.cancel("ptt-1"); runCurrent()
+        assertTrue(signals.contains(UtteranceSignal.Dropped(VoicePath.PLEOS_TTS, "ptt-1", 0, "cancelled")))
+        // 시작을 기다리는(5~9 s 늦는) 문장을 끊는다 — 엔진 stop, 정지 신호 뒤 다음 문장
+        advanceTimeBy(6_000)
+        p.cancel("wait-1"); runCurrent()
+        assertEquals(1, backend.stops)
+        p.onStop(); runCurrent()
+        assertTrue(signals.contains(UtteranceSignal.Dropped(VoicePath.PLEOS_TTS, "wait-1", 6_000, "interrupted")))
+        assertEquals("급제동은 그대로 읽는다", listOf("보낼까요?", "급제동"), backend.spoken)
+        // 모르는 꼬리표·이미 끝난 꼬리표는 아무것도 안 한다
+        p.cancel("wait-1"); p.cancel("없음"); runCurrent()
+        assertEquals(1, backend.stops)
+    }
+
+    @Test
+    fun `a cancel that races the end of a sentence does not drop the next sentence (targeted interrupt)`() = runTest {
+        val p = player()
+        p.enqueue("가", Priority.NORMAL, "a")
+        runCurrent()
+        p.onStart(); runCurrent()
+        // 끝 신호가 처리되기 전에 취소가 들어왔다 — 끊기 신호는 'a' 를 겨냥한다
+        p.onDone()
+        p.cancel("a")
+        p.enqueue("나", Priority.NORMAL, "b")
+        runCurrent()
+        assertEquals("다음 문장은 늦은 끊기 신호에 버려지지 않는다", listOf("가", "나"), backend.spoken)
+        assertTrue(signals.none { it.tag == "b" && it is UtteranceSignal.Dropped })
+    }
+
+    @Test
     fun `stopAll while idle does not touch the engine`() = runTest {
         val p = player()
         p.stopAll(); runCurrent()

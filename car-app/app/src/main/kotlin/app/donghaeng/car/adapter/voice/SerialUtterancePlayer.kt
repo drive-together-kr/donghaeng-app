@@ -16,6 +16,11 @@ import kotlinx.coroutines.withTimeoutOrNull
  * - 시작 신호가 [startTimeoutMs](15 s — 실측 부하 시 5~9 s) 안에 없으면 [UtteranceSignal.Failed]("시작 시간 초과") + 엔진 stop.
  * - 시작 뒤 끝 신호가 [doneTimeoutMs] 안에 없으면 끝난 것으로 본다(Done) — 다음 문장이 막히지 않게.
  * - [Priority.CRITICAL] 은 큐를 비우고(Dropped "flushed") 재생 중인 문장을 끊는다(엔진 stop → 정지 신호를 최대 [stopSettleMs] 기다린 뒤 읽는다).
+ * - 큐는 **우선순위 → 도착순**(B011): HIGH 는 대기 중인 NORMAL·LOW 앞(같은 HIGH 들 뒤)에 선다 — 급제동이 먼저 넘겨진 LOW 뒤에 밀리지 않게.
+ *   재생 중인 문장은 HIGH 가 끊지 않는다(끊는 것은 CRITICAL 뿐).
+ * - [cancel]: 꼬리표 하나만 버린다 — 큐에 있으면 빼고(Dropped "cancelled"), 읽는(또는 시작을 기다리는) 중이면 끊는다(Dropped "interrupted").
+ *   PTT 안내 시간 초과·녹음 시작(B012·B013).
+ * - 끊기 신호는 **그 문장을 겨냥한다**(Interrupt(target)) — 문장이 막 끝난 뒤 늦게 도착한 끊기 신호가 다음 문장을 버리지 않게.
  * - 큐에서 [maxQueueWaitMs](30 s) 넘게 기다린 문장은 읽지 않는다(Dropped — VoiceAnnouncer 의 큐 대기 상한과 같다).
  * - 오디오 포커스: 첫 문장 전에 요청, 큐가 비면 반납([AudioFocusPort]).
  */
@@ -37,15 +42,19 @@ class SerialUtterancePlayer(
         fun stop()
     }
 
-    private data class Request(val text: String, val priority: Priority, val tag: String?, val requestedAt: Long)
+    /** 문장 한 개 — 같은 내용이어도 요청마다 다른 객체(끊기 신호가 객체를 겨냥한다) */
+    private class Request(val text: String, val priority: Priority, val tag: String?, val requestedAt: Long) {
+        /** 끊기 신호를 이미 보냈다(같은 문장에 두 번 보내지 않게) — [lock] 안에서만 */
+        var interruptSent = false
+    }
 
     private sealed interface Msg {
         data object Start : Msg
         data object Done : Msg
         data class Error(val reason: String) : Msg
         data object Stop : Msg
-        /** 더 급한 문장이 끼어들었다(엔진 stop 을 이미 불렀다) */
-        data object Interrupt : Msg
+        /** [target] 문장을 끊는다(엔진 stop 을 이미 불렀다) — 더 급한 문장·전부 멈춤·꼬리표 취소 */
+        class Interrupt(val target: Request) : Msg
     }
 
     private val lock = Any()
@@ -64,22 +73,38 @@ class SerialUtterancePlayer(
 
     fun enqueue(text: String, priority: Priority, tag: String?) {
         val r = Request(text, priority, tag, clock())
-        var interrupt = false
+        var interrupt: Request? = null
         synchronized(lock) {
             if (priority == Priority.CRITICAL) {
                 queue.forEach { emit(UtteranceSignal.Dropped(path, it.tag, clock(), "flushed")) }
                 queue.clear()
                 queue.addFirst(r)
-                interrupt = current != null
+                interrupt = markInterrupt(current)
             } else {
-                queue.addLast(r)
+                // 우선순위 → 도착순: 자기보다 낮은 순위의 첫 문장 앞에 선다(없으면 맨 뒤)
+                val at = queue.indexOfFirst { it.priority < priority }
+                if (at < 0) queue.addLast(r) else queue.add(at, r)
             }
         }
-        if (interrupt) {
-            inbox.trySend(Msg.Interrupt)
-            runCatching { backend.stop() }
-        }
+        interrupt?.let { sendInterrupt(it) }
         wake.trySend(Unit)
+    }
+
+    /**
+     * [tag] 문장 하나만 버린다 — 큐에 있으면 빼고(Dropped "cancelled"), 지금 읽는(또는 시작을 기다리는) 문장이면 끊는다(엔진 stop → Dropped "interrupted").
+     * 이미 끝났거나 모르는 꼬리표면 아무것도 안 한다. 끊은 뒤 다음 문장은 정지 신호를 잠깐 기다렸다가 넘긴다(늦은 stop 에 끊기지 않게).
+     */
+    fun cancel(tag: String) {
+        var interrupt: Request? = null
+        synchronized(lock) {
+            val removed = queue.filter { it.tag == tag }
+            if (removed.isNotEmpty()) {
+                queue.removeAll { it.tag == tag }
+                removed.forEach { emit(UtteranceSignal.Dropped(path, it.tag, clock(), "cancelled")) }
+            }
+            if (current?.tag == tag) interrupt = markInterrupt(current)
+        }
+        interrupt?.let { sendInterrupt(it) }
     }
 
     /** 엔진 리스너 → 여기로(어느 스레드든) */
@@ -93,14 +118,24 @@ class SerialUtterancePlayer(
      * 넘긴 문장이 없으면 엔진은 건드리지 않는다(빈 stop 의 늦은 정지 신호가 다음 문장을 끊지 않게).
      */
     fun stopAll() {
-        val playing: Boolean
+        var interrupt: Request? = null
         synchronized(lock) {
             queue.forEach { emit(UtteranceSignal.Dropped(path, it.tag, clock(), "stopped")) }
             queue.clear()
-            playing = current != null
+            interrupt = markInterrupt(current)
         }
-        if (!playing) return
-        inbox.trySend(Msg.Interrupt)
+        interrupt?.let { sendInterrupt(it) }
+    }
+
+    /** [lock] 안에서 — 아직 끊기 신호를 보내지 않은 문장이면 표시하고 돌려준다 */
+    private fun markInterrupt(r: Request?): Request? {
+        if (r == null || r.interruptSent) return null
+        r.interruptSent = true
+        return r
+    }
+
+    private fun sendInterrupt(r: Request) {
+        inbox.trySend(Msg.Interrupt(r))
         runCatching { backend.stop() }
     }
 
@@ -115,24 +150,30 @@ class SerialUtterancePlayer(
             try {
                 play(r)
             } finally {
-                synchronized(lock) { current = null }
+                synchronized(lock) { if (current === r) current = null }
             }
         }
     }
 
+    /** 그 문장이 끝났다 — 끝 신호를 내기 **전에** 지금 문장에서 뺀다(끝난 문장의 늦은 취소가 엔진을 멈추지 않게) */
+    private fun end(r: Request, signal: UtteranceSignal) {
+        synchronized(lock) { if (current === r) current = null }
+        emit(signal)
+    }
+
     private suspend fun play(r: Request) {
         if (clock() - r.requestedAt > maxQueueWaitMs) {
-            emit(UtteranceSignal.Dropped(path, r.tag, clock(), "queued-too-long"))
+            end(r, UtteranceSignal.Dropped(path, r.tag, clock(), "queued-too-long"))
             return
         }
-        // 앞 문장의 늦은 신호는 버린다. 이 문장을 끊으라는 신호(급한 문장이 방금 들어옴)가 있었으면 읽지 않는다
+        // 앞 문장의 늦은 신호는 버린다. 이 문장을 겨냥한 끊기 신호(취소·급한 문장·전부 멈춤)가 벌써 왔으면 읽지 않는다
         var interrupted = false
         while (true) {
             val m = inbox.tryReceive().getOrNull() ?: break
-            if (m == Msg.Interrupt) interrupted = true
+            if (m is Msg.Interrupt && m.target === r) interrupted = true
         }
-        if (interrupted && r.priority != Priority.CRITICAL) {
-            emit(UtteranceSignal.Dropped(path, r.tag, clock(), "interrupted"))
+        if (interrupted) {
+            end(r, UtteranceSignal.Dropped(path, r.tag, clock(), "interrupted"))
             return
         }
         if (!focusHeld) { focus.request(); focusHeld = true }
@@ -141,7 +182,7 @@ class SerialUtterancePlayer(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            emit(UtteranceSignal.Failed(path, r.tag, clock(), "speak 예외 ${e.javaClass.simpleName}"))
+            end(r, UtteranceSignal.Failed(path, r.tag, clock(), "speak 예외 ${e.javaClass.simpleName}"))
             return
         }
         // 1) 시작 기다리기
@@ -149,28 +190,28 @@ class SerialUtterancePlayer(
         while (true) {
             when (val m = await(startDeadline)) {
                 null -> {
-                    emit(UtteranceSignal.Failed(path, r.tag, clock(), "시작 시간 초과 ${startTimeoutMs / 1_000}s"))
+                    end(r, UtteranceSignal.Failed(path, r.tag, clock(), "시작 시간 초과 ${startTimeoutMs / 1_000}s"))
                     runCatching { backend.stop() }
                     settle()
                     return
                 }
                 Msg.Start -> { val now = clock(); emit(UtteranceSignal.Started(path, r.tag, now, now - r.requestedAt)); break }
                 // 시작 신호 없이 끝 — 성공으로 본다(지연 표본 없음)
-                Msg.Done -> { emit(UtteranceSignal.Done(path, r.tag, clock())); return }
-                is Msg.Error -> { emit(UtteranceSignal.Failed(path, r.tag, clock(), m.reason)); return }
-                Msg.Stop -> { emit(UtteranceSignal.Dropped(path, r.tag, clock(), "stopped")); return }
-                Msg.Interrupt -> { settle(); emit(UtteranceSignal.Dropped(path, r.tag, clock(), "interrupted")); return }
+                Msg.Done -> { end(r, UtteranceSignal.Done(path, r.tag, clock())); return }
+                is Msg.Error -> { end(r, UtteranceSignal.Failed(path, r.tag, clock(), m.reason)); return }
+                Msg.Stop -> { end(r, UtteranceSignal.Dropped(path, r.tag, clock(), "stopped")); return }
+                is Msg.Interrupt -> if (m.target === r) { settle(); end(r, UtteranceSignal.Dropped(path, r.tag, clock(), "interrupted")); return }
             }
         }
         // 2) 끝 기다리기
         val doneDeadline = clock() + doneTimeoutMs(r.text)
         while (true) {
             when (val m = await(doneDeadline)) {
-                null, Msg.Done -> { emit(UtteranceSignal.Done(path, r.tag, clock())); return }
+                null, Msg.Done -> { end(r, UtteranceSignal.Done(path, r.tag, clock())); return }
                 Msg.Start -> Unit
-                is Msg.Error -> { emit(UtteranceSignal.Failed(path, r.tag, clock(), m.reason)); return }
-                Msg.Stop -> { emit(UtteranceSignal.Dropped(path, r.tag, clock(), "stopped")); return }
-                Msg.Interrupt -> { settle(); emit(UtteranceSignal.Dropped(path, r.tag, clock(), "interrupted")); return }
+                is Msg.Error -> { end(r, UtteranceSignal.Failed(path, r.tag, clock(), m.reason)); return }
+                Msg.Stop -> { end(r, UtteranceSignal.Dropped(path, r.tag, clock(), "stopped")); return }
+                is Msg.Interrupt -> if (m.target === r) { settle(); end(r, UtteranceSignal.Dropped(path, r.tag, clock(), "interrupted")); return }
             }
         }
     }

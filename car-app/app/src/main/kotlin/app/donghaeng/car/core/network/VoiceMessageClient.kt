@@ -21,24 +21,32 @@ import java.io.IOException
  * - 서버 오류 코드: 413 `VOICE_TOO_LARGE`, 400 `INVALID_VOICE`, 415 `UNSUPPORTED_VOICE_TYPE`, 429 `VOICE_RATE_LIMITED`(3초에 1건), 404(멤버 아님), 409 `GROUP_ENDED`
  *   — [ApiResult.HttpFailure.code] 로 그대로 올린다.
  * - 다운로드는 `cache/ptt/in/{voiceId}.{ext}` 같은 [dest] 로 스트리밍(임시 파일 → 이름 바꾸기), [MAX_DOWNLOAD_BYTES] 를 넘으면 버린다.
- * - 로그: `ptt: upload ok voiceId=… bytes=… dur=…` / `ptt: upload failed …`(녹음 내용·토큰 없음).
+ * - 업로드 멱등 키(B073, docs/03 계약 3): `Idempotency-Key` 헤더(선택) — 응답을 잃은 뒤 '보내지 않은 무전'에서 다시 보내도 그룹에 두 번 나가지 않게.
+ * - 로그: `ptt: upload ok voiceId=… bytes=… dur=… key=…끝6자` / `ptt: upload failed …`(녹음 내용·토큰 없음).
  */
 class VoiceMessageClient(
     private val api: VoiceApi,
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
 
-    suspend fun upload(groupId: String, file: File, mime: String, durationMs: Long): ApiResult<VoiceUploadResponse> {
+    /**
+     * [idempotencyKey]: 같은 녹음이면 첫 전송·다시 보내기가 같은 키(B073, docs/03 계약 3) — 형식([IDEMPOTENCY_KEY])에 맞지 않으면 헤더 없이 보낸다(로그 한 줄).
+     * 로그에는 키 끝 6자만 남긴다.
+     */
+    suspend fun upload(groupId: String, file: File, mime: String, durationMs: Long, idempotencyKey: String? = null): ApiResult<VoiceUploadResponse> {
         clientCheck(file, mime, durationMs)?.let { reason ->
             DhLog.w("ptt: upload rejected locally reason=$reason bytes=${file.length()} dur=${durationMs}ms")
             return ApiResult.UnexpectedFailure(IllegalArgumentException(reason))
         }
+        val key = idempotencyKey?.takeIf { IDEMPOTENCY_KEY.matches(it) }
+        if (idempotencyKey != null && key == null) DhLog.w("ptt: upload idempotency key 형식 아님 len=${idempotencyKey.length} → 헤더 없이")
         val audio = MultipartBody.Part.createFormData(PART_AUDIO, file.name, file.asRequestBody(mime.toMediaType()))
         val duration = durationMs.toString().toRequestBody(TEXT_PLAIN)
-        val result = withContext(io) { safeApiCall { api.upload(groupId, audio, duration) } }
+        val result = withContext(io) { safeApiCall { api.upload(groupId, audio, duration, key) } }
+        val keyLog = key?.let { " key=…${it.takeLast(6)}" } ?: ""
         when (result) {
-            is ApiResult.Success -> DhLog.i("ptt: upload ok voiceId=${result.value.voiceId} bytes=${file.length()} dur=${durationMs}ms mime=$mime")
-            is ApiResult.Failure -> DhLog.w("ptt: upload failed ${result.summary}")
+            is ApiResult.Success -> DhLog.i("ptt: upload ok voiceId=${result.value.voiceId} bytes=${file.length()} dur=${durationMs}ms mime=$mime$keyLog")
+            is ApiResult.Failure -> DhLog.w("ptt: upload failed ${result.summary}$keyLog")
         }
         return result
     }
@@ -99,6 +107,8 @@ class VoiceMessageClient(
         /** 다운로드 안전 상한 — 서버 업로드 상한(512 KB)의 2배 */
         const val MAX_DOWNLOAD_BYTES = 1024L * 1024
         val ALLOWED_MIME = setOf("audio/mp4", "audio/aac", "audio/wav")
+        /** `Idempotency-Key` 형식(docs/03 계약 3) */
+        val IDEMPOTENCY_KEY = Regex("[A-Za-z0-9_-]{8,64}")
         private val TEXT_PLAIN = "text/plain".toMediaType()
 
         /** 계약 상한 검사(순수) — 어기면 사유, 맞으면 null */
