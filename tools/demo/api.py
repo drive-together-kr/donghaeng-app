@@ -69,7 +69,8 @@ class DhApi:
         if not force and os.path.exists(TOKEN_CACHE):
             try:
                 cached = json.load(open(TOKEN_CACHE, encoding="utf-8"))
-                if cached.get("email") == self.email and cached.get("accessToken"):
+                # 서버별로 구분한다 — 로컬 http 서버에 클라우드 토큰을(또는 그 반대로) 보내지 않게(점검 F095)
+                if cached.get("email") == self.email and cached.get("server") == self.base and cached.get("accessToken"):
                     self.token = cached["accessToken"]
                     st, _ = self.call("GET", "/me/vehicles")
                     if st == 200:
@@ -86,7 +87,8 @@ class DhApi:
             raise SystemExit(f"login failed: {st} {res}")
         self.token = res["accessToken"]
         os.makedirs(os.path.dirname(TOKEN_CACHE), exist_ok=True)
-        json.dump({"email": self.email, "accessToken": self.token}, open(TOKEN_CACHE, "w", encoding="utf-8"))
+        with open(TOKEN_CACHE, "w", encoding="utf-8") as f:
+            json.dump({"email": self.email, "server": self.base, "accessToken": self.token}, f)
         return self.token
 
     # ---- 조회 ----

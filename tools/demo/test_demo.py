@@ -9,6 +9,7 @@ adb 를 부르는 함수(broadcast·LogWatcher·which_vehicle)는 가짜로 바�
 """
 import argparse
 import io
+import json
 import os
 import socket
 import sys
@@ -245,3 +246,27 @@ class GwaWaTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TokenCacheServerTest(unittest.TestCase):
+    """점검 F095: 토큰 캐시는 같은 이메일이어도 서버가 다르면 쓰지 않는다."""
+
+    def test_cache_from_other_server_is_not_sent(self):
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        cache = os.path.join(tmp, ".token")
+        with open(cache, "w", encoding="utf-8") as f:
+            json.dump({"email": "x@dev.local", "server": "https://cloud.example/v1", "accessToken": "cloud-token"}, f)
+        sent = []
+        def fake_call(self, method, path, body=None, auth=True, accept_json=True, headers=None):
+            sent.append((path, self.token if auth else None))
+            if path == "/auth/login":
+                return 200, {"accessToken": "local-token"}
+            return 200, []
+        with mock.patch.object(api, "TOKEN_CACHE", cache), mock.patch.object(api.DhApi, "call", fake_call):
+            a = api.DhApi("http://127.0.0.1:8080", "x@dev.local")
+            tok = a.login()
+        self.assertEqual("local-token", tok)
+        self.assertNotIn(("/me/vehicles", "cloud-token"), sent)
+        with open(cache, encoding="utf-8") as f:
+            self.assertEqual("http://127.0.0.1:8080/v1", json.load(f)["server"])
