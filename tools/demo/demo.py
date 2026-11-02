@@ -8,9 +8,11 @@
   python tools/demo/demo.py --car-a emulator-5556 --car-b emulator-5558 --vc-port 8089 [--email dev@example.com]
 
 순서
-  0 preflight  : 기기·앱·서버·Virtual Console·차 B GPX 역할(follow)·음성 경로(ANDROID_TTS|PLEOS_TTS — 화면만이면 FAIL)·플로팅 창 권한·차 A 위치 소스(android_first) 확인
+  0 preflight  : 기기·앱·서버·Virtual Console·차 B GPX 역할(follow)·음성 경로(ANDROID_TTS|PLEOS_TTS — 화면만이면 FAIL)·음성 안내 켜짐(voice=true —
+                 꺼져 있으면 실행 때 켠다)·플로팅 창 권한·차 A 위치 소스(android_first) 확인
                  + 시연 닉네임(--email 필요): 차 A "아빠 차"·차 B "둘째 차"·같은 계정의 나머지 차 하나 "삼촌 차"(--nick-a/-b/-c)
-  2~3 대기     : 차 A '같이 가기 시작' → 폰(demo-host)으로 QR 합류(또는 api.py join). 차 B 의 합류를 로그로 감지하면 합류 제안을 자동 수락(--no-auto-accept 면 화면에서)
+  2~3 대기     : 차 A '같이 가기 시작' → 폰(demo-host)으로 QR 합류(또는 api.py join). 차 B 의 합류를 로그로 감지하면 합류 제안(합류 약 3 s 뒤 —
+                 경유지가 있는 그룹이면 서버 경로 제안 하나)이 뜬 것을 보고 자동 수락(--no-auto-accept 면 화면에서)
   4 함께 주행  : T0 — 차 A GPS 재생 시작 + Virtual Console 기어 D·속도. 차 B 는 수락 순간부터 스스로 달린다
   5 저잔량     : T0+20s  VC soc=12 → 차 B 음성 "…배터리가 12% 남았어요"
   6 동승자 메시지 : T0+45s  --email 이 있으면 REST 로 전송, 없으면 폰에서 보내라고 안내
@@ -136,6 +138,26 @@ def tts_path_row(name: str, st: dict, engine_installed: bool):
     return (f"{name} 앱 음성 경로 = {path or 'DISPLAY_ONLY'} — 소리 없음(화면 표시만): Supertonic 설치(docs/09 §1.4) 또는 Pleos CaaS 확인", False)
 
 
+def voice_setting_row(name: str, st: dict, turned_on: bool = False):
+    """preflight '음성 안내 설정' 행 (label, ok) — 디버그 status 의 `voice=true|false` = **지금 앱의 값**(VoiceAnnouncer 메모리, RB-5).
+    리시버 `voice`·진단 카드로 바꾼 값은 저장되지 않아 앱을 다시 켜면 설정 저장값(UserSettings, 없으면 켬)으로 돌아간다.
+    꺼져 있으면 장면 5·6·9 의 `voice: speak …` 가 나지 않아 확인이 MISS 다(배치 B 리뷰 RB — latency.py 가 끈 채 멈췄거나 설정 화면에서 끈 경우).
+    ok: True = 켜짐, False = 꺼짐(FAIL), None = 값 없음(옛 앱 — WARN)"""
+    v = (st or {}).get("voice")
+    if v == "true":
+        return (f"{name} 음성 안내 켜짐(voice=true{' — 꺼져 있어 켰다' if turned_on else ''})", True)
+    if v == "false":
+        hint = "켜기를 보냈는데도 꺼짐 — 진단·설정 화면 확인" if turned_on else \
+            "장면 5·6·9 음성이 나지 않는다: --dry-run 없이 실행하면 자동으로 켠다(또는 설정 '음성 안내')"
+        return (f"{name} 음성 안내 꺼짐(voice=false — 지금 앱 값, 리시버·진단 전환은 앱을 다시 켜면 설정 저장값으로 돌아감) — {hint}", False)
+    return (f"{name} 음성 안내 설정 — status 에 voice= 없음(리시버 응답 없음 또는 옛 앱)", None)
+
+
+# 장면 3: 합류 뒤 차 B 가 낸 제안 — 로컬 합류 제안(경유지 없는 그룹, 합류 약 3 s 뒤) 또는 서버 경로 제안(경유지 있는 그룹, GROUP_JOINED 직후).
+# RC-3: 둘 중 하나만 나온다. `routesync: joined → destination ask …`(예약)·`routesync: join ask skipped …`(생략)에는 맞지 않는다
+JOIN_OFFER_RX = r"routesync: join proposal dest=|routesync: proposal \S+ dest="
+
+
 def gwa_wa(word: str) -> str:
     """차 앱 GroupNaming 과 같은 조사 규칙(안내 문구용): 한글 받침 → 과, 숫자는 읽는 소리(0·1·3·6·7·8 → 과), 영문·기호 → 와"""
     w = word.rstrip().rstrip(")]}\"'”’」』.!? ")
@@ -216,6 +238,9 @@ class Demo:
         # 차 B(fake flavor)는 Pleos SDK 가 없어 Supertonic 이 없으면 화면 표시만 → FAIL 로 알린다
         for name, s in (("A", self.A), ("B", self.B)):
             rows.extend(self.ensure_tts_engine(name, s))
+        # 음성 안내 스위치(지금 앱 값 — 리시버·진단 전환은 저장되지 않음, RB-5) — 꺼져 있으면 경로가 있어도 읽지 않는다. 실행 때는 켜고 다시 확인한다(dry-run 은 바꾸지 않음)
+        for name, s in (("A", self.A), ("B", self.B)):
+            rows.append(self.ensure_voice_on(name, s))
         # 주행 중 표면(2026-10-28): 플로팅 창 권한 — 없으면 알림 카드 + 음성 모드로 동작하므로 경고만
         for name, s in (("A", self.A), ("B", self.B)):
             mode = sh(s, f"appops get --user 10 {PKG} SYSTEM_ALERT_WINDOW")
@@ -269,6 +294,14 @@ class Demo:
         st = self.wait_tts_path(serial, 75 if changed else 40)
         rows.append(tts_path_row(name, st, installed))
         return rows
+
+    def ensure_voice_on(self, name: str, serial: str):
+        """차 한 대의 '음성 안내' 지금 값 점검 — 꺼져 있으면(실행 때만) 리시버 `voice --ez on true` 로 켜고 status 로 다시 본다(이 켜기도 저장되지 않는다). 표 행 하나"""
+        st = status(serial)
+        if st.get("voice") == "false" and not self.a.dry_run:
+            broadcast(serial, "voice", on=True)
+            return voice_setting_row(name, status(serial), turned_on=True)
+        return voice_setting_row(name, st)
 
     def wait_tts_path(self, serial: str, timeout_s: float) -> dict:
         """앱의 음성 체인이 경로를 정할 때까지(디버그 status: tts=ready + ttsSelecting=false, 또는 tts=off) 기다린다 — 마지막 status dict.
@@ -445,8 +478,11 @@ class Demo:
         self.say("B 합류 감지: " + hit[-100:])
         broadcast(self.B, "open", screen="drive")   # 제안 카드·지도가 보이게
         if self.a.auto_accept:
-            time.sleep(6)   # 카드가 화면에 잠깐 보이도록(영상용) 뒤 수락 — 30초 자동 거절 안
-            self.say("B 합류 제안(선두 목적지 안내) 자동 수락 → " + broadcast(self.B, "accept"))
+            # RC-3: 합류 제안은 합류 약 3 s 뒤(경유지가 있는 그룹이면 그 대신 서버 경로 제안 하나) — 제안이 뜬 것을 보고 수락한다
+            offer = wb.wait(JOIN_OFFER_RX, 15, poll_s=1.0)
+            self.say("B 합류 뒤 제안: " + (offer[-100:] if offer else "15 s 안에 못 봄 — 그래도 수락을 보낸다"))
+            time.sleep(4)   # 카드가 화면에 잠깐 보이도록(영상용) 뒤 수락 — 30초 자동 거절 안
+            self.say("B 합류 제안(선두 목적지 안내 또는 선두 경로) 자동 수락 → " + broadcast(self.B, "accept"))
         else:
             self.say("차 B 화면에서 '따라가기' 를 30초 안에 누르세요")
 

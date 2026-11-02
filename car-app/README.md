@@ -16,12 +16,12 @@ cd car-app
 .\gradlew.bat :app:testFakeDebugUnitTest --console=plain # 단위 테스트
 
 # 클라우드(T32) 빌드 — release 기본 서버 = 클라우드. 호스트만 준다(https://{host} · ssl://{host}:8883 은 Gradle 이 만든다)
-.\gradlew.bat :app:assemblePleosRelease -PdhCloudHost=1-2-3-4.sslip.io
+.\gradlew.bat :app:assemblePleosRelease -PdhCloudHost=1.2.3.4.sslip.io
 # dhCloudHost 가 비어 있으면 release 도 debug 값(10.0.2.2)으로 빌드되고 경고만 뜬다:
 #   w: [donghaeng] dhCloudHost is empty - release keeps the debug server (...)
 # T40 전까지 release 에는 signingConfig 가 없어 위 명령의 산출물은 app-pleos-release-unsigned.apk(미서명) 이고 adb install 이 거부한다
 # (INSTALL_PARSE_FAILED_NO_CERTIFICATES). 설치해서 확인할 클라우드 빌드가 필요하면 debug 에 주소를 직접 준다(또는 앱의 숨은 메뉴로 바꾼다):
-.\gradlew.bat :app:assemblePleosDebug -PdhPublicBaseUrl=https://1-2-3-4.sslip.io -PdhMqttPublicUri=ssl://1-2-3-4.sslip.io:8883
+.\gradlew.bat :app:assemblePleosDebug -PdhPublicBaseUrl=https://1.2.3.4.sslip.io -PdhMqttPublicUri=ssl://1.2.3.4.sslip.io:8883
 
 # 캐시 없이 전부 다시 빌드·테스트해 확인하고 싶을 때 (gradle.properties 의 org.gradle.caching=true 는 유지)
 .\gradlew.bat :app:assembleFakeDebug :app:testFakeDebugUnitTest --rerun-tasks --no-build-cache --console=plain

@@ -217,6 +217,19 @@ def fgs_has_mic(status: dict) -> bool | None:
     return "microphone" in fgs.split("+")
 
 
+def mic_gate_row(name: str, status: dict, injected: bool = True):
+    """그룹 서비스에 microphone 타입이 없을 때의 preflight WARN 행(없으면 None).
+    배치 B(B015): API 30+ 에서 동행 화면이 뒤(순정 내비가 앞)이고 microphone 타입이 없으면 앱이 실마이크 무전을 **녹음하지 않고 안내만** 한다
+    (`ptt: mic not usable in background …`) — 예전처럼 무음을 보내지 않는다. 주행 중 경로 질문의 '네/아니' 도 묻지 않는다(RA-4).
+    [injected] = 이 차의 녹음이 주입인가(주입 녹음·답 주입은 이 판정을 거치지 않는다)"""
+    if status.get("mic") != "true" or fgs_has_mic(status) is not False:
+        return None
+    effect = ("주입 녹음·답 주입은 상관없다" if injected
+              else "이 차의 실마이크 녹음은 `ptt: mic not usable in background` 안내로 끝난다 — 흐름 확인은 그대로")
+    return (f"{name} 그룹 서비스에 microphone 타입 없음(fgs={status.get('fgs')}) — 내비가 앞일 때 실마이크 무전은 녹음하지 않고 안내만, "
+            f"동행 화면을 한 번 열면 붙는다({effect})", None)
+
+
 def recognizer_ready(status: dict) -> bool:
     """실제 인식기 중 하나라도 ready 인가(아니면 확인은 카운트다운 모드)"""
     return any(v == "ready" for v in status.get("recognizers", {}).values())
@@ -292,7 +305,7 @@ def _interrupt(opts, steps):
         Step("press", "B"),
         Step("expect", "B", label="B 재생 중 누름 → 끊김(다 못 들음), 흐름이 끝나면 다시", timeout=10,
              pattern=r"ptt: playback interrupted voiceId={voiceId} why=ptt-press status=INTERRUPTED resume=after-flow"),
-        Step("expect", "B", label="B 녹음 시작(마이크 권한이 없으면 안내)", pattern=r"ptt: press source=\S+ stage=IDLE", timeout=8),
+        Step("expect", "B", label="B 녹음 시작(마이크 권한·FGS microphone 이 없으면 안내)", pattern=r"ptt: press source=\S+ stage=IDLE", timeout=8),
     ]
     if opts.shots:
         steps.append(Step("shot", "B", label="interrupted"))
@@ -301,7 +314,7 @@ def _interrupt(opts, steps):
         Step("expect", "B", label="B 끊긴 무전이 흐름 끝을 기다림(resumeWaiting=true, INTERRUPTED)", timeout=8,
              pattern=r"demo: ptt_status .*resumeWaiting=true past=\d+\[[^\]]*INTERRUPTED=[1-9]"),
         Step("sleep", seconds=1.5),
-        Step("press", "B"),       # 녹음 끝 → '보낼까요?'(마이크 권한이 없으면 안내 중 새 누름)
+        Step("press", "B"),       # 녹음 끝 → '보낼까요?'(마이크 권한·FGS microphone 이 없으면 안내 중 새 누름)
         Step("sleep", seconds=1.0),
         Step("press", "B"),       # 확인 중 누름 = 취소 → 안내 3초 → IDLE
         Step("expect", "B", label="B 흐름 끝(IDLE) → 끊긴 무전 풀림", pattern=r"ptt: resume released why=send-flow-idle", timeout=25),
@@ -739,10 +752,16 @@ class Runner:
             if self.a.trigger == "key":
                 rows.append((f"{name} MediaSession 활성(session={sx.get('session')}, sessionState={sx.get('sessionState', '?')}, otherMedia={sx.get('otherMedia')}) — 아니면 내비가 앞일 때 키가 안 온다",
                              True if sx.get("session") == "true" else None))
+        # interrupt 는 B 에서 실마이크로 녹음한다(주입 없음) — microphone 타입이 없으면 녹음 대신 안내로 끝난다(알리기만)
+        if "B" in key_cars and st.get("B"):
+            row = mic_gate_row("B", st["B"], injected=False)
+            if row:
+                rows.append(row)
         if sa:
             rows.append((f"A 마이크 권한(mic={sa.get('mic')}) — 주입 녹음은 없어도 된다", True if sa.get("mic") == "true" else None))
-            if sa.get("mic") == "true" and fgs_has_mic(sa) is False:
-                rows.append((f"A 그룹 서비스에 microphone 타입 없음(fgs={sa.get('fgs')}) — 내비가 앞일 때 실마이크 녹음·듣기가 무음. 동행 화면을 한 번 열면 붙는다(주입 녹음·답은 상관없다)", None))
+            row = mic_gate_row("A", sa)
+            if row:
+                rows.append(row)
             if self.a.answer_wav:
                 rows.append((f"A Vosk 모델(vosk={sa.get('vosk')}) — --answer-wav 에 필요(setup --model-zip)", str(sa.get("vosk", "")).startswith("present")))
             rows.append((f"A 인식기 {sa.get('recognizers')} — 하나도 ready 가 아니면 확인은 카운트다운 모드(답 주입은 그대로 받는다)", None if not recognizer_ready(sa) else True))

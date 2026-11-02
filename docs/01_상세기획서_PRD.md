@@ -112,7 +112,7 @@ Pleos 멀티윈도우 대응: portrait(1창) = 대열 세로 사다리, landscap
 
 | 데이터 | 출처 | 주기 | 보관 |
 |---|---|---|---|
-| 위치(위경도·방향) | NaviHelper `onCurrentLocationInfo` (FusedLocation 오픈 시 전환) | 1초(주행), 10초(정차) | 그룹 종료 시 삭제, 실시간 저장소 TTL 10분 |
+| 위치(위경도·방향) | NaviHelper `onCurrentLocationInfo` (FusedLocation 오픈 시 전환) | 1초 — 활성 그룹 동안 주행·정차 구분 없이 1 Hz 텔레메트리(초기 기획의 '정차 10초'는 구현하지 않음, 2026-11-02 점검 정정) | 그룹 종료 시 삭제, 실시간 저장소 TTL 10분 |
 | ETA·남은 거리 | NaviHelper `onTripInfo`/`onDrivingInfo` | 30초 또는 변화 시 | 그룹 종료 시 삭제 |
 | 연료%/배터리% | Vehicle `Fuel`/`EvBattery` | 변화 시(1%p 단위) | 최신값만 |
 | 브레이크·방향지시등 | Vehicle `Brake`/`TurnSignal` | 이벤트(급제동 판정 시만 공유) | 이벤트 로그 24h |

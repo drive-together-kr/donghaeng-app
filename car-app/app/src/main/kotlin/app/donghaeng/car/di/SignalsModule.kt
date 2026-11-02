@@ -36,6 +36,7 @@ import app.donghaeng.car.adapter.speech.RecognizerChain
 import app.donghaeng.car.core.common.DrivingStateMonitor
 import app.donghaeng.car.domain.model.Priority
 import app.donghaeng.car.domain.ptt.PttController
+import app.donghaeng.car.domain.ptt.PttMicGate
 import app.donghaeng.car.domain.ptt.PttStage
 import app.donghaeng.car.domain.routesync.VoiceRouteAsk
 import app.donghaeng.car.domain.routesync.VoiceAnswer
@@ -43,7 +44,6 @@ import app.donghaeng.car.domain.settings.SharedPrefsUserSettingsStore
 import app.donghaeng.car.domain.settings.UserSettings
 import app.donghaeng.car.service.DriveSessionService
 import app.donghaeng.car.surface.AppForegroundTracker
-import android.content.pm.ServiceInfo
 import android.os.Build
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.flow.map
@@ -83,8 +83,9 @@ object SignalsModule {
     fun provideMyFixSource(feed: LocationFeed): MyFixSource = feed
 
     /**
-     * A120: 설정 화면 값(자동 따라가기·지연 표시) — `dh_settings`. 지연 표시 기본값은 debug 켬 / release 끔.
-     * '음성 안내' 스위치는 음성 쪽(B066 VoiceAnnouncer 자체 저장소)이 저장한다 — 같은 값을 두 곳에 두지 않는다(RA-3).
+     * A120: 설정 화면 값(자동 따라가기·지연 표시·음성 안내) — `dh_settings` 한 곳. 지연 표시 기본값은 debug 켬 / release 끔.
+     * '음성 안내'는 VoiceAnnouncer 가 메모리 값만 갖고(RB-5) 저장은 여기 — 앱 시작 때 [provideVoiceAnnouncer] 가 넣는다.
+     * 설정 화면에서 바꾼 값을 여기에 쓰는 호출(`SettingsViewModel.setVoiceEnabled` → `UserSettings.setVoiceEnabled`)은 UI 트랙 반영 뒤에 생긴다.
      */
     @Provides
     @Singleton
@@ -142,21 +143,12 @@ object SignalsModule {
         pttBusy = ptt.state.map { it.stage != PttStage.IDLE },
         pttBusyNow = { ptt.state.value.stage != PttStage.IDLE },
         hasCandidate = { chain.hasCandidate() },
-        micUsable = { routeAskMicUsable(Build.VERSION.SDK_INT, tracker.appVisible.value, DriveSessionService.attachedType.value) },
+        // RA-4: 지금 마이크를 열면 소리가 담기는가 — 무전(PttModule)과 같은 판정 [PttMicGate.usable](B015).
+        // startedWhileVisible 은 넘기지 않는다(무전도 같음) — 그룹 서비스가 그 값을 내보내기 전까지 RB-6(API 30~33 백그라운드 시작) 분기는 쓰이지 않는다(docs/05 B015 '알려진 한계')
+        micUsable = { PttMicGate.usable(Build.VERSION.SDK_INT, tracker.appVisible.value, DriveSessionService.attachedType.value) },
         speakAndWait = { voice.speakAndWait(it, Priority.NORMAL, ROUTE_ASK_SPEAK_TIMEOUT_MS) },
         listen = { chain.listen(ROUTE_ASK_LISTEN_MS).answer },
     )
-
-    /**
-     * RA-4: 지금 마이크를 열면 소리가 담기는가 — API 30+ 에서 동행 화면이 뒤에 있으면 그룹 서비스에 microphone 포그라운드 타입이 붙어 있어야 한다
-     * (없으면 앱이 여는 마이크는 오류 없이 무음). B 배치 `PttMicGate.usable` 과 같은 판정 — 병합 뒤 그것을 부르도록 바꾼다(handoff).
-     */
-    internal fun routeAskMicUsable(sdk: Int, appVisible: Boolean, attachedFgsType: Int?): Boolean = when {
-        sdk < Build.VERSION_CODES.R -> true
-        appVisible -> true
-        attachedFgsType == null -> false
-        else -> attachedFgsType and ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE != 0
-    }
 
     /** "…따라갈까요? 네 또는 아니요로 답해 주세요." ≈ 6 s + 엔진 지연 */
     private const val ROUTE_ASK_SPEAK_TIMEOUT_MS = 12_000L
@@ -164,10 +156,13 @@ object SignalsModule {
     /** '네/아니' 듣는 시간 — PTT 확인(5 s)보다 조금 넉넉히(운전 중 답이 늦을 수 있다) */
     private const val ROUTE_ASK_LISTEN_MS = 6_000L
 
-    /** T27: 그룹 이벤트 → 음성 큐(우선순위·신선도 5s·내 이벤트 생략·대상 아님 생략) */
+    /**
+     * T27: 그룹 이벤트 → 음성 큐(우선순위·신선도 5s·내 이벤트 생략·대상 아님 생략).
+     * '음성 안내' 저장값(UserSettings)을 시작 때 넣는다 — 저장값이 꺼짐일 때만 바꾼다(기본 켬, 켬이면 로그도 없음).
+     */
     @Provides
     @Singleton
-    fun provideVoiceAnnouncer(sessionManager: MqttSessionManager, voice: VoiceAdapter, clockSync: ClockSync): VoiceAnnouncer =
+    fun provideVoiceAnnouncer(sessionManager: MqttSessionManager, voice: VoiceAdapter, clockSync: ClockSync, settings: UserSettings): VoiceAnnouncer =
         // 신선도(5s) 판정은 서버 시계 기준(T31 ClockSync) — 차량 시계가 틀려도 옛 이벤트만 생략한다.
         // 급제동 대상(audience)이 없으면 최신 스냅샷으로 앞뒤를 본다(EventAudience)
         VoiceAnnouncer(
@@ -175,7 +170,7 @@ object SignalsModule {
             groupState = { sessionManager.groupState.value }, clock = { clockSync.serverNow() },
             // 그룹이 끝나거나 바뀌면 옛 그룹 문장을 버린다(B060)
             groupIds = kotlinx.coroutines.flow.flow { sessionManager.session.collect { emit(it?.groupId) } },
-        )
+        ).also { if (!settings.voiceEnabled) it.setEnabled(false) }
 
     /** T31: 서버 시각 동기화 — 시작 직후·5분마다 `GET /v1/time` 3회, 왕복 최소 표본 */
     @Provides

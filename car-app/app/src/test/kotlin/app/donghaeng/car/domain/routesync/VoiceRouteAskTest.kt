@@ -1,5 +1,6 @@
 package app.donghaeng.car.domain.routesync
 
+import app.donghaeng.car.domain.ptt.PttMicGate
 import app.donghaeng.car.domain.ptt.YesNo
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -54,17 +55,34 @@ class VoiceRouteAskTest {
         assertTrue("묻지 않으면 읽지도 듣지도 않는다", events.isEmpty())
     }
 
-    /** RA-4 배선(di/SignalsModule): API 30 미만·동행 화면이 보임·서비스에 microphone 타입 → 쓸 수 있음, 그 밖(서비스 없음 포함) → 못 씀 */
+    /**
+     * RA-4 배선(di/SignalsModule): 경로 질문은 무전과 같은 [PttMicGate.usable] 로 마이크를 판정한다(배치 A 의 임시 판정 `routeAskMicUsable` 대체).
+     * 판정이 예전과 같은지 고정 — API 30 미만·동행 화면이 보임·서비스에 microphone 타입 → 쓸 수 있음, 그 밖(서비스 없음·타입 모름 포함) → 못 씀.
+     * SignalsModule 을 거치지 않고 그 모듈이 부르는 형태(`startedWhileVisible` 미전달) 그대로 [PttMicGate.usable] 를 본다 — 배선 자체는 SignalsModule 의
+     * 한 줄이다. RB-6(API 30~33 백그라운드 시작) 분기는 그룹 서비스가 `startedWhileVisible` 을 내보낼 때까지 무전·경로 질문 모두 쓰이지 않는다(docs/05 B015).
+     */
     @Test
-    fun `RA-4 wiring - the microphone is usable below API 30, while the app is visible, or with a microphone service type`() {
+    fun `RA-4 - PttMicGate called as SignalsModule does (no startedWhileVisible) matches the batch A rule`() {
         val mic = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         val location = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         val dataSync = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-        assertTrue(app.donghaeng.car.di.SignalsModule.routeAskMicUsable(29, appVisible = false, attachedFgsType = null))
-        assertTrue(app.donghaeng.car.di.SignalsModule.routeAskMicUsable(33, appVisible = true, attachedFgsType = null))
-        assertTrue(app.donghaeng.car.di.SignalsModule.routeAskMicUsable(33, appVisible = false, attachedFgsType = location or mic))
-        assertTrue("서비스 없음", !app.donghaeng.car.di.SignalsModule.routeAskMicUsable(33, appVisible = false, attachedFgsType = null))
-        assertTrue("백그라운드 시작 — microphone 빠짐", !app.donghaeng.car.di.SignalsModule.routeAskMicUsable(33, appVisible = false, attachedFgsType = location or dataSync))
+        assertTrue(PttMicGate.usable(29, appVisible = false, attachedFgsType = null))
+        assertTrue(PttMicGate.usable(33, appVisible = true, attachedFgsType = null))
+        assertTrue(PttMicGate.usable(33, appVisible = false, attachedFgsType = location or mic))
+        assertTrue("서비스 없음", !PttMicGate.usable(33, appVisible = false, attachedFgsType = null))
+        assertTrue("백그라운드 시작 — microphone 빠짐", !PttMicGate.usable(33, appVisible = false, attachedFgsType = location or dataSync))
+        // 배치 A 의 임시 판정(옮기기 전 SignalsModule.routeAskMicUsable)과 모든 조합에서 같다 — SignalsModule 은 startedWhileVisible 를 넘기지 않는다
+        fun batchA(sdk: Int, visible: Boolean, type: Int?): Boolean = when {
+            sdk < 30 -> true
+            visible -> true
+            type == null -> false
+            else -> type and mic != 0
+        }
+        for (sdk in listOf(28, 29, 30, 31, 33, 34, 35)) for (visible in listOf(true, false)) {
+            for (type in listOf(null, 0, location, dataSync, mic, location or mic, location or dataSync, dataSync or mic)) {
+                assertEquals("sdk=$sdk visible=$visible type=$type", batchA(sdk, visible, type), PttMicGate.usable(sdk, appVisible = visible, attachedFgsType = type))
+            }
+        }
     }
 
     @Test

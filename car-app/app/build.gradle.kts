@@ -13,14 +13,14 @@ plugins {
 //   debug  : dhPublicBaseUrl / dhMqttPublicUri (gradle.properties 기본값 = 에뮬레이터 → 호스트, -P 로 덮어쓰기)
 //   release: dhCloudHost 가 있으면 https://{dhCloudHost} / ssl://{dhCloudHost}:8883 (클라우드 기본).
 //            비어 있으면 debug 값을 그대로 쓰고 경고만 낸다(빌드는 계속).
-//   .\gradlew.bat :app:assemblePleosRelease -PdhCloudHost=1-2-3-4.sslip.io
+//   .\gradlew.bat :app:assemblePleosRelease -PdhCloudHost=1.2.3.4.sslip.io   (점 표기 — CLAUDE.md 규칙 12)
 fun dhProperty(name: String): String? = (findProperty(name) as String?)?.trim()?.takeIf { it.isNotEmpty() }
 
 val dhPublicBaseUrl: String = dhProperty("dhPublicBaseUrl") ?: "http://10.0.2.2:8080"
 val dhMqttPublicUri: String = dhProperty("dhMqttPublicUri") ?: "tcp://10.0.2.2:1883"
 val dhCloudHost: String? = dhProperty("dhCloudHost")?.removePrefix("https://")?.trimEnd('/')?.also { host ->
     if (!host.matches(Regex("[A-Za-z0-9.-]+"))) {
-        throw GradleException("dhCloudHost 는 호스트 이름만 넣는다(스킴·포트·경로 없이). 예: 1-2-3-4.sslip.io — 받은 값: $host")
+        throw GradleException("dhCloudHost 는 호스트 이름만 넣는다(스킴·포트·경로 없이). 예: 1.2.3.4.sslip.io — 받은 값: $host")
     }
 }
 val releasePublicBaseUrl: String = dhCloudHost?.let { "https://$it" } ?: dhPublicBaseUrl

@@ -4,7 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** A120: 자동 따라가기·지연 표시가 앱을 다시 켜도 남는다. release 기본값은 지연 표시 끔. RA-3: 음성 안내는 여기 저장하지 않는다 */
+/** A120: 자동 따라가기·지연 표시·음성 안내가 앱을 다시 켜도 남는다. release 기본값은 지연 표시 끔. 음성 안내는 여기 한 곳(RB-5, 병합 정리) */
 class UserSettingsTest {
 
     /** 읽고 쓴 키를 모두 남기는 저장소 */
@@ -40,17 +40,20 @@ class UserSettingsTest {
     }
 
     /**
-     * RA-3: '음성 안내'는 음성 쪽(B066 VoiceAnnouncer 저장소) 하나만 저장한다 — 예전엔 `dh_settings` 에도 따로 저장·적용해(두 곳)
-     * 한쪽만 바뀌면 다음 시작 때 값이 어긋났다. UserSettings 의 모든 동작이 건드리는 키는 자동 따라가기·지연 표시뿐이어야 한다.
+     * 음성 안내 저장 주인(2026-11-02 병합 정리): RA-3 은 음성 쪽(B066) 저장소를, RB-5 는 B066 을 걷어내고 이곳을 주인으로 정해, 둘이 함께 들어가자
+     * '음성 안내'가 어디에도 저장되지 않았다(앱을 다시 켜면 늘 켬). 이제 저장은 여기 한 곳 — 새 키 [UserSettings.KEY_VOICE] 만 읽고 쓰며,
+     * 배치 A 중간 빌드가 `voiceEnabled` 키에 남겼을 수 있는 옛 값은 읽지 않는다. 음성 엔진 쪽 저장 금지는 VoiceAnnouncerQueueTest 가 지킨다.
      */
     @Test
-    fun `RA-3 - the voice switch is not stored or applied here (single owner is the voice side)`() {
+    fun `the voice switch is stored here only, under a new key, and survives a restart`() {
         val store = RecordingStore()
-        val settings = UserSettings(store)
-        settings.setAutoFollow(true)
-        settings.setLatencyOverlay(true)
-        settings.applyTo(autoFollow = {}, latencyOverlay = {})
-        assertEquals(setOf(UserSettings.KEY_AUTO_FOLLOW, UserSettings.KEY_LATENCY), store.touched)
-        assertTrue("voiceEnabled 키를 읽거나 쓰지 않는다", "voiceEnabled" !in store.touched)
+        store.inner.putBoolean("voiceEnabled", false)   // 옛 키의 남은 값
+        assertEquals("저장값이 없으면 켬(옛 키는 읽지 않는다)", true, UserSettings(store).voiceEnabled)
+        UserSettings(store).setVoiceEnabled(false)
+        assertEquals("다시 켜도 꺼짐", false, UserSettings(store).voiceEnabled)
+        UserSettings(store).setAutoFollow(true)
+        UserSettings(store).setLatencyOverlay(true)
+        assertEquals(setOf(UserSettings.KEY_VOICE, UserSettings.KEY_AUTO_FOLLOW, UserSettings.KEY_LATENCY), store.touched)
+        assertTrue("옛 키 voiceEnabled 를 읽거나 쓰지 않는다", "voiceEnabled" !in store.touched)
     }
 }
