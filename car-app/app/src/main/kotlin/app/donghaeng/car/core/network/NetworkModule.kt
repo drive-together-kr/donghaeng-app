@@ -98,6 +98,11 @@ object NetworkModule {
     @Singleton
     fun provideGroupApi(retrofit: Retrofit): GroupApi = retrofit.create()
 
+    /** 계약 1·2(2026-11-02): 차량 자신의 활성 그룹 조회·스스로 페어링 해제 — 차량 JWT */
+    @Provides
+    @Singleton
+    fun provideVehicleSelfApi(retrofit: Retrofit): VehicleSelfApi = retrofit.create()
+
     /** T31 서버 시각 (`GET /v1/time`, 인증 없음) */
     @Provides
     @Singleton

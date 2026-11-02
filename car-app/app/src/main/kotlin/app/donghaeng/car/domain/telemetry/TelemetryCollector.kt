@@ -2,6 +2,7 @@ package app.donghaeng.car.domain.telemetry
 
 import app.donghaeng.car.core.common.CoordinateMasking
 import app.donghaeng.car.core.common.DhLog
+import app.donghaeng.car.core.common.TextMasking
 import app.donghaeng.car.domain.model.Fix
 import app.donghaeng.car.domain.model.Gear
 import app.donghaeng.car.domain.navi.NaviMonitorState
@@ -77,6 +78,10 @@ class TelemetryCollector(
     // 마지막으로 보낸 ETA/에너지 (변화 판정용)
     private var lastEtaSentTs: Long? = null
     private var lastEtaSent: Eta? = null
+
+    /** A009: 안내가 끝난 뒤 보낸 '빈 ETA'(지움 신호) 횟수·시각 — QoS 0 이라 몇 번 되풀이한다 */
+    private var etaClearsSent = 0
+    private var lastEtaClearTs: Long? = null
     private var lastEnergySentTs: Long? = null
     private var lastEnergySent: Energy? = null
 
@@ -91,7 +96,8 @@ class TelemetryCollector(
                     resetMarkers()
                     return@collectLatest
                 }
-                DhLog.i("telemetry: 그룹 활성 → 1Hz 발행 시작 (${s.name})")
+                // 규칙 8: 그룹 이름(기본값에 방장 닉네임)은 남기지 않는다(A090)
+                DhLog.i("telemetry: 그룹 활성 → 1Hz 발행 시작 (groupId=${TextMasking.maskVehicleId(s.groupId)} nameLen=${s.name.length})")
                 _state.update { it.copy(active = true, groupName = s.name) }
                 resetMarkers()
                 while (isActive) {
@@ -112,6 +118,8 @@ class TelemetryCollector(
     private fun resetMarkers() {
         lastEtaSentTs = null
         lastEtaSent = null
+        etaClearsSent = 0
+        lastEtaClearTs = null
         lastEnergySentTs = null
         lastEnergySent = null
     }
@@ -132,9 +140,15 @@ class TelemetryCollector(
         val speed = v.speedKph ?: fallbackSpeedKph()
         val gear = v.gear?.takeIf { it != Gear.UNKNOWN }?.name
 
-        val eta = buildEta(navi.value, now)
+        val built = buildEta(navi.value, now)
+        // A009: 안내가 끝나(취소·도착·TripInfo 끊김) ETA 가 없어졌는데 전에 보낸 적이 있으면, 모든 값이 빈 ETA 를 보내 서버의 옛 도착 시각을 지운다.
+        // 서버는 eta 가 있을 때만 덮어쓰므로 필드를 빼기만 하면 옛 값이 그룹 끝까지 남았다. QoS 0 이라 [etaIntervalMs] 간격으로 [ETA_CLEAR_REPEATS] 번
+        val clearEta = built == null && lastEtaSent != null && etaClearsSent < ETA_CLEAR_REPEATS &&
+            (lastEtaClearTs == null || now - lastEtaClearTs!! >= etaIntervalMs)
+        val eta = built ?: if (clearEta) EMPTY_ETA else null
         val includeEta = eta != null && (
-            lastEtaSentTs == null ||
+            clearEta ||
+                lastEtaSentTs == null ||
                 now - lastEtaSentTs!! >= etaIntervalMs ||
                 etaChanged(lastEtaSent, eta)
             )
@@ -159,7 +173,14 @@ class TelemetryCollector(
         val topic = Topics.vehicleTelemetry(vid)
         val ok = publish(topic, telemetry)
         if (ok) {
-            if (includeEta) { lastEtaSentTs = now; lastEtaSent = eta }
+            if (clearEta) {
+                etaClearsSent++
+                lastEtaClearTs = now
+                if (etaClearsSent >= ETA_CLEAR_REPEATS) { lastEtaSent = null; lastEtaSentTs = null }
+            } else if (includeEta) {
+                lastEtaSentTs = now; lastEtaSent = eta
+                etaClearsSent = 0; lastEtaClearTs = null
+            }
             if (includeEnergy) { lastEnergySentTs = now; lastEnergySent = energy }
         }
         val summary = summarize(telemetry)
@@ -215,6 +236,12 @@ class TelemetryCollector(
         const val ENERGY_RESEND_MS = 60_000L
         const val ETA_DISTANCE_DELTA_M = 500
         const val ETA_TIME_DELTA_S = 60
+
+        /** 안내 종료 뒤 빈 ETA(지움 신호)를 보내는 횟수 — QoS 0 유실 대비 */
+        const val ETA_CLEAR_REPEATS = 3
+
+        /** 모든 값이 빈 ETA — 서버가 저장하면 화면에 '—'(옛 도착 시각 대신) */
+        val EMPTY_ETA = Eta(destTs = null, remainM = null, remainS = null)
         private const val LOG_EVERY = 10
     }
 }

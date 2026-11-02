@@ -22,6 +22,7 @@ import ai.pleos.playground.navi.helper.NaviHelper
 import ai.pleos.playground.navi.helper.listener.NaviHelperEventListener
 import android.content.Context
 import app.donghaeng.car.core.common.DhLog
+import app.donghaeng.car.core.common.TextMasking
 import app.donghaeng.car.domain.model.Fix
 import app.donghaeng.car.domain.model.NaviEvent
 import app.donghaeng.car.domain.model.NextTurnResult
@@ -110,6 +111,8 @@ class PleosNaviAdapter(context: Context) : NaviAdapter {
             close()
             return@callbackFlow
         }
+        // RA-1: 구독 직후 당겨 온 목적지(현재값)인지 — 그 사이 onDestinationChanged(변경 알림)가 오면 그 뒤 응답은 변경이다
+        val destinationPullPending = AtomicBoolean(true)
         val listener = object : NaviHelperEventListener {
             override fun onCurrentLocationInfo(info: CurrentLocationInfo) = guard("onCurrentLocationInfo") {
                 val fix = Fix(
@@ -150,14 +153,16 @@ class PleosNaviAdapter(context: Context) : NaviAdapter {
 
             override fun onDestinationChanged() = guard("onDestinationChanged") {
                 DhLog.i("navi onDestinationChanged → getDestinationInfo")
+                destinationPullPending.set(false)
                 h.getDestinationInfo()
             }
 
             override fun onDestinationInfo(info: DestinationInfo) = guard("onDestinationInfo") {
                 val place = info.toPlace()
                 lastDestination.set(place)
-                DhLog.i("navi onDestinationInfo ${place.toLogString()} remain=${info.remainDistance}m/${info.remainTime}s")
-                trySend(NaviEvent.DestinationChanged(place))
+                val snapshot = destinationPullPending.getAndSet(false)
+                DhLog.i("navi onDestinationInfo ${place.toLogString()} remain=${info.remainDistance}m/${info.remainTime}s snapshot=$snapshot")
+                trySend(NaviEvent.DestinationChanged(place, snapshot = snapshot))
             }
 
             override fun onWaypointChanged(info: WaypointChangedInfo) = guard("onWaypointChanged") {
@@ -174,12 +179,12 @@ class PleosNaviAdapter(context: Context) : NaviAdapter {
 
             override fun onWayPointArrived(info: WaypointArrivedInfo) = guard("onWayPointArrived") {
                 val place = lastWaypoints.get().firstOrNull { it.name == info.name }
-                DhLog.i("navi onWayPointArrived name=${info.name} index=${info.index}")
+                DhLog.i("navi onWayPointArrived name=${TextMasking.maskNickname(info.name)} index=${info.index}")
                 trySend(NaviEvent.WaypointArrived(index = info.index.ordinal, waypoint = place, name = info.name))
             }
 
             override fun onDestinationArrived(info: DestinationArrivedInfo) = guard("onDestinationArrived") {
-                DhLog.i("navi onDestinationArrived name=${info.name}")
+                DhLog.i("navi onDestinationArrived name=${TextMasking.maskNickname(info.name)}")
                 trySend(NaviEvent.DestinationArrived(destination = lastDestination.get(), name = info.name))
             }
 
@@ -272,10 +277,15 @@ class PleosNaviAdapter(context: Context) : NaviAdapter {
         }
     }
 
+    /**
+     * [내비 보기] 폴백(실행 인텐트를 못 찾을 때) — 순정 내비를 **앞으로** 가져온다(`Foreground`, A052).
+     * 예전 `RouteOptionList` 는 지도 대신 경로 옵션 목록 화면을 열었다(navi-data 3.0.4 javap: 둘 다 같은 sealed 계열 object).
+     */
     override suspend fun showNavigation() = withContext(Dispatchers.IO) {
         val h = ensureInitialized() ?: return@withContext
-        runCatching { h.requestNavigationScreen(NavigationScreenRequest.RouteOptionList) }
-            .onFailure { DhLog.w("navi requestNavigationScreen 실패", it) }
+        runCatching { h.requestNavigationScreen(NavigationScreenRequest.Foreground) }
+            .onSuccess { DhLog.i("navi requestNavigationScreen Foreground 요청") }
+            .onFailure { DhLog.w("navi requestNavigationScreen(Foreground) 실패", it) }
         Unit
     }
 

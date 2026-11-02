@@ -76,6 +76,8 @@ class SettingsViewModel @Inject constructor(
     private val serverConfig: ServerConfig,
     private val serverSwitcher: ServerSwitcher,
     private val pttSettings: app.donghaeng.car.domain.ptt.PttSettings,
+    /** A120: 자동 따라가기·지연 표시를 `dh_settings` 에 저장(앱을 다시 켜도 유지). '음성 안내'는 VoiceAnnouncer 가 저장한다(RA-3, B066) */
+    private val userSettings: app.donghaeng.car.domain.settings.UserSettings,
 ) : ViewModel() {
 
     private val flags = MutableStateFlow(LocalFlags())
@@ -97,11 +99,20 @@ class SettingsViewModel @Inject constructor(
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState(tokens = tokenStore.state.value, lastClear = tokenStore.lastClear.value, server = serverConfig.current.value, pttHandleButton = pttSettings.handleButton.value))
 
-    fun setVoiceEnabled(enabled: Boolean) = voiceAnnouncer.setEnabled(enabled)
+    /** RA-3: 저장은 음성 쪽 한 곳(VoiceAnnouncer.setEnabled → 자체 저장소, B066) */
+    fun setVoiceEnabled(enabled: Boolean) {
+        voiceAnnouncer.setEnabled(enabled)
+    }
 
-    fun setAutoFollow(enabled: Boolean) = routeSync.setAutoFollow(enabled)
+    fun setAutoFollow(enabled: Boolean) {
+        userSettings.setAutoFollow(enabled)
+        routeSync.setAutoFollow(enabled)
+    }
 
-    fun setLatencyOverlay(enabled: Boolean) = latency.setOverlayEnabled(enabled)
+    fun setLatencyOverlay(enabled: Boolean) {
+        userSettings.setLatencyOverlay(enabled)
+        latency.setOverlayEnabled(enabled)
+    }
 
     /** F16 '핸들 버튼으로 무전' — 주행 중이면 무시(화면도 스위치를 막는다) */
     fun setPttHandleButton(enabled: Boolean) {

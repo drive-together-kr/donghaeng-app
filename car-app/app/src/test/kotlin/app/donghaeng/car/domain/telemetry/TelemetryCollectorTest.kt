@@ -134,10 +134,45 @@ class TelemetryCollectorTest {
         advanceTimeBy(31_000); runCurrent()
         assertTrue(c.state.value.energySentCount >= 3)
 
-        // 오래된 TripInfo(120s 초과) → ETA 제외
+        // 오래된 TripInfo(120s 초과) → 옛 ETA 대신 '지움'(모든 값 빈 ETA)을 30초 간격으로 3번(A009), 그 뒤로는 ETA 없음
         navi.value = navi.value.copy(lastTripTs = testScheduler.currentTime - 200_000L)
-        advanceTimeBy(31_000); runCurrent()
+        val mark = published.size
+        advanceTimeBy(100_000); runCurrent()
+        val etas = published.drop(mark).mapNotNull { it.second.eta }
+        assertEquals(List(TelemetryCollector.ETA_CLEAR_REPEATS) { TelemetryCollector.EMPTY_ETA }, etas)
         assertNull(published.last().second.eta)
+        } finally { c.stop() }
+    }
+
+    @Test
+    fun `A009 - when guidance ends the stale eta is cleared on the server (empty eta), and a new route sends eta again`() = runTest {
+        val c = collector(testScheduler)
+        freshen = true
+        session.value = groupSession()
+        navi.value = NaviMonitorState(lastRemainDistanceM = 10_000, lastRemainTimeS = 600, lastTripTs = testScheduler.currentTime)
+        c.start(); runCurrent()
+        try {
+            fix = freshFix(testScheduler.currentTime)
+            advanceTimeBy(1_000); runCurrent()
+            assertEquals(10_000, published.last().second.eta?.remainM)
+            // 안내 취소 — NaviEventMonitor 가 남은 거리·시간을 비운다
+            navi.value = navi.value.copy(lastRemainDistanceM = null, lastRemainTimeS = null, lastTripTs = null)
+            advanceTimeBy(1_000); runCurrent()
+            assertEquals("바로 지움 신호", TelemetryCollector.EMPTY_ETA, published.last().second.eta)
+            // 새 안내 → 다시 ETA
+            navi.value = NaviMonitorState(lastRemainDistanceM = 5_000, lastRemainTimeS = 300, lastTripTs = testScheduler.currentTime)
+            advanceTimeBy(1_000); runCurrent()
+            assertEquals(5_000, published.last().second.eta?.remainM)
+        } finally { c.stop() }
+    }
+
+    @Test
+    fun `A090 - the group name (default contains the leader's nickname) is not logged`() = runTest {
+        val c = collector(testScheduler)
+        session.value = groupSession().copy(name = "홍길동 차와 같이 가기")
+        c.start(); runCurrent()
+        try {
+            assertTrue(app.donghaeng.car.core.common.DhLog.recent(300).none { it.contains("홍길동") })
         } finally { c.stop() }
     }
 

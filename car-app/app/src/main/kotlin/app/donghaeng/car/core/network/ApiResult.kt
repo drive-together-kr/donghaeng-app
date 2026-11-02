@@ -94,6 +94,26 @@ suspend fun <T> safeApiCall(block: suspend () -> Response<T>): ApiResult<T> = tr
     ApiResult.UnexpectedFailure(e)
 }
 
+/**
+ * 본문이 없는 성공(204 No Content 등)을 쓰는 호출용 — 2xx 면 본문과 상관없이 [ApiResult.Success] (A002).
+ * Retrofit 2.11 은 204·205 면 컨버터를 거치지 않고 `Response.success(null, raw)` 를 돌려준다(javap 확인) — [safeApiCall] 은 그 null 본문을
+ * '빈 본문 오류'로 바꾸므로 나가기·종료 같은 204 경로는 이 함수를 쓴다. 실패·예외 처리는 [safeApiCall] 과 같다.
+ */
+suspend fun safeUnitCall(block: suspend () -> Response<*>): ApiResult<Unit> = try {
+    val response = block()
+    if (response.isSuccessful) {
+        ApiResult.Success(Unit)
+    } else {
+        ApiResult.HttpFailure.of(response.code(), parseErrorBody(response.errorBody()?.string()))
+    }
+} catch (e: IOException) {
+    ApiResult.NetworkFailure(e)
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Exception) {
+    ApiResult.UnexpectedFailure(e)
+}
+
 /** docs/03 오류 봉투 파싱. 본문이 비었거나 다른 모양이면 null. */
 fun parseErrorBody(raw: String?): ErrorBody? {
     if (raw.isNullOrBlank()) return null

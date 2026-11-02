@@ -94,4 +94,30 @@ class NaviEventMonitorTest {
         assertEquals(3, attempts)   // 살아 있는 동안은 재구독 안 함
         monitor.stop()
     }
+
+    @Test
+    fun `A009 - route end or no destination clears the remaining distance and time behind the telemetry eta`() = runTest {
+        val script = kotlinx.coroutines.flow.MutableSharedFlow<NaviEvent>(extraBufferCapacity = 8)
+        val adapter = object : NaviAdapter {
+            override fun events(): Flow<NaviEvent> = script
+            override suspend fun requestRoute(dest: Place) = Unit
+            override suspend fun requestRouteWithWaypoints(dest: Place, waypoints: List<Place>) = Unit
+            override suspend fun addWaypoint(place: Place, index: WaypointIndex) = Unit
+            override suspend fun currentDestination(): Place? = null
+            override suspend fun showNavigation() = Unit
+            override suspend fun nextTurn(timeoutMs: Long): NextTurnResult = NextTurnResult.Unknown
+        }
+        val monitor = NaviEventMonitor(adapter).apply { configureForTest(StandardTestDispatcher(testScheduler), restartDelayMs = 1_000) }
+        monitor.start(); runCurrent()
+        script.emit(NaviEvent.TripInfo(remainDistanceM = 12_000, remainTimeS = 900, destinationArrivalTs = null)); runCurrent()
+        assertEquals(12_000, monitor.state.value.lastRemainDistanceM)
+        script.emit(NaviEvent.RouteStateInfo(app.donghaeng.car.domain.model.RouteState.CANCELLED)); runCurrent()
+        assertEquals(null, monitor.state.value.lastRemainDistanceM)
+        assertEquals(null, monitor.state.value.lastTripTs)
+        script.emit(NaviEvent.TripInfo(remainDistanceM = 3_000, remainTimeS = 200, destinationArrivalTs = null)); runCurrent()
+        assertEquals(3_000, monitor.state.value.lastRemainDistanceM)
+        script.emit(NaviEvent.DestinationChanged(null)); runCurrent()
+        assertEquals(null, monitor.state.value.lastRemainTimeS)
+        monitor.stop()
+    }
 }

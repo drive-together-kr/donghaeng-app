@@ -88,4 +88,67 @@ class VehicleEventEngineTest {
             e.stop()
         }
     }
+
+    @Test
+    fun `A054 - an invite reissue (same group, new session object) does not announce the arrival again, A090 - no group name in logs`() = runTest {
+        val e = engine(testScheduler)
+        e.start()
+        try {
+            fix = Fix(lat = 37.6, lon = 127.0, heading = null, accuracy = 5f, ts = 0L, source = LocSource.NAVI)
+            vehicle.value = VehicleSignalState(speedKph = 0f)
+            session.value = groupSession.copy(name = "홍길동 차와 같이 가기")
+            advanceTimeBy(2_000); runCurrent()
+            assertEquals(1, published.count { it.second == "DESTINATION_ARRIVED" })
+            // 정차 중 초대 재발급 → 같은 그룹·같은 목적지, 세션 객체만 바뀜
+            session.value = session.value!!.copy(invite = app.donghaeng.car.domain.session.GroupInvite("inv", "u", 1L))
+            advanceTimeBy(5_000); runCurrent()
+            assertEquals("다시 알리지 않는다", 1, published.count { it.second == "DESTINATION_ARRIVED" })
+            assertTrue(app.donghaeng.car.core.common.DhLog.recent(300).none { it.contains("홍길동") })
+        } finally {
+            e.stop()
+        }
+    }
+
+    @Test
+    fun `A059 - a navi arrival waits while a tick is judging (detector access is serialized)`() {
+        val inTick = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val tickThread = "a059-tick"
+        val out = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val engine = VehicleEventEngine(
+            session = session,
+            vehicleId = { "veh_T" },
+            latestFix = {
+                if (Thread.currentThread().name == tickThread) {
+                    inTick.countDown()
+                    release.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                }
+                null
+            },
+            fallbackSpeedKph = { null },
+            vehicle = vehicle,
+            naviEvents = navi,
+            publish = { _, type, _ -> out += type; true },
+            intervalMs = 3_600_000L,
+            dispatcher = kotlinx.coroutines.Dispatchers.Default,
+        )
+        session.value = groupSession
+        engine.start()
+        try {
+            Thread.sleep(300)   // 첫 틱(세션 시작)이 지나가게
+            val t = Thread({ engine.tick() }, tickThread).apply { start() }
+            assertTrue(inTick.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            check(navi.tryEmit(NaviEvent.DestinationArrived(null, null)))
+            Thread.sleep(300)
+            assertFalse("틱이 판정 중인 동안 내비 도착은 기다린다", out.contains("DESTINATION_ARRIVED"))
+            release.countDown()
+            t.join(5_000)
+            val deadline = System.currentTimeMillis() + 5_000
+            while (!out.contains("DESTINATION_ARRIVED") && System.currentTimeMillis() < deadline) Thread.sleep(20)
+            assertEquals(1, out.count { it == "DESTINATION_ARRIVED" })
+        } finally {
+            release.countDown()
+            engine.stop()
+        }
+    }
 }

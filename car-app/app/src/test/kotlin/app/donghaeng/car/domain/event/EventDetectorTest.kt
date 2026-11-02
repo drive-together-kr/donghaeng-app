@@ -79,11 +79,52 @@ class EventDetectorTest {
         assertTrue(d.onSample(sample(4_000, speed = 0f, lat = 37.5005, lon = 127.0)).isEmpty())
         assertTrue(d.onNavi(NaviEvent.DestinationArrived(null, "휴게소")).isEmpty())                 // 이미 알림
         d.setDestination(Place(35.1, 126.8, "할머니댁"))
-        assertEquals(listOf(DetectedEvent.DestinationArrived("할머니댁")), d.onNavi(NaviEvent.DestinationArrived(null, "할머니댁")))
+        // 내비가 목적지 좌표를 주면(PleosNaviAdapter 는 마지막 onDestinationInfo 를 싣는다) 그 좌표로 그룹 목적지인지 본다(A005)
+        assertEquals(listOf(DetectedEvent.DestinationArrived("할머니댁")), d.onNavi(NaviEvent.DestinationArrived(Place(35.1, 126.8, "할머니댁"), "할머니댁")))
 
         val wp = d.onNavi(NaviEvent.WaypointArrived(index = 0, waypoint = Place(36.0, 127.0, "덕평휴게소"), name = "덕평휴게소"))
         assertEquals(listOf(DetectedEvent.WaypointArrived("덕평휴게소", 36.0, 127.0)), wp)
         // 경유지 좌표가 없으면 마지막 위치
         assertEquals(listOf(DetectedEvent.WaypointArrived("이름만", 37.5005, 127.0)), d.onNavi(NaviEvent.WaypointArrived(index = null, waypoint = null, name = "이름만")))
+    }
+
+    @Test
+    fun `A005 - a navi arrival at a non-group destination (gas station) is ignored and does not block the real group arrival`() {
+        val d = EventDetector()
+        val group = Place(35.1595, 126.8526, "광주송정역")
+        val gasStation = Place(36.0, 127.2, "주유소")
+        d.setDestination(group)
+        // 내비 목적지를 주유소로 바꿔 도착 — 그룹 소식이 아니다
+        assertTrue(d.onNavi(NaviEvent.DestinationArrived(gasStation, "주유소")).isEmpty())
+        assertEquals(1, d.ignoredNaviArrivals)
+        // 목적지 좌표가 없어도 마지막 위치가 그룹 목적지에서 멀면 무시
+        d.onSample(sample(0, speed = 0f, lat = 36.0, lon = 127.2))
+        assertTrue(d.onNavi(NaviEvent.DestinationArrived(null, "주유소")).isEmpty())
+        // 그 뒤 진짜 그룹 목적지 근처에서 멈추면 알린다(래치가 걸리지 않았다)
+        assertEquals(listOf(DetectedEvent.DestinationArrived("광주송정역")), d.onSample(sample(10_000, speed = 0f, lat = 35.1600, lon = 126.8526)))
+        // 같은 목적지는 한 번만(내비 도착이 뒤따라와도)
+        assertTrue(d.onNavi(NaviEvent.DestinationArrived(group, "광주송정역")).isEmpty())
+    }
+
+    @Test
+    fun `A005 - the destination the group followed (leader changed it) counts as a group arrival`() {
+        val d = EventDetector()
+        d.setDestination(Place(35.1595, 126.8526, "광주송정역"))
+        val newDest = Place(37.7719, 128.9479, "경포해변")
+        d.setFollowedDestination(newDest)
+        assertEquals(listOf(DetectedEvent.DestinationArrived("경포해변")), d.onNavi(NaviEvent.DestinationArrived(newDest, "경포해변")))
+        assertTrue("목적지당 1회", d.onSample(sample(1_000, speed = 0f, lat = 37.7720, lon = 128.9479)).isEmpty())
+        // 그룹이 바뀌면 다시 판정
+        d.resetForNewGroup()
+        d.setDestination(newDest)
+        assertEquals(listOf(DetectedEvent.DestinationArrived("경포해변")), d.onSample(sample(2_000, speed = 0f, lat = 37.7720, lon = 128.9479)))
+    }
+
+    @Test
+    fun `a navi arrival without any coordinates still counts as the group arrival (previous behaviour)`() {
+        val d = EventDetector()
+        d.setDestination(Place(37.6, 127.0, "휴게소"))
+        assertEquals(listOf(DetectedEvent.DestinationArrived("휴게소")), d.onNavi(NaviEvent.DestinationArrived(null, null)))
+        assertTrue(d.onNavi(NaviEvent.DestinationArrived(null, null)).isEmpty())
     }
 }

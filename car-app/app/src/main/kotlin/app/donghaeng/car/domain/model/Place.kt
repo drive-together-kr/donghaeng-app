@@ -1,6 +1,7 @@
 package app.donghaeng.car.domain.model
 
 import app.donghaeng.car.core.common.CoordinateMasking
+import app.donghaeng.car.core.common.TextMasking
 
 /**
  * 목적지·경유지 지점.
@@ -12,5 +13,8 @@ import app.donghaeng.car.core.common.CoordinateMasking
  */
 typealias Place = app.donghaeng.protocol.Place
 
-/** 로그용 문자열 — 좌표는 마스킹, 이름은 그대로(장소명은 개인정보가 아님). */
-fun Place.toLogString(): String = "Place(${name}, ${CoordinateMasking.mask(lat, lon)}, poiId=${poiId ?: "-"})"
+/**
+ * 로그용 문자열 — 좌표는 마스킹, 이름은 앞 글자와 길이만, POI 는 있는지만(A090, 규칙 8).
+ * '우리집'·주소형 POI 이름과 poiId 가 함께 남으면 좌표 0.1° 마스킹을 해도 정확한 장소가 드러난다(ring 버퍼·`dh_log.txt` 보존).
+ */
+fun Place.toLogString(): String = "Place(${TextMasking.maskNickname(name)}, ${CoordinateMasking.mask(lat, lon)}, poi=${if (poiId != null) "Y" else "-"})"

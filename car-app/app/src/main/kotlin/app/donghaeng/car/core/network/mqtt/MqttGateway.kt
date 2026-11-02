@@ -24,6 +24,7 @@ enum class MqttState { DISCONNECTED, CONNECTING, CONNECTED, RECONNECTING }
  * @param authFailures 브로커가 CONNACK 에서 인증을 거부한 횟수(NOT_AUTHORIZED / BAD_USER_NAME_OR_PASSWORD, T33)
  * @param lastAuthFailureAtMs 마지막 인증 거부 시각
  * @param notConnectedSinceMs 연결 시도를 시작했거나 끊긴 뒤(또는 [MqttUriPolicy] 가 접속을 거부한 뒤) 아직 못 붙은 시작 시각. 연결돼 있거나 앱이 끊었으면 null (홈 '서버 연결 끊김' 배너, T33)
+ * @param deniedTopics 브로커가 SUBACK 으로 거부했거나 구독이 실패해 다시 시도 중인 토픽(A018). [subscribed] 에는 그대로 남아 있다 — 진단·홈 표시용
  */
 data class MqttStatus(
     val state: MqttState = MqttState.DISCONNECTED,
@@ -40,6 +41,7 @@ data class MqttStatus(
     val authFailures: Int = 0,
     val lastAuthFailureAtMs: Long? = null,
     val notConnectedSinceMs: Long? = null,
+    val deniedTopics: Set<String> = emptySet(),
 )
 
 /**
@@ -76,6 +78,12 @@ interface MqttGateway {
     val authFailures: SharedFlow<MqttAuthFailure>
 
     /**
+     * 구독이 거부·실패한 토픽(A018) — 게이트웨이는 연결이 살아 있는 동안 2→4→…→30 s 로 다시 걸고, 몇 번 거부되면 여기로 알린다.
+     * 그룹 토픽이 계속 거부되면 '이 차가 멤버가 아니다'일 수 있어 세션 관리자가 서버와 소속을 다시 맞춘다. 기본 = 알리지 않음.
+     */
+    val subscriptionDenied: SharedFlow<String> get() = NO_DENIALS
+
+    /**
      * 자격 증명으로 (재)접속한다. 이미 같은 차량으로 접속 중이면 아무것도 하지 않는다.
      * 같은 차량에 토큰만 바뀌면(갱신) 연결은 유지하고 다음 재연결부터 새 토큰을 쓴다 — 인증 거부로 재연결을 기다리는 중이면 즉시 새 토큰으로 붙는다.
      */
@@ -103,3 +111,6 @@ interface MqttGateway {
      */
     suspend fun probeAckNanos(timeoutMs: Long = 5_000): Result<Long> = Result.failure(UnsupportedOperationException("ack probe unsupported"))
 }
+
+/** [MqttGateway.subscriptionDenied] 기본값 — 아무것도 내보내지 않는다 */
+private val NO_DENIALS: SharedFlow<String> = kotlinx.coroutines.flow.MutableSharedFlow()

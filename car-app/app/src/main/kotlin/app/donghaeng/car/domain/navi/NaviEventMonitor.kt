@@ -4,6 +4,7 @@ import app.donghaeng.car.adapter.navi.NaviAdapter
 import app.donghaeng.car.core.common.CoordinateMasking
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.model.NaviEvent
+import app.donghaeng.car.domain.model.RouteState
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -118,8 +119,17 @@ class NaviEventMonitor @Inject constructor(
                 is NaviEvent.CurrentLocation -> s.copy(counts = counts, lastFixMasked = CoordinateMasking.mask(e.fix.lat, e.fix.lon), lastFixHeading = e.fix.heading, lastFixTs = e.fix.ts)
                 is NaviEvent.TripInfo -> s.copy(counts = counts, lastTrip = formatTrip(e), lastRemainDistanceM = e.remainDistanceM, lastRemainTimeS = e.remainTimeS, lastTripTs = System.currentTimeMillis())
                 is NaviEvent.DrivingInfo -> s.copy(counts = counts)
-                is NaviEvent.RouteStateInfo -> s.copy(counts = counts, lastRouteState = e.state.name + (e.detail?.let { " ($it)" } ?: ""))
-                is NaviEvent.DestinationChanged -> s.copy(counts = counts, destinationName = e.destination?.name ?: "(없음)")
+                // A009: 안내가 끝나면(종료·취소·목적지 없음) 남은 거리·시간을 비운다 — 텔레메트리가 120 s 동안 굳은 ETA 를 다시 보내지 않고 바로 '지움'을 보낸다
+                is NaviEvent.RouteStateInfo -> if (e.state == RouteState.ENDED || e.state == RouteState.CANCELLED) {
+                    s.copy(counts = counts, lastRouteState = e.state.name + (e.detail?.let { " ($it)" } ?: ""), lastRemainDistanceM = null, lastRemainTimeS = null, lastTripTs = null)
+                } else {
+                    s.copy(counts = counts, lastRouteState = e.state.name + (e.detail?.let { " ($it)" } ?: ""))
+                }
+                is NaviEvent.DestinationChanged -> if (e.destination == null) {
+                    s.copy(counts = counts, destinationName = "(없음)", lastRemainDistanceM = null, lastRemainTimeS = null, lastTripTs = null)
+                } else {
+                    s.copy(counts = counts, destinationName = e.destination.name)
+                }
                 is NaviEvent.WaypointChanged -> s.copy(counts = counts, waypointCount = e.waypoints.size)
                 is NaviEvent.WaypointArrived -> s.copy(counts = counts, lastArrival = "경유지 ${e.name ?: e.waypoint?.name ?: "?"}")
                 is NaviEvent.DestinationArrived -> s.copy(counts = counts, lastArrival = "목적지 ${e.name ?: e.destination?.name ?: "?"}")

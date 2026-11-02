@@ -42,7 +42,7 @@ data class GroupSession(
     val destination: Place,
     val topics: GroupTopics,
     val joinedAtMs: Long,
-    /** 이 차가 만든(방장) 그룹인가 */
+    /** 이 차가 지금 방장인가 — 만들 때(POST /groups) true, 이후 LEADER_CHANGED·스냅샷 leaderVehicleId 로 갱신된다(A004) */
     val isLeader: Boolean = false,
     /** 방장 차량의 현재 초대(QR). 멤버는 null */
     val invite: GroupInvite? = null,
@@ -50,7 +50,9 @@ data class GroupSession(
     val subscribeTopics: List<String> get() = listOf(topics.state, topics.event)
 
     companion object {
-        fun from(cmd: GroupJoined, nowMs: Long) = GroupSession(cmd.groupId, cmd.name, cmd.leaderVehicleId, cmd.destination, cmd.topics, nowMs)
+        /** cmd `GROUP_JOINED`(또는 계약 1 응답)로 만든다. [myVehicleId] 가 방장이면 isLeader=true(초대는 서버 응답에 없어 null) */
+        fun from(cmd: GroupJoined, nowMs: Long, myVehicleId: String? = null) =
+            GroupSession(cmd.groupId, cmd.name, cmd.leaderVehicleId, cmd.destination, cmd.topics, nowMs, isLeader = myVehicleId != null && cmd.leaderVehicleId == myVehicleId)
     }
 }
 
@@ -70,6 +72,9 @@ enum class SessionClearReason {
 
     /** `group_session` 파일 손상·해석 불가 → 비움 */
     STORE_CORRUPT,
+
+    /** 재접속·앱 시작 때 서버와 맞춰 보니 이 그룹이 끝났거나 이 차가 멤버가 아니다(A000 — 꺼진 동안 놓친 GROUP_ENDED·MEMBER_LEFT) */
+    RECONCILED,
 }
 
 /** 활성 그룹 저장소. 구현: [DataStoreGroupSessionStore](기기) / [InMemoryGroupSessionStore](테스트) */
