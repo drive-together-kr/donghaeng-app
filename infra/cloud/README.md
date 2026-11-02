@@ -89,13 +89,14 @@ bash infra/cloud/deploy.sh ubuntu@203.0.113.10 -i ~/.ssh/donghaeng-vm.pem [--ema
 - `.env` 는 VM `~/donghaeng/infra/.env`(chmod 600)에만 있다. 로컬로 가져오거나 커밋·공유하지 않는다. 대시보드 비밀번호 확인: `ssh <vm> "grep ^EMQX_DASHBOARD_PASSWORD= donghaeng/infra/.env"`.
 - Caddy 액세스 로그는 켜지 않는다(경로에 초대 토큰 `/j/{token}`·페어링 코드·좌표 쿼리가 들어감 — CLAUDE.md 규칙 8). 오류 로그(업스트림 502 등)는 요청 uri·헤더를 함께 남기므로
   Caddyfile 전역 `log` 의 `filter` 가 **쿼리 전체 → `?***`, `/j/<토큰>` → `/j/***`, `Referer`·`X-Dev-Login-Key` 헤더 삭제** 로 가린다(`Authorization`·`Cookie` 는 Caddy 기본 마스킹). 서버 프로필은 `cloud`(로컬의 DEBUG 로그 없음).
-- **dev 간편 로그인 접속 키(필수)** — `POST /v1/auth/login {provider:dev, email}` 은 비밀번호 없이 이메일만 보는 MVP 로그인이고(docs/03 §1.1), demo-host 의 기본 이메일은 저장소·APK 에 공개돼 있다.
+- **dev 간편 로그인 접속 키(필수)** — `POST /v1/auth/login {provider:dev, email}` 은 비밀번호 없이 이메일만 보는 MVP 로그인이고(docs/03 §1.1), 이메일만 알면 그 계정이 된다 — 예전 demo-host 고정 기본값(`rider01@dev.local`)은 저장소 기록에 남아 있다.
   키가 없으면 인터넷의 누구나 시연 계정 토큰을 받아 `/v1/me/vehicles` 조회·차량 해제(`DELETE`), 그룹 메시지(차량에서 음성으로 읽힘), `/v1/device/approve` 를 호출할 수 있다(docs/10 R20).
   그래서 클라우드 서버는 `DH_DEV_LOGIN_KEY`(remote-env.sh 가 hex 32자로 생성, 비면 compose 가 기동 거부)를 요구하고, 헤더 `X-Dev-Login-Key` 가 없거나 다르면 **403 `FORBIDDEN`** 으로 끊는다(헬스체크 5번이 확인).
   - 키 확인: `ssh <vm> "grep ^DH_DEV_LOGIN_KEY= donghaeng/infra/.env"` — 화면·채팅·스크린샷에 올리지 않는다.
   - demo-host: `cd companion && ./gradlew :demo-host:assembleDebug -PdhPublicBaseUrl=https://<host> -PdhDevLoginKey=<키>`(또는 `~/.gradle/gradle.properties` 의 `dhDevLoginKey`, 저장소에는 적지 않음).
   - 시연 스크립트: `DH_DEV_LOGIN_KEY=<키> python tools/demo/demo.py --server https://<host> --email <이메일> …`(`tools/demo/api.py` 도 같은 환경변수).
-  - 한계: 키는 그 서버용으로 빌드한 demo-host APK 안에 들어간다 — 그 APK 는 시연 기기·심사 제출 외에 공개 배포하지 않는다. 시연 계정은 저장소에 없는 이메일(기본값 `rider01@dev.local` 말고)로 쓴다.
+  - 한계: 키는 그 서버용으로 빌드한 demo-host APK 안에 들어간다 — 그 APK 는 시연 기기·심사 제출 외에 공개 배포하지 않는다. demo-host 로그인 기본값은 이제 **설치마다 무작위 `judge-<8hex>@dev.local`**
+    (2026-11 D026·D031 — 예전 고정 기본값 `rider01@dev.local` 이 아니다)이라 심사 기기끼리 계정이 섞이지 않는다. 시연 계정을 정해 쓸 때는 저장소에 없는 이메일을 demo-host 로그인 화면에 넣고 `tools/demo --email` 에도 같은 값을 준다.
     키가 새면 `.env` 의 값을 `openssl rand -hex 16` 으로 바꾸고 `dc up -d server` → demo-host 다시 빌드. 이미 발급된 토큰은 만료(사용자 1시간·refresh 30일)까지 유효하다.
   - companion 의 dev 교환(`POST /v1/auth/exchange`)은 키를 보지 않는다 — 로그인으로 받은 토큰만 인정하므로 로그인을 막으면 같이 막힌다.
 - 대시보드: `ssh -L 18083:127.0.0.1:18083 ubuntu@<IP>` → <http://localhost:18083> (admin / `.env` 의 `EMQX_DASHBOARD_PASSWORD`, 첫 로그인 때 변경 강제).
@@ -136,6 +137,20 @@ dc restart server                      # 서버만 재시작(토큰·DB 유지 �
 - **.env 를 고친 뒤**: `dc up -d` (바뀐 변수를 쓰는 서비스만 다시 만든다). 단 `POSTGRES_PASSWORD`·`EMQX_DASHBOARD_PASSWORD` 는 **빈 볼륨에 처음 뜰 때만** 적용된다 — 이후 바꾸려면 DB 안에서 `ALTER USER`, 대시보드에서 변경.
 - **VM IP 가 바뀌었을 때**: `.env` 의 `DH_PUBLIC_HOST`·`DH_PUBLIC_BASE_URL`·`DH_MQTT_PUBLIC_URI` 세 줄을 새 `<IP>` 로 고치고 `bash infra/cloud/deploy.sh <user>@<새 IP> --skip-build`. 새 이름으로 인증서가 다시 발급되고, 차량 앱은 새 주소로 다시 빌드·페어링해야 한다(QR 주소가 바뀜).
 - **JWT 키(`DH_JWT_PRIVATE_KEY_PEM`)를 바꾸면** 발급된 차량·사용자 토큰이 전부 무효가 된다 → 차량 재페어링 필요. `DH_CAR_ID_SALT` 는 바꾸지 않는다.
+
+### 5.1 2026-11-02 정밀점검 반영 서버 배포 메모
+
+2026-10-28 배포(§9) 뒤 점검 반영(배치 C) 서버를 처음 올릴 때 달라지는 것:
+
+- **Flyway V7**(`server/src/main/resources/db/migration/V7__review_fixes.sql`, docs/04 'V7') — 서버가 시작할 때 자동 적용된다. 열·인덱스 추가와 새 표(`idempotency_record`)뿐이라
+  기존 그룹·차량·토큰은 그대로다. deploy.sh 8단계가 재배포 직전에 DB 를 백업하므로(`~/donghaeng/backups/pg-<시각>.sql.gz`) 되돌릴 때는 §6 의 DB 복원을 쓴다(Flyway 는 전진 전용).
+  확인: `dc logs server | grep -i "migration"` 에 V7 적용 줄(`… now at version v7`), 그 뒤 `deploy.sh --check-only` 9/9.
+- **빈도 제한**(docs/03 머리말·§2.3) — `POST /v1/auth/login`·`POST /v1/device/code` 는 **IP 당 분당 30회**(`DH_RATE_LIMIT_IP_PER_MINUTE`, 0 이면 끔), 동승자 메시지는 **그룹당 2 s 에 1건**
+  (서버 기본값, `DH_RATE_LIMIT_MESSAGE_INTERVAL_MS` — compose 로는 넘기지 않는다). 넘으면 429 `RATE_LIMITED` + `Retry-After`.
+  기존 VM `.env` 에 `DH_RATE_LIMIT_IP_PER_MINUTE` 줄이 없어도 compose 기본값 30 이 들어간다 — 바꾸려면 `.env` 에 줄을 넣고 `dc up -d server`.
+  클라우드는 Caddy 뒤라 서버가 `X-Forwarded-For` 의 마지막 값(Caddy 가 본 클라이언트 주소)으로 IP 를 센다 — 시연장에서 여러 기기가 같은 공인 IP(NAT)로 나가도
+  로그인·페어링 몇 번은 충분하다. 리허설 스크립트(`tools/demo`)를 빠르게 되풀이하다 429 가 나면 1분 기다린다(스크립트는 토큰을 서버별로 캐시해 로그인을 줄인다).
+- 차량 앱·demo-host·tools/demo 쪽 변화는 docs/09 §4.4.
 
 ## 6. 롤백
 

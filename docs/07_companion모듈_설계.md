@@ -119,7 +119,7 @@ public fun interface TokenProvider { public suspend fun accessToken(): String } 
 QR 문자열은 서버가 `{DH_PUBLIC_BASE_URL}` + 경로로 만든다(docs/03 머리말). 호스트 앱 스캐너가 읽은 문자열을 모듈이 **경로로** 판별하고, 호스트는 `init` 에 준 서버와 같은지만 확인한다.
 ```
 {DH_PUBLIC_BASE_URL}/j/inv_xxxxx     → 그룹 합류  → joinGroup      (예: http://10.0.2.2:8080/j/inv_abc)
-{DH_PUBLIC_BASE_URL}/pair?c=XXXXXX   → 차량 페어링 → pairVehicle    (예: https://1-2-3-4.sslip.io/pair?c=KQ74MZ)
+{DH_PUBLIC_BASE_URL}/pair?c=XXXXXX   → 차량 페어링 → pairVehicle    (예: https://1.2.3.4.sslip.io/pair?c=KQ74MZ)
 경로가 위 둘이 아님                  → InvalidQr  "동행 QR이 아니에요"
 호스트가 설정된 서버와 다름          → OtherServer "다른 서버의 QR이에요"
 차량 등록 QR 을 joinGroup 에(또는 반대) → InvalidQr  reason = "차량 등록용 QR이에요. '차량 등록'에서 스캔해 주세요" (사용자용 문구; 어느 API 를 부를지는 호스트가 경로로 먼저 고른다)

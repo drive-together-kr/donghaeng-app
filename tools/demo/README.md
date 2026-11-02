@@ -47,6 +47,10 @@ python tools/demo/soak.py --car-a emulator-5556 --car-b emulator-5558 --minutes 
 
 preflight 표의 `WARN` 은 알리기만 하고 실패로 세지 않는다(`FAIL` 이 있으면 `--skip-preflight` 없이는 멈춘다).
 `--no-auto-accept` 면 차 B 의 제안("선두차 목적지까지 안내할까요?", "따라갈까요?")을 화면에서 직접 누른다(30초 안에, 주행 중엔 버튼이 막히므로 정차 상태에서).
+합류 제안은 합류 **약 3 s 뒤**에 나온다(2026-11-02 RC-3 — 그룹 경로에 경유지가 있으면 그 대신 서버 경로 제안 하나). 자동 수락은 합류를 감지한 뒤 그 제안 줄
+(`routesync: join proposal dest=` 또는 `routesync: proposal … dest=`, 최대 15 s)을 보고 4초 뒤 보낸다.
+preflight 의 `음성 안내 켜짐` 행은 디버그 `status` 의 `voice=` 를 본다 — 꺼져 있으면(진단 카드·리시버 `voice --ez on false`·`latency.py` 가 끈 채 멈춤) 실행 때 켜고 다시 확인하고,
+`--dry-run` 이면 FAIL 로 알리기만 한다(장면 5·6·9 의 `voice: speak …` 확인이 MISS 로 끝나지 않게).
 
 ## 디버그 리시버 (debug 빌드 전용)
 `adb shell am broadcast -n app.donghaeng.car/.debug.DemoControlReceiver --es action <action>` — `route_test`(선두: 덕평휴게소 경유 ROUTE_CHANGED), `accept`, `decline`,
