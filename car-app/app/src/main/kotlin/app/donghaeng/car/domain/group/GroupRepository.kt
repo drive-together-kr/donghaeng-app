@@ -5,6 +5,7 @@ import app.donghaeng.car.core.common.TextMasking
 import app.donghaeng.car.core.network.ApiResult
 import app.donghaeng.car.core.network.GroupApi
 import app.donghaeng.car.core.network.safeApiCall
+import app.donghaeng.car.core.network.safeUnitCall
 import app.donghaeng.car.domain.session.GroupInvite
 import app.donghaeng.car.domain.session.GroupSession
 import app.donghaeng.car.domain.session.GroupSessionStore
@@ -66,22 +67,31 @@ class GroupRepository @Inject constructor(
 
     suspend fun detail(groupId: String): ApiResult<GroupDetailResponse> = safeApiCall { api.getGroup(groupId) }
 
-    /** 이 차가 나간다(방장이면 승계). 성공/404(이미 없음) 모두 로컬 세션을 지운다 */
+    /**
+     * 이 차가 나간다(방장이면 승계). 성공(204)·404(이미 없음)·409(이미 끝남) 모두 로컬 세션을 지운다.
+     * 204 는 본문이 없으므로 [safeUnitCall] 로 받는다(A002 — 예전엔 '빈 본문 오류'로 바뀌어 오류 대화상자가 뜨고 세션도 남았다).
+     */
     suspend fun leave(): ApiResult<Unit> {
         val current = sessionStore.session.value ?: return ApiResult.Success(Unit)
-        val result = safeApiCall { api.leave(current.groupId) }
+        val result = safeUnitCall { api.leave(current.groupId) }
         if (result is ApiResult.Success || result is ApiResult.HttpFailure.NotFound || (result as? ApiResult.HttpFailure)?.status == 409) {
             sessionManager.onGroupLeftLocally()
         }
         return result
     }
 
-    /** 방장이 그룹을 끝낸다. 서버가 cmd `GROUP_ENDED` 도 보내지만 로컬은 즉시 정리한다 */
+    /**
+     * 방장이 그룹을 끝낸다. 서버가 cmd `GROUP_ENDED` 도 보내지만 로컬은 즉시 정리한다.
+     * 403(이미 방장이 아님 — 위임·승계를 놓친 옛 방장, A004)이면 나가기로 대신한다: 방장 권한이 없어도 이 차는 그룹에서 빠질 수 있어야 한다.
+     */
     suspend fun end(): ApiResult<Unit> {
         val current = sessionStore.session.value ?: return ApiResult.Success(Unit)
-        val result = safeApiCall { api.end(current.groupId) }
+        val result = safeUnitCall { api.end(current.groupId) }
         if (result is ApiResult.Success || (result as? ApiResult.HttpFailure)?.status == 409) {
             sessionManager.onGroupLeftLocally()
+        } else if ((result as? ApiResult.HttpFailure)?.status == 403) {
+            DhLog.w("group end 403 (no longer leader) groupId=${TextMasking.maskVehicleId(current.groupId)} → leave instead")
+            return leave()
         }
         return result
     }

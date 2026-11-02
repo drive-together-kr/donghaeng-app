@@ -75,6 +75,13 @@ data class EventUi(val eventId: String, val type: String, val severity: Severity
 
 enum class ConnState { CONNECTED, RECONNECTING, OFFLINE }
 
+/**
+ * 그룹 세션이 끝난 이유(A115) — 정차 화면(EndedPane)이 사유별 문구·버튼을 고른다(화면 반영은 E 단계).
+ * - [GROUP_ENDED]: 방장이 끝냄 / [ENDED_WHILE_OFFLINE]: 꺼져 있던 사이 끝났거나 빠짐(재접속 때 서버와 맞춤) / [REMOVED]: 폰·REST 가 이 차를 그룹에서 뺌
+ * - [LEFT]: 이 차가 나가기·종료 / [UNPAIRED]: 차량 연결이 해제됨(새 그룹 대신 먼저 다시 연결) / [OTHER]: 기록 없음·저장소 문제
+ */
+enum class SessionEndReason { GROUP_ENDED, ENDED_WHILE_OFFLINE, REMOVED, LEFT, UNPAIRED, OTHER }
+
 /** docs/05 §5 `GroupDriveUiState` */
 data class GroupDriveUiState(
     val session: GroupSession? = null,
@@ -117,6 +124,8 @@ data class GroupDriveUiState(
     val continuousDriveMs: Long? = null,
     /** 음성 경로·지연·시작 신호 — 대시보드 띠의 위험 이벤트 강조(패널 소식 줄과 같은 값, docs/05 §5.2) */
     val voiceCue: app.donghaeng.car.domain.voice.VoiceCue = app.donghaeng.car.domain.voice.VoiceCue(),
+    /** 세션이 없을 때 끝난 이유(A115). 세션이 있으면 null */
+    val endReason: SessionEndReason? = null,
 ) {
     val hasSnapshot: Boolean get() = members.isNotEmpty()
     val proposalRemainingS: Long? get() = proposal?.let { ((it.expiresAtMs - nowMs) / 1_000).coerceAtLeast(0) }
@@ -157,6 +166,10 @@ class GroupDriveViewModel @Inject constructor(
 
     init {
         viewModelScope.launch { tokenStore.load() }
+        // A010: 그룹이 바뀌거나 끝나면 이전 그룹 소식을 비운다(같은 화면 인스턴스가 새 그룹을 보여 줄 때)
+        viewModelScope.launch {
+            sessionManager.session.map { it?.groupId }.distinctUntilChanged().collect { events.value = emptyList() }
+        }
         viewModelScope.launch {
             sessionManager.groupEvents.collect { e ->
                 // 내 차가 대상이 아닌 이벤트(뒤차의 급제동 등 — EventAudience)는 이벤트 스트립에도 넣지 않는다.
@@ -167,7 +180,7 @@ class GroupDriveViewModel @Inject constructor(
         }
     }
 
-    private data class Core(val session: GroupSession?, val state: GroupState?, val stateAt: Long?, val myVehicleId: String?)
+    private data class Core(val session: GroupSession?, val state: GroupState?, val stateAt: Long?, val myVehicleId: String?, val endReason: SessionEndReason?)
     private data class Side(val mqtt: MqttState, val fix: Fix?, val driving: Boolean, val events: List<EventUi>, val now: Long)
     private data class Extra(
         val busy: Boolean,
@@ -183,8 +196,8 @@ class GroupDriveViewModel @Inject constructor(
     )
 
     val uiState: StateFlow<GroupDriveUiState> = combine(
-        combine(sessionManager.session, sessionManager.groupState, sessionManager.groupStateAt, tokenStore.state) { s, g, t, tok ->
-            Core(s, g, t, (tok as? TokenStoreState.Present)?.credentials?.vehicleId)
+        combine(sessionManager.session, sessionManager.groupState, sessionManager.groupStateAt, tokenStore.state, sessionManager.lastSessionClear) { s, g, t, tok, clear ->
+            Core(s, g, t, (tok as? TokenStoreState.Present)?.credentials?.vehicleId, if (s != null) null else endReasonOf(tok, clear?.reason))
         },
         combine(mqtt.status, fixes.fixes.map<Fix, Fix?> { it }.onStart { emit(null) }, driving.isDriving(), events, ticker) { m, f, d, e, n -> Side(m.state, f, d, e, n) },
         combine(
@@ -233,6 +246,7 @@ class GroupDriveViewModel @Inject constructor(
             myVehicleId = core.myVehicleId,
             continuousDriveMs = surface.continuousDriveMs(),
             voiceCue = surface.voiceCue(),
+            endReason = core.endReason,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), GroupDriveUiState())
 
@@ -281,6 +295,17 @@ class GroupDriveViewModel @Inject constructor(
 
     companion object {
         const val MAX_EVENTS = 20
+
+        /** A115: 세션 삭제 사유(+ 토큰 상태) → 화면용 끝난 이유. 순수 함수(단위 테스트) */
+        fun endReasonOf(tokens: TokenStoreState, clearReason: String?): SessionEndReason = when {
+            tokens is TokenStoreState.Empty -> SessionEndReason.UNPAIRED
+            clearReason == app.donghaeng.car.domain.session.SessionClearReason.GROUP_ENDED.name -> SessionEndReason.GROUP_ENDED
+            clearReason == app.donghaeng.car.domain.session.SessionClearReason.RECONCILED.name -> SessionEndReason.ENDED_WHILE_OFFLINE
+            clearReason == app.donghaeng.car.domain.session.SessionClearReason.MEMBER_LEFT_ME.name -> SessionEndReason.REMOVED
+            clearReason == app.donghaeng.car.domain.session.SessionClearReason.LEFT_LOCALLY.name -> SessionEndReason.LEFT
+            clearReason == app.donghaeng.car.domain.session.SessionClearReason.UNPAIRED.name -> SessionEndReason.UNPAIRED
+            else -> SessionEndReason.OTHER
+        }
 
         fun MemberState.toUi(leaderVehicleId: String, myVehicleId: String?): MemberUi = MemberUi(
             vehicleId = vehicleId,

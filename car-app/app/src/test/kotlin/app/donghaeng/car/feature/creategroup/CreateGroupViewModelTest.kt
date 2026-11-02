@@ -59,11 +59,12 @@ class CreateGroupViewModelTest {
         override suspend fun reissueInvite(groupId: String, body: Map<String, String>): Response<InviteDto> {
             reissued++; return Response.success(InviteDto("inv_y", "http://10.0.2.2:8080/j/inv_y", 1_000_000L + 1_200_000L))
         }
+        var detailEnded = false
         override suspend fun getGroup(groupId: String): Response<GroupDetailResponse> =
-            if (detailStatus == 200) Response.success(GroupDetailResponse(groupId, "추석 귀성길", "veh_A", "ACTIVE", members = members))
+            if (detailStatus == 200) Response.success(GroupDetailResponse(groupId, "추석 귀성길", "veh_A", if (detailEnded) "ENDED" else "ACTIVE", members = members))
             else Response.error(detailStatus, """{"error":{"code":"NOT_FOUND","message":"그룹을 찾을 수 없어요.","traceId":"t"}}""".toResponseBody("application/json".toMediaType()))
-        override suspend fun leave(groupId: String, body: Map<String, String>): Response<Unit> = Response.success(204, Unit)
-        override suspend fun end(groupId: String, body: Map<String, String>): Response<Unit> { ended++; return Response.success(204, Unit) }
+        override suspend fun leave(groupId: String, body: Map<String, String>): Response<Unit> = app.donghaeng.car.testing.noContent()
+        override suspend fun end(groupId: String, body: Map<String, String>): Response<Unit> { ended++; return app.donghaeng.car.testing.noContent() }
     }
 
     private lateinit var api: FakeGroupApi
@@ -103,13 +104,16 @@ class CreateGroupViewModelTest {
     }
 
     @Test
-    fun `form offers a preset when navi has no destination, create shows the invite QR and polls members`() = runTest(dispatcher) {
+    fun `form asks for a destination when navi has none, create shows the invite QR and polls members`() = runTest(dispatcher) {
         val vm = viewModel()
         runCurrent()
         val form = vm.state.value as CreateGroupState.Form
-        assertEquals(DESTINATION_PRESETS.first().name, form.destination?.name)
-        assertTrue(!form.fromNavi && form.canCreate && !form.notPaired)
+        // A123: 시연용 첫 프리셋을 자동으로 고르지 않는다 — 목적지를 골라야 만들 수 있다
+        assertNull(form.destination)
+        assertTrue(!form.fromNavi && !form.canCreate && !form.notPaired)
         assertEquals("받침 없는 닉네임 → 와(공백 없이)", "아빠 차와 같이 가기", form.name)
+        vm.create(); runCurrent()
+        assertEquals("목적지 없이는 만들지 않는다", 0, api.createCalls)
 
         vm.setName("추석 귀성길"); vm.setMaxMembers(4); vm.pickPreset(DESTINATION_PRESETS[2])
         vm.create()
@@ -152,6 +156,60 @@ class CreateGroupViewModelTest {
         assertNotNull(active.members)
 
         api.detailStatus = 404
+        advanceTimeBy(5_001); runCurrent()
+        assertNull(sessions.session.value)
+        assertTrue(vm.state.value is CreateGroupState.Form)
+    }
+
+    /** 주행 여부를 테스트가 직접 바꾼다(값이 바뀔 때만 내는 실제 모니터와 같게 StateFlow) */
+    private class DrivingFlag : app.donghaeng.car.core.common.DrivingStateMonitor {
+        val flag = kotlinx.coroutines.flow.MutableStateFlow(false)
+        override fun isDriving(): kotlinx.coroutines.flow.Flow<Boolean> = flag
+        override val status = kotlinx.coroutines.flow.MutableStateFlow(app.donghaeng.car.core.common.DrivingStatus(source = "test"))
+    }
+
+    @Test
+    fun `A008 - a session change while driving keeps the inputs disabled (rule 6)`() = runTest(dispatcher) {
+        val driving = DrivingFlag()
+        sessions.save(GroupSession("grp_1", "추석 귀성길", "veh_L", Place(35.1, 126.8, "광주"), topics, 1L, isLeader = false))
+        val vm = CreateGroupViewModel(GroupRepository(api, sessions, manager), FakeNaviAdapter(), tokens, manager, driving).also { it.configureForTest({ now }, 5_000, 1_000) }
+        runCurrent()
+        driving.flag.value = true; runCurrent()
+        assertTrue((vm.state.value as CreateGroupState.Active).isDriving)
+        // 주행 중 방장이 그룹을 끝냄 → Form 으로 바뀌어도 주행 중이면 입력은 막힌 채
+        manager.onGroupLeftLocally(); runCurrent()
+        val form = vm.state.value as CreateGroupState.Form
+        assertTrue("새 Form 도 주행 중", form.isDriving)
+        vm.pickPreset(DESTINATION_PRESETS[0])
+        assertTrue(!(vm.state.value as CreateGroupState.Form).canCreate)
+        // 주행 중 다른 그룹 합류(새 Active)도 같다
+        sessions.save(GroupSession("grp_2", "새 그룹", "veh_L", Place(35.1, 126.8, "광주"), topics, 2L, isLeader = true))
+        runCurrent()
+        assertTrue((vm.state.value as CreateGroupState.Active).isDriving)
+        vm.reissueInvite(); runCurrent()
+        assertEquals("주행 중 초대 재발급 무시(A123)", 0, api.reissued)
+        // 폴링 루프를 끝낸다(runTest 가 남은 무한 루프를 돌지 않게)
+        manager.onGroupLeftLocally(); runCurrent()
+    }
+
+    @Test
+    fun `A118 - recent news leaves out my own car's events, A000 - an ENDED detail clears the ghost session`() = runTest(dispatcher) {
+        sessions.save(GroupSession("grp_1", "추석 귀성길", "veh_L", Place(35.1, 126.8, "광주"), topics, 1L, isLeader = false))
+        gateway.emitInbound(
+            app.donghaeng.protocol.Topics.vehicleCmd("veh_A"), "GROUP_JOINED", "srv",
+            app.donghaeng.protocol.GroupJoined("grp_1", "추석 귀성길", "veh_L", Place(35.1, 126.8, "광주"), topics), app.donghaeng.protocol.GroupJoined.serializer(),
+        )
+        runCurrent()
+        val vm = viewModel()
+        runCurrent()
+        fun event(id: String, source: String, speech: String) = app.donghaeng.protocol.GroupEvent(id, "LOW_ENERGY", source, app.donghaeng.protocol.Severity.INFO, speech, kotlinx.serialization.json.JsonObject(emptyMap()))
+        gateway.emitInbound(topics.event, app.donghaeng.protocol.MessageTypes.EVENT, "srv", event("e1", "veh_A", "아빠 차 배터리가 9% 남았어요."), app.donghaeng.protocol.GroupEvent.serializer(), seq = 2)
+        gateway.emitInbound(topics.event, app.donghaeng.protocol.MessageTypes.EVENT, "srv", event("e2", "veh_C", "삼촌 차 배터리가 9% 남았어요."), app.donghaeng.protocol.GroupEvent.serializer(), seq = 3)
+        runCurrent()
+        assertEquals(listOf("삼촌 차 배터리가 9% 남았어요."), (vm.state.value as CreateGroupState.Active).recentSpeech)
+
+        // 서버는 끝난 그룹에도 200 + ENDED 를 준다 → 유령 세션 정리
+        api.detailEnded = true
         advanceTimeBy(5_001); runCurrent()
         assertNull(sessions.session.value)
         assertTrue(vm.state.value is CreateGroupState.Form)

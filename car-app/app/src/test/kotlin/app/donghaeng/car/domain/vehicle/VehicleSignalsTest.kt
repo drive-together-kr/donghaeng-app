@@ -93,4 +93,33 @@ class VehicleSignalsTest {
         assertTrue(signals.state.value.streams["fuel"]!!.startsWith("끝남"))
         signals.stop()
     }
+
+    @Test
+    fun `A048 - a permanently unsupported stream is resubscribed with a growing interval, a real value resets it`() = runTest {
+        var fuelAttempts = 0
+        var supported = false
+        val adapter = object : VehicleAdapter by FakeVehicleAdapter(tickMillis = 1_000) {
+            override fun fuelPercent(): Flow<Int?> = flow {
+                fuelAttempts++
+                if (supported) emit(50) else emit(null)   // 미지원 = null 한 번 → 끝
+            }
+        }
+        val signals = VehicleSignals(adapter, retryDelayMs = 30_000, dispatcher = StandardTestDispatcher(testScheduler))
+        signals.start()
+        try {
+        runCurrent()
+        assertEquals(1, fuelAttempts)
+        // 예전: 30 s 마다(4분이면 9번). 지금: 30 → 60 → 120 s …
+        advanceTimeBy(240_000); runCurrent()
+        assertEquals("30+60+120 = 210 s 안에 세 번 더", 4, fuelAttempts)
+        assertTrue(signals.state.value.streams["fuel"]!!.contains("240s"))
+        // 권한 승인 등 restart → 바로 다시, 간격도 처음부터
+        supported = true
+        signals.restart(); runCurrent()
+        assertEquals(5, fuelAttempts)
+        advanceTimeBy(30_001); runCurrent()
+        assertEquals("값을 받으면 다시 30 s", 6, fuelAttempts)
+        } finally { signals.stop() }
+        assertEquals(listOf(30_000L, 30_000L, 60_000L, 120_000L, 600_000L), listOf(0, 1, 2, 3, 9).map { VehicleSignals.retryDelayFor(it, 30_000, 600_000) })
+    }
 }

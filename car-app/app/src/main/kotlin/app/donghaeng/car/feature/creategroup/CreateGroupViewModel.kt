@@ -92,9 +92,24 @@ class CreateGroupViewModel @Inject constructor(
     private val _state = MutableStateFlow<CreateGroupState>(CreateGroupState.Loading)
     val state: StateFlow<CreateGroupState> = _state.asStateFlow()
 
+    /**
+     * 마지막으로 받은 주행 여부(A008). 상태 객체를 새로 만들 때(세션 변화 → Form/Active) 이 값을 넣는다 — 주행 신호는 값이 바뀔 때만 오므로
+     * 예전처럼 기본값 false 로 만들면 주행 중에 입력이 풀렸다(규칙 6). Loading 중에 온 replay 값도 여기 남는다.
+     */
+    @Volatile
+    private var drivingNow = false
+
     // _state 선언 뒤에 둔다 — isDriving() 이 replay 값을 즉시 내면(Main.immediate) 생성 중에 update 가 불려 _state 가 null 이면 크래시(T30 실측)
     init {
-        driving?.let { d -> viewModelScope.launch { d.isDriving().collect { v -> update<CreateGroupState.Form> { it.copy(isDriving = v) }; update<CreateGroupState.Active> { it.copy(isDriving = v) } } } }
+        driving?.let { d ->
+            viewModelScope.launch {
+                d.isDriving().collect { v ->
+                    drivingNow = v
+                    update<CreateGroupState.Form> { it.copy(isDriving = v) }
+                    update<CreateGroupState.Active> { it.copy(isDriving = v) }
+                }
+            }
+        }
     }
 
     private var pollJob: Job? = null
@@ -120,8 +135,11 @@ class CreateGroupViewModel @Inject constructor(
                 pollJob?.cancel()
                 if (_state.value !is CreateGroupState.Form) startForm()
             } else {
-                val current = _state.value as? CreateGroupState.Active
-                _state.value = CreateGroupState.Active(session = session, members = current?.members.orEmpty(), recentSpeech = current?.recentSpeech.orEmpty(), inviteRemainingS = remaining(session))
+                val current = (_state.value as? CreateGroupState.Active)?.takeIf { it.session.groupId == session.groupId }
+                _state.value = CreateGroupState.Active(
+                    session = session, members = current?.members.orEmpty(), recentSpeech = current?.recentSpeech.orEmpty(), inviteRemainingS = remaining(session),
+                    isDriving = drivingNow,
+                )
                 startPolling(session)
             }
         }
@@ -131,20 +149,26 @@ class CreateGroupViewModel @Inject constructor(
         val paired = tokenStore.state.value is TokenStoreState.Present || tokenStore.load() != null
         val nickname = (tokenStore.state.value as? TokenStoreState.Present)?.credentials?.nickname
         // "아빠 차와 같이 가기" — 받침에 따라 와/과(GroupNaming). 예전엔 "$nickname 와 같이 가기"(공백·조사 오류)
-        _state.value = CreateGroupState.Form(name = GroupNaming.defaultName(nickname), destination = null, fromNavi = false, maxMembers = 10, notPaired = !paired, loadingNavi = true)
+        _state.value = CreateGroupState.Form(
+            name = GroupNaming.defaultName(nickname), destination = null, fromNavi = false, maxMembers = 10, notPaired = !paired, loadingNavi = true,
+            isDriving = drivingNow,
+        )
         loadNaviDestination()
     }
 
-    /** "내비 목적지 불러오기" — 안내 중이 아니면 null → 프리셋 첫 항목을 추천 */
+    /**
+     * "내비 목적지 불러오기". 안내 중이 아니면 목적지를 비워 둔다(A123) — 예전엔 시연용 첫 프리셋(경포해변)을 자동으로 골라,
+     * 바로 [같이 가기 시작]을 누르면 의도하지 않은 목적지로 그룹이 생기고 멤버에게 그 목적지 안내가 갔다. 이미 고른 목적지는 그대로 둔다.
+     */
     fun loadNaviDestination() {
         viewModelScope.launch {
             update<CreateGroupState.Form> { it.copy(loadingNavi = true, error = null) }
             val dest = runCatching { navi.currentDestination() }.onFailure { DhLog.w("navi currentDestination 실패", it) }.getOrNull()
             update<CreateGroupState.Form> { form ->
                 if (dest != null) form.copy(destination = dest, fromNavi = true, loadingNavi = false)
-                else form.copy(destination = form.destination ?: DESTINATION_PRESETS.first(), fromNavi = false, loadingNavi = false)
+                else form.copy(loadingNavi = false)
             }
-            DhLog.i("navi destination ${if (dest != null) "loaded" else "none → preset"}")
+            DhLog.i("navi destination ${if (dest != null) "loaded" else "none → 사용자가 고른다"}")
         }
     }
 
@@ -157,7 +181,7 @@ class CreateGroupViewModel @Inject constructor(
     fun create() {
         val form = _state.value as? CreateGroupState.Form ?: return
         val destination = form.destination ?: return
-        if (!form.canCreate) return
+        if (!form.canCreate || drivingNow) return
         update<CreateGroupState.Form> { it.copy(creating = true, error = null) }
         viewModelScope.launch {
             when (val result = groups.create(form.name.trim(), destination, form.maxMembers)) {
@@ -167,7 +191,12 @@ class CreateGroupViewModel @Inject constructor(
         }
     }
 
+    /** 초대 재발급 — 주행 중이면 무시(규칙 6, A123 — 화면 버튼은 E 단계에서 함께 막는다) */
     fun reissueInvite() {
+        if (drivingNow) {
+            DhLog.w("invite reissue ignored while driving")
+            return
+        }
         viewModelScope.launch {
             update<CreateGroupState.Active> { it.copy(reissuing = true, error = null) }
             val result = groups.reissueInvite()
@@ -178,6 +207,7 @@ class CreateGroupViewModel @Inject constructor(
     /** 방장: 그룹 종료 / 멤버: 나가기 */
     fun endOrLeave() {
         val active = _state.value as? CreateGroupState.Active ?: return
+        if (drivingNow) return
         viewModelScope.launch {
             update<CreateGroupState.Active> { it.copy(busy = true, error = null) }
             val result = if (active.session.isLeader) groups.end() else groups.leave()
@@ -209,7 +239,17 @@ class CreateGroupViewModel @Inject constructor(
 
     private suspend fun fetchMembers(groupId: String) {
         when (val result = groups.detail(groupId)) {
-            is ApiResult.Success -> update<CreateGroupState.Active> { it.copy(members = result.value.members, error = null) }
+            is ApiResult.Success -> {
+                val detail = result.value
+                val me = sessionManager.myVehicleId
+                // A000: 서버는 끝난 그룹에도 200 + status ENDED 를 준다 — 끝났거나 내 차가 멤버가 아니면 유령 세션이다
+                if (detail.status == "ENDED" || (me != null && detail.members.none { it.vehicleId == me })) {
+                    DhLog.i("group detail status=${detail.status} member=${me != null && detail.members.any { it.vehicleId == me }} → clearing local session")
+                    if (sessionManager.session.value?.groupId == groupId) sessionManager.onGroupLeftLocally()
+                    return
+                }
+                update<CreateGroupState.Active> { it.copy(members = detail.members, error = null) }
+            }
             is ApiResult.HttpFailure -> {
                 // 그룹이 끝났거나 내가 빠졌으면(404/409) 로컬 세션 정리 → Form 으로
                 if (result.status == 404 || result.status == 409) {
@@ -225,8 +265,10 @@ class CreateGroupViewModel @Inject constructor(
 
     private suspend fun collectEvents() {
         sessionManager.groupEvents.collect { event ->
-            // 내 차가 대상이 아닌 이벤트(뒤차의 급제동 — "앞쪽 ○○ 차가 급제동")의 문구는 최근 소식에 넣지 않는다(EventAudience, docs/03 §5.4)
-            val forMe = EventAudience.isForMe(event, sessionManager.myVehicleId, sessionManager.groupState.value?.members)
+            // 내 차가 대상이 아닌 이벤트(뒤차의 급제동 — "앞쪽 ○○ 차가 급제동")의 문구는 최근 소식에 넣지 않는다(EventAudience, docs/03 §5.4).
+            // A118: 내 차가 출처인 소식("DemoCar 배터리가 9% 남았어요")도 빼 대시보드 '지난 소식'·패널과 같은 기준으로(남의 일처럼 3인칭으로 보였다)
+            val me = sessionManager.myVehicleId
+            val forMe = EventAudience.isForMe(event, me, sessionManager.groupState.value?.members) && (me == null || event.sourceVehicleId != me)
             val speech = event.speech?.takeIf { forMe }
             update<CreateGroupState.Active> { it.copy(recentSpeech = (listOfNotNull(speech) + it.recentSpeech).take(5)) }
             if (event.eventType == GroupEventType.MEMBER_JOINED || event.eventType == GroupEventType.MEMBER_LEFT || event.eventType == GroupEventType.LEADER_CHANGED) {

@@ -9,6 +9,7 @@ import android.os.Build
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.core.common.DrivingStateMonitor
 import app.donghaeng.car.core.common.DrivingStatus
+import app.donghaeng.car.core.common.retryWithBackoff
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -27,7 +28,7 @@ import kotlinx.coroutines.flow.update
  *
  * - `isRequiresDistractionOptimization` 이 true 면 주행 중으로 본다(속도 > 0 에서 시스템이 세운다 — Pleos AVD 실측: Virtual Console 속도 55 → true).
  * - 구독자가 여럿이어도 Car 연결·리스너는 하나([shareIn]); 마지막 구독자가 떠나면 5초 뒤 해제. 재구독 시 즉시 현재값(replay 1).
- * - Car API 가 없거나(자동차 아님) 연결 실패면 false 한 번 내고 끝낸다 — 크래시 없음.
+ * - Car API 가 없으면(자동차 아님) false 한 번 내고 끝낸다. 연결·등록 실패면 false 를 내고 1 → 30 s 백오프로 다시 연결한다(A044) — 크래시 없음.
  * - 앱 자체가 주행 중에 보이려면 매니페스트 `distractionOptimized=true` 메타데이터가 필요하다(없으면 AAOS 가 "주행 중에는 사용할 수 없습니다" 로 가린다).
  */
 class CarUxDrivingStateMonitor(context: Context) : DrivingStateMonitor {
@@ -51,11 +52,12 @@ class CarUxDrivingStateMonitor(context: Context) : DrivingStateMonitor {
         }
         val manager = car?.getCarManager(Car.CAR_UX_RESTRICTION_SERVICE) as? CarUxRestrictionsManager
         if (car == null || manager == null) {
-            DhLog.w("uxr: CarUxRestrictionsManager 연결 실패 → 항상 정차")
+            DhLog.w("uxr: CarUxRestrictionsManager 연결 실패 → 다시 시도할 때까지 정차로 표시")
             _status.update { it.copy(requiresDistractionOptimization = false, lastError = "CarUxRestrictionsManager 연결 실패") }
             runCatching { car?.disconnect() }
             trySend(false)
-            close()
+            // A044: 예외로 닫아 retryWithBackoff 가 다시 연결한다(예전엔 정상 종료라 프로세스 내내 '정차'로 굳었다)
+            close(IllegalStateException("CarUxRestrictionsManager unavailable"))
             return@callbackFlow
         }
         fun apply(r: CarUxRestrictions?) {
@@ -69,11 +71,11 @@ class CarUxDrivingStateMonitor(context: Context) : DrivingStateMonitor {
             manager.registerListener { r -> apply(r) }
             DhLog.i("uxr: listener registered")
         } catch (e: Exception) {
-            DhLog.w("uxr: 등록 실패 ${e.javaClass.simpleName}: ${e.message?.take(80)} → 항상 정차")
+            DhLog.w("uxr: 등록 실패 ${e.javaClass.simpleName}: ${e.message?.take(80)} → 다시 시도할 때까지 정차로 표시")
             _status.update { it.copy(requiresDistractionOptimization = false, lastError = "${e.javaClass.simpleName}") }
             runCatching { car.disconnect() }
             trySend(false)
-            close()
+            close(e)
             return@callbackFlow
         }
         awaitClose {
@@ -81,6 +83,10 @@ class CarUxDrivingStateMonitor(context: Context) : DrivingStateMonitor {
             runCatching { car.disconnect() }
             DhLog.i("uxr: listener unregistered")
         }
+    }.retryWithBackoff(baseMs = 1_000L, maxMs = 30_000L) { attempt, cause, delayMs ->
+        // A044: 연결·등록 실패는 1 → 2 → … → 30 s 로 다시 시도한다(Car 서비스가 늦게 뜬 경우). Car API 가 아예 없으면(정상 종료) 다시 하지 않는다
+        _status.update { it.copy(retries = it.retries + 1) }
+        DhLog.w("uxr: 다시 연결 #${attempt + 1} in ${delayMs / 1000}s (${cause.javaClass.simpleName})")
     }.distinctUntilChanged().shareIn(scope, SharingStarted.WhileSubscribed(5_000), replay = 1)
 
     override fun isDriving(): Flow<Boolean> = shared

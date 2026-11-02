@@ -127,19 +127,26 @@ class PleosVehicleAdapter(
     @Suppress("DEPRECATION")
     private suspend fun readVehicleIdUnlocked(v: Vehicle): String? {
         val carInfo = v.getCarInfo()
-        // SDK 콜백은 플랫폼 타입 (String?) -> Unit 으로 보인다
-        val vinRaw = sdkCall<String?>("getVINInfo") { ok, fail -> carInfo.getVINInfo(ok, fail) }.getOrNull()
-        val vin = VehicleIdNormalizer.normalize(vinRaw)
-        var crnRaw: String? = null
-        val id = vin ?: run {
-            crnRaw = sdkCall<String?>("getCRNInfo") { ok, fail -> carInfo.getCRNInfo(ok, fail) }.getOrNull()
-            VehicleIdNormalizer.normalize(crnRaw)
+        // SDK 콜백은 플랫폼 타입 (String?) -> Unit 으로 보인다. 결정은 VehicleIdReader(순수 함수 — A047: 시간 초과는 캐시하지 않는다)
+        val outcome = VehicleIdReader.read(
+            readVin = { sdkCall<String?>("getVINInfo") { ok, fail -> carInfo.getVINInfo(ok, fail) } },
+            readCrn = { sdkCall<String?>("getCRNInfo") { ok, fail -> carInfo.getCRNInfo(ok, fail) } },
+            isTimeout = { it is TimeoutCancellationException },
+        )
+        return when (outcome) {
+            is VehicleIdReader.Outcome.Resolved -> {
+                idShape = outcome.shape
+                DhLog.i("CarInfo ${outcome.shape} → ${if (outcome.id == null) "사용 불가(폴백 ID 사용)" else "사용"}")
+                cachedVehicleId = outcome.id
+                idResolved = true
+                outcome.id
+            }
+            is VehicleIdReader.Outcome.Retry -> {
+                idShape = outcome.shape
+                DhLog.w("CarInfo ${outcome.shape} → 이번엔 확정하지 않음(다음 호출에서 다시 읽는다)")
+                null
+            }
         }
-        idShape = "VIN=${VehicleIdNormalizer.shape(vinRaw)}" + (if (vin == null) " CRN=${VehicleIdNormalizer.shape(crnRaw)}" else "")
-        DhLog.i("CarInfo $idShape → ${if (id == null) "사용 불가(폴백 ID 사용)" else "사용"}")
-        cachedVehicleId = id
-        idResolved = true
-        return id
     }
 
     // ---------------------------------------------------------------- 신호 Flow (T22)
@@ -153,7 +160,12 @@ class PleosVehicleAdapter(
      * register → (현재값 1회 조회) → awaitClose 에서 같은 리스너로 unregister 하는 공통 골격.
      * SDK 가 없으면 빈 스트림으로 끝난다(미지원 취급). 등록 중 예외도 빈 스트림.
      */
-    private fun <T> vehicleFlow(name: String, register: suspend ProducerScope<T>.(Vehicle) -> Cleanup): Flow<T> = callbackFlow {
+    private fun <T> vehicleFlow(
+        name: String,
+        /** true 면 등록 중 동기 예외를 '실패 종료'(예외)로 닫는다 — 호출 쪽 `.catch` 가 폴백을 고를 수 있게(A049, 기어 → Car API) */
+        failOnRegisterError: Boolean = false,
+        register: suspend ProducerScope<T>.(Vehicle) -> Cleanup,
+    ): Flow<T> = callbackFlow {
         val v = vehicleOrNull()
         if (v == null) {
             DhLog.w("Vehicle SDK 없음 → $name 스트림 없음")
@@ -164,7 +176,7 @@ class PleosVehicleAdapter(
             register(v)
         } catch (e: Exception) {
             DhLog.w("Vehicle SDK $name register 실패 ${e.javaClass.simpleName}: ${e.message?.take(80)}")
-            close()
+            if (failOnRegisterError) close(e) else close()
             return@callbackFlow
         }
         DhLog.i("Vehicle SDK $name registered")
@@ -290,7 +302,8 @@ class PleosVehicleAdapter(
         )
     }
 
-    private fun pleosGear(): Flow<Gear?> = vehicleFlow("gearSelection") { v ->
+    // A049: registerGearSelection 이 SecurityException 등을 바로 던지면(SDK 2.3.2 javap — CAR_DRIVE 권한 검사는 동기 throw) 예외로 끝내 gear() 의 Car API 폴백이 돈다
+    private fun pleosGear(): Flow<Gear?> = vehicleFlow("gearSelection", failOnRegisterError = true) { v ->
         val gear = v.getGear()
         val listener = object : GearSelectionListener {
             override fun onSelected(value: VehicleGear?) {

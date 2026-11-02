@@ -1,7 +1,10 @@
 package app.donghaeng.car.domain.event
 
 import app.donghaeng.car.core.common.DhLog
+import app.donghaeng.car.core.common.TextMasking
 import app.donghaeng.car.domain.model.Fix
+import app.donghaeng.car.domain.model.Place
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 import app.donghaeng.car.domain.model.NaviEvent
 import app.donghaeng.car.domain.session.GroupSession
 import app.donghaeng.car.domain.vehicle.VehicleSignalState
@@ -66,9 +69,17 @@ class VehicleEventEngine(
     private val fixMaxAgeMs: Long = 10_000L,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** 따라간 선두 경로의 목적지(RouteSyncEngine.state.followedDestination) — 도착 판정 대상에 더한다(A005) */
+    private val followedDestination: () -> Place? = { null },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private var job: Job? = null
+
+    /**
+     * A059: [EventDetector] 는 동기화되지 않은 상태를 가진다 — 내비 수집 코루틴과 1Hz 틱(Dispatchers.Default 의 다른 스레드)이
+     * 같은 순간 '도착 미알림'을 읽고 둘 다 발행하지 않게 판정기 접근을 모두 이 잠금 안에서 한다(suspend 없음).
+     */
+    private val detectorLock = Any()
 
     private val _state = MutableStateFlow(EventEngineState())
     val state: StateFlow<EventEngineState> = _state
@@ -80,19 +91,30 @@ class VehicleEventEngine(
         job = scope.launch {
             launch {
                 naviEvents.collect { e ->
-                    if (session.value == null) return@collect
-                    detector.onNavi(e).forEach { emit(it) }
+                    synchronized(detectorLock) {
+                        if (session.value == null) return@collect
+                        detector.setFollowedDestination(followedDestination())
+                        detector.onNavi(e).forEach { emit(it) }
+                    }
                 }
             }
-            session.collectLatest { s ->
+            var lastGroupId: String? = null
+            // A054: 같은 그룹·같은 목적지의 세션 갱신(초대 재발급·같은 GROUP_JOINED 재수신)으로는 판정을 다시 시작하지 않는다 —
+            // 예전엔 resetForNewGroup 이 '도착 알림'을 지워 도착해 서 있던 차가 DESTINATION_ARRIVED 를 다시 보냈다
+            session.distinctUntilChangedBy { s -> s?.let { it.groupId to (it.destination.lat to it.destination.lon) } }.collectLatest { s ->
                 if (s == null) {
                     _state.update { it.copy(active = false) }
-                    detector.setDestination(null)
+                    synchronized(detectorLock) { detector.setDestination(null) }
+                    lastGroupId = null
                     return@collectLatest
                 }
-                DhLog.i("event engine: 그룹 활성 → 판정 시작 (${s.name})")
-                detector.resetForNewGroup()
-                detector.setDestination(s.destination)
+                // 규칙 8: 그룹 이름(기본값에 방장 닉네임이 들어간다)은 남기지 않는다(A090)
+                DhLog.i("event engine: 그룹 활성 → 판정 시작 (groupId=${TextMasking.maskVehicleId(s.groupId)} nameLen=${s.name.length})")
+                synchronized(detectorLock) {
+                    if (s.groupId != lastGroupId) detector.resetForNewGroup()
+                    detector.setDestination(s.destination)
+                }
+                lastGroupId = s.groupId
                 _state.update { it.copy(active = true) }
                 while (isActive) {
                     runCatching { tick() }.onFailure { e -> DhLog.w("event engine tick 실패 ${e.javaClass.simpleName}: ${e.message}") }
@@ -109,8 +131,8 @@ class VehicleEventEngine(
         _state.update { it.copy(running = false, active = false) }
     }
 
-    /** 한 틱 — 테스트에서 직접 부를 수 있다 */
-    fun tick() {
+    /** 한 틱 — 테스트에서 직접 부를 수 있다. 판정기 접근은 [detectorLock] 안에서(A059) */
+    fun tick() = synchronized(detectorLock) {
         val now = clock()
         val v = vehicle.value
         val fix = latestFix()?.takeIf { now - it.ts <= fixMaxAgeMs }
@@ -124,6 +146,7 @@ class VehicleEventEngine(
             lat = fix?.lat,
             lon = fix?.lon,
         )
+        detector.setFollowedDestination(followedDestination())
         val events = detector.onSample(sample)
         _state.update {
             it.copy(

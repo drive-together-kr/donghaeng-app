@@ -160,7 +160,9 @@ class MqttSessionManagerTest {
         // 폰에서 "엄마 차" → "둘째 차" 로 바꿈 → 다음 스냅샷에서 저장값이 따라온다
         gateway.emitInbound("dh/v1/group/grp_1/state", MessageTypes.STATE, "srv_1", state("둘째 차"), GroupState.serializer(), seq = 2)
         runCurrent()
-        assertEquals(1, tokens.saves)
+        // A055: 읽고-덮어쓰기(save) 대신 저장소 잠금 안에서 닉네임만 바꾼다
+        assertEquals(0, tokens.saves)
+        assertEquals(1, tokens.nicknameUpdates)
         assertEquals("둘째 차", (tokens.state.value as TokenStoreState.Present).credentials.nickname)
         assertEquals("토큰·차는 그대로", creds.copy(nickname = "둘째 차"), tokens.load())
 
@@ -174,19 +176,254 @@ class MqttSessionManagerTest {
         // 같은 닉네임 스냅샷은 저장하지 않는다(2초마다 디스크 쓰기·connect 재호출 없음)
         gateway.emitInbound("dh/v1/group/grp_1/state", MessageTypes.STATE, "srv_1", state("둘째 차"), GroupState.serializer(), seq = 3)
         runCurrent()
-        assertEquals(1, tokens.saves)
+        assertEquals(1, tokens.nicknameUpdates)
         assertEquals(2, gateway.connectedWith.size)
     }
 
-    /** save 횟수를 센다 — 같은 값을 다시 저장해도 StateFlow 는 바뀌지 않아 상태만 봐서는 구별이 안 된다 */
+    /** save·닉네임 변경 횟수를 센다 — 같은 값을 다시 저장해도 StateFlow 는 바뀌지 않아 상태만 봐서는 구별이 안 된다 */
     private class CountingTokenStore(private val inner: InMemoryTokenStore) : TokenStore by inner {
         var saves = 0
+            private set
+        var nicknameUpdates = 0
             private set
 
         override suspend fun save(credentials: StoredCredentials) {
             saves++
             inner.save(credentials)
         }
+
+        override suspend fun updateNickname(vehicleId: String, nickname: String): StoredCredentials? =
+            inner.updateNickname(vehicleId, nickname)?.also { nicknameUpdates++ }
+    }
+
+    @Test
+    fun `A055 - a nickname update keeps tokens rotated meanwhile and never revives cleared credentials`() = runTest {
+        val store = InMemoryTokenStore(creds)
+        store.load()
+        // 닉네임 동기화가 읽은 뒤(옛 토큰) 갱신기가 토큰을 회전했다 → 닉네임만 바뀌고 새 토큰은 그대로
+        store.updateTokens(expectedRefreshToken = "r", accessToken = "jwt-2", refreshToken = "r2")
+        val updated = store.updateNickname("veh_B", "둘째 차")
+        assertEquals("jwt-2", updated?.vehicleAccessToken)
+        assertEquals("r2", updated?.refreshToken)
+        assertEquals("둘째 차", updated?.nickname)
+        // 다른 차·같은 닉네임은 바꾸지 않는다
+        assertNull(store.updateNickname("veh_X", "남의 차"))
+        assertNull(store.updateNickname("veh_B", "둘째 차"))
+        // 지운 뒤에는 되살리지 않는다
+        store.clear(TokenClearReason.REFRESH_REJECTED)
+        assertNull(store.updateNickname("veh_B", "셋째 차"))
+        assertEquals(TokenStoreState.Empty, store.state.value)
+    }
+
+    // ---------------------------------------------------------------- A000/A001 reconcile · A004 방장 · A010 replay
+
+    /** 서버 소속 응답을 테스트가 정한다 */
+    private class FakeMembership(var result: ServerMembership = ServerMembership.None, var check: GroupCheck = GroupCheck.UNKNOWN) : GroupMembershipSource {
+        var calls = 0
+        var checks = 0
+        /** non-null 이면 응답 전에 이 동작을 한다(요청 중 세션이 바뀌는 경합 흉내) */
+        var beforeAnswer: (suspend () -> Unit)? = null
+        override suspend fun myActiveGroup(): ServerMembership {
+            calls++
+            beforeAnswer?.invoke()
+            return result
+        }
+        override suspend fun checkGroup(groupId: String, myVehicleId: String): GroupCheck { checks++; return check }
+    }
+
+    private fun managerWith(tokens: InMemoryTokenStore, gateway: InMemoryMqttGateway, sessions: InMemoryGroupSessionStore, membership: GroupMembershipSource) =
+        MqttSessionManager(tokens, gateway, sessions, testRefresher(tokens), membership)
+
+    @Test
+    fun `A001 - a group joined while the car was off (cmd lost) is adopted on connect`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val tokens = InMemoryTokenStore(creds)
+        val gateway = InMemoryMqttGateway()
+        val sessions = InMemoryGroupSessionStore()
+        val membership = FakeMembership(ServerMembership.Active(joined))
+        val manager = managerWith(tokens, gateway, sessions, membership)
+        manager.start(dispatcher)
+        runCurrent()
+        assertEquals("접속하면 서버에 소속을 묻는다", 1, membership.calls)
+        assertEquals("grp_1", sessions.session.value?.groupId)
+        assertTrue(gateway.subscriptions.containsAll(joined.topics.let { listOf(it.state, it.event) }))
+        assertTrue("멤버로 합류", sessions.session.value?.isLeader == false)
+        assertEquals("joined", manager.reconcileState.value.lastResult)
+    }
+
+    @Test
+    fun `A000 - a ghost session of a group that ended while offline is cleared on reconnect, a network failure keeps it`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val tokens = InMemoryTokenStore(creds)
+        val gateway = InMemoryMqttGateway()
+        val sessions = InMemoryGroupSessionStore(GroupSession.from(joined, 1L))
+        val membership = FakeMembership(ServerMembership.Unknown("network IOException"))
+        val manager = managerWith(tokens, gateway, sessions, membership)
+        manager.start(dispatcher)
+        runCurrent()
+        assertEquals("네트워크 실패면 지우지 않는다", "grp_1", sessions.session.value?.groupId)
+
+        membership.result = ServerMembership.None
+        gateway.simulateReconnect(atMs = 2L)
+        runCurrent()
+        assertNull(sessions.session.value)
+        assertEquals(listOf(SessionClearReason.RECONCILED), sessions.clearReasons)
+        assertEquals(setOf(Topics.vehicleCmd("veh_B")), gateway.subscriptions)
+    }
+
+    @Test
+    fun `A000 - an old server without the contract path falls back to the group detail check`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val tokens = InMemoryTokenStore(creds)
+        val gateway = InMemoryMqttGateway()
+        val sessions = InMemoryGroupSessionStore(GroupSession.from(joined, 1L))
+        val membership = FakeMembership(ServerMembership.Unsupported, GroupCheck.ACTIVE_MEMBER)
+        val manager = managerWith(tokens, gateway, sessions, membership)
+        manager.start(dispatcher)
+        runCurrent()
+        assertEquals(1, membership.checks)
+        assertEquals("멤버면 유지", "grp_1", sessions.session.value?.groupId)
+        membership.check = GroupCheck.GONE
+        gateway.simulateReconnect(atMs = 3L)
+        runCurrent()
+        assertNull(sessions.session.value)
+        assertEquals(listOf(SessionClearReason.RECONCILED), sessions.clearReasons)
+    }
+
+    @Test
+    fun `A000 - a reconcile answer is dropped when the session changed while the request was in flight`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val tokens = InMemoryTokenStore(creds)
+        val gateway = InMemoryMqttGateway()
+        val sessions = InMemoryGroupSessionStore()
+        // 서버는 '그룹 없음'이라 답하는데, 응답이 오기 전에 방장으로 새 그룹을 만들었다
+        val membership = FakeMembership(ServerMembership.None)
+        val manager = managerWith(tokens, gateway, sessions, membership)
+        membership.beforeAnswer = { manager.onGroupCreated(GroupSession.from(joined, 5L, "veh_B").copy(groupId = "grp_new")) }
+        manager.start(dispatcher)
+        runCurrent()
+        assertEquals("새로 만든 그룹은 지우지 않는다", "grp_new", sessions.session.value?.groupId)
+        assertEquals("skipped(changed)", manager.reconcileState.value.lastResult)
+    }
+
+    @Test
+    fun `A001 - a re-sent GROUP_JOINED for the same group keeps the leader's session (invite and join time)`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val tokens = InMemoryTokenStore(creds)
+        val gateway = InMemoryMqttGateway()
+        val invite = GroupInvite("inv", "http://x/j/inv", 9_999L)
+        val leaderSession = GroupSession.from(joined.copy(leaderVehicleId = "veh_B"), 1L, "veh_B").copy(invite = invite)
+        val sessions = InMemoryGroupSessionStore(leaderSession)
+        val manager = manager(tokens, gateway, sessions)
+        manager.start(dispatcher)
+        runCurrent()
+        gateway.emitInbound(Topics.vehicleCmd("veh_B"), CmdType.GROUP_JOINED.name, "srv_1", joined.copy(leaderVehicleId = "veh_B"), GroupJoined.serializer())
+        runCurrent()
+        assertEquals("같은 그룹 재수신 → 그대로", leaderSession, sessions.session.value)
+    }
+
+    @Test
+    fun `A004 - LEADER_CHANGED and the snapshot leader update isLeader, demotion drops the invite`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val tokens = InMemoryTokenStore(creds)
+        val gateway = InMemoryMqttGateway()
+        val sessions = InMemoryGroupSessionStore(GroupSession.from(joined, 1L))   // 방장 veh_A, 나는 veh_B
+        val manager = manager(tokens, gateway, sessions)
+        manager.start(dispatcher)
+        runCurrent()
+        assertTrue(sessions.session.value?.isLeader == false)
+        // 방장 A 가 빠져 B(나)가 승계
+        val changed = GroupEvent("evt_lc", "LEADER_CHANGED", null, Severity.INFO, "이제 엄마 차가 선두예요.", buildJsonObject { put("leaderVehicleId", "veh_B"); put("previousLeaderVehicleId", "veh_A") })
+        gateway.emitInbound("dh/v1/group/grp_1/event", MessageTypes.EVENT, "srv_1", changed, GroupEvent.serializer(), seq = 2)
+        runCurrent()
+        assertEquals(true, sessions.session.value?.isLeader)
+        assertEquals("veh_B", sessions.session.value?.leaderVehicleId)
+
+        // 이벤트를 놓쳐도 스냅샷이 확정한다 — 다른 차(C)에게 위임되면 강등, 초대 삭제
+        sessions.save(sessions.session.value!!.copy(invite = GroupInvite("inv", "u", 1L)))
+        val st = GroupState("grp_1", "veh_C", listOf(MemberState("veh_B", "엄마 차", "#FF6B2E", true, null, null, null, null, null, null, null, 0, MemberStatus.DRIVING)))
+        gateway.emitInbound("dh/v1/group/grp_1/state", MessageTypes.STATE, "srv_1", st, GroupState.serializer(), seq = 3)
+        runCurrent()
+        assertEquals(false, sessions.session.value?.isLeader)
+        assertEquals("veh_C", sessions.session.value?.leaderVehicleId)
+        assertNull(sessions.session.value?.invite)
+    }
+
+    @Test
+    fun `A000 - a GROUP_ENDED group event clears the session even if the cmd is lost`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val tokens = InMemoryTokenStore(creds)
+        val gateway = InMemoryMqttGateway()
+        val sessions = InMemoryGroupSessionStore(GroupSession.from(joined, 1L))
+        val manager = manager(tokens, gateway, sessions)
+        manager.start(dispatcher)
+        runCurrent()
+        val ended = GroupEvent("evt_end", "GROUP_ENDED", null, Severity.INFO, "그룹이 끝났어요.", buildJsonObject { put("reason", "LEADER_ENDED") })
+        gateway.emitInbound("dh/v1/group/grp_1/event", MessageTypes.EVENT, "srv_1", ended, GroupEvent.serializer(), seq = 2)
+        runCurrent()
+        assertNull(sessions.session.value)
+        assertEquals(listOf(SessionClearReason.GROUP_ENDED), sessions.clearReasons)
+    }
+
+    @Test
+    fun `A010 - after a group ends a new subscriber gets no replayed events from the old group`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val tokens = InMemoryTokenStore(creds)
+        val gateway = InMemoryMqttGateway()
+        val sessions = InMemoryGroupSessionStore(GroupSession.from(joined, 1L))
+        val manager = manager(tokens, gateway, sessions)
+        manager.start(dispatcher)
+        runCurrent()
+        val brake = GroupEvent("evt_b", "HARD_BRAKE", "veh_A", Severity.ALERT, "앞쪽 아빠 차가 급제동했어요.", buildJsonObject { })
+        gateway.emitInbound("dh/v1/group/grp_1/event", MessageTypes.EVENT, "srv_1", brake, GroupEvent.serializer(), seq = 2)
+        runCurrent()
+        assertEquals(listOf(brake), manager.groupEvents.replayCache)
+        gateway.emitInbound(Topics.vehicleCmd("veh_B"), CmdType.GROUP_ENDED.name, "srv_1", GroupEnded("grp_1", "LEADER_ENDED"), GroupEnded.serializer(), seq = 3)
+        runCurrent()
+        assertTrue("이전 그룹 소식은 새 그룹 화면에 섞이지 않는다", manager.groupEvents.replayCache.isEmpty())
+    }
+
+    /** 구독 해제·끊기 순서를 기록한다 */
+    private class OrderGateway(private val inner: InMemoryMqttGateway) : MqttGateway by inner {
+        val calls = mutableListOf<String>()
+        override suspend fun unsubscribe(topics: Collection<String>) { calls += "unsub:" + topics.joinToString(","); inner.unsubscribe(topics) }
+        override suspend fun disconnect() { calls += "disconnect"; inner.disconnect() }
+    }
+
+    @Test
+    fun `A070 - unpairing unsubscribes the group topics before disconnecting (not left in the broker session)`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val tokens = InMemoryTokenStore(creds)
+        val gateway = OrderGateway(InMemoryMqttGateway())
+        val sessions = InMemoryGroupSessionStore(GroupSession.from(joined, 1L))
+        val manager = MqttSessionManager(tokens, gateway, sessions, testRefresher(tokens))
+        manager.start(dispatcher)
+        runCurrent()
+        tokens.clear(TokenClearReason.USER_SETTINGS_DISCONNECT)
+        runCurrent()
+        val groupUnsub = gateway.calls.indexOfFirst { it.startsWith("unsub:") && it.contains("grp_1") }
+        val disconnect = gateway.calls.indexOf("disconnect")
+        assertTrue("${gateway.calls}", groupUnsub in 0 until disconnect)
+        assertNull(sessions.session.value)
+    }
+
+    @Test
+    fun `A018 - repeated subscription denials of a group topic trigger a reconcile`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val tokens = InMemoryTokenStore(creds)
+        val gateway = InMemoryMqttGateway()
+        val sessions = InMemoryGroupSessionStore(GroupSession.from(joined, 1L))
+        val membership = FakeMembership(ServerMembership.Active(joined))
+        val manager = managerWith(tokens, gateway, sessions, membership)
+        manager.start(dispatcher)
+        runCurrent()
+        val before = membership.calls
+        gateway.emitSubscriptionDenied("dh/v1/group/grp_1/state")
+        runCurrent()
+        assertEquals(before + 1, membership.calls)
+        gateway.emitSubscriptionDenied("dh/v1/vehicle/veh_B/other")
+        runCurrent()
+        assertEquals("그룹 토픽이 아니면 무시", before + 1, membership.calls)
     }
 
     @Test

@@ -30,6 +30,9 @@ class InMemoryMqttGateway : MqttGateway {
     private val _authFailures = MutableSharedFlow<MqttAuthFailure>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     override val authFailures: SharedFlow<MqttAuthFailure> = _authFailures.asSharedFlow()
 
+    private val _subscriptionDenied = MutableSharedFlow<String>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    override val subscriptionDenied: SharedFlow<String> = _subscriptionDenied.asSharedFlow()
+
     val connectedWith = mutableListOf<StoredCredentials>()
     var disconnectCount = 0
     val subscriptions = linkedSetOf<String>()
@@ -52,6 +55,17 @@ class InMemoryMqttGateway : MqttGateway {
     fun emitAuthFailure(accessToken: String, reasonCode: String = "NOT_AUTHORIZED", atMs: Long = 1_700_000_000_000L) {
         _status.update { it.copy(state = MqttState.RECONNECTING, lastError = "auth rejected: $reasonCode", authFailures = it.authFailures + 1, lastAuthFailureAtMs = atMs, notConnectedSinceMs = it.notConnectedSinceMs ?: atMs) }
         _authFailures.tryEmit(MqttAuthFailure(reasonCode, atMs, accessToken))
+    }
+
+    /** 브로커가 [topic] 구독을 거듭 거부한 것처럼 알린다(A018) */
+    fun emitSubscriptionDenied(topic: String) {
+        _subscriptionDenied.tryEmit(topic)
+    }
+
+    /** 끊겼다가 [atMs] 에 다시 붙은 것처럼 상태를 바꾼다(재접속 reconcile 테스트, A000) */
+    fun simulateReconnect(atMs: Long) {
+        _status.update { it.copy(state = MqttState.RECONNECTING, connectedAtMs = null) }
+        _status.update { it.copy(state = MqttState.CONNECTED, connectedAtMs = atMs, reconnects = it.reconnects + 1) }
     }
 
     override suspend fun subscribe(topics: Collection<String>) {

@@ -48,6 +48,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ResponseBody.Companion.toResponseBody
 import retrofit2.Response
 
 /** T25: 스냅샷 → 멤버 UI, 이벤트 스트립, 내 위치, 나가기 */
@@ -64,8 +66,11 @@ class GroupDriveViewModelTest {
         override suspend fun createGroup(body: GroupCreateRequest): Response<GroupCreateResponse> = error("unused")
         override suspend fun reissueInvite(groupId: String, body: Map<String, String>): Response<InviteDto> = error("unused")
         override suspend fun getGroup(groupId: String): Response<GroupDetailResponse> = error("unused")
-        override suspend fun leave(groupId: String, body: Map<String, String>): Response<Unit> { left++; return Response.success(204, Unit) }
-        override suspend fun end(groupId: String, body: Map<String, String>): Response<Unit> = Response.success(204, Unit)
+        override suspend fun leave(groupId: String, body: Map<String, String>): Response<Unit> { left++; return app.donghaeng.car.testing.noContent() }
+        var endStatus = 204
+        override suspend fun end(groupId: String, body: Map<String, String>): Response<Unit> =
+            if (endStatus == 204) app.donghaeng.car.testing.noContent()
+            else Response.error(endStatus, """{"error":{"code":"FORBIDDEN","message":"방장만 할 수 있어요.","traceId":"t"}}""".toResponseBody("application/json".toMediaType()))
     }
 
     private class FakeFixes : MyFixSource {
@@ -205,7 +210,36 @@ class GroupDriveViewModelTest {
         assertEquals(1, api.left)
         assertNull(vm.uiState.value.session)
         assertFalse(vm.uiState.value.busy)
+        // A002: 실제 204(본문 없음)도 성공 — '예상치 못한 오류' 대화상자가 뜨지 않는다
+        assertNull(vm.uiState.value.error)
+        // A115: 끝난 이유를 화면에 넘긴다
+        assertEquals(SessionEndReason.LEFT, vm.uiState.value.endReason)
+        job.cancel()
+    }
+
+    @Test
+    fun `A004 - an old leader whose end gets 403 leaves instead and is not stuck`() = runTest(dispatcher) {
+        sessions.save(session.copy(isLeader = true))
+        api.endStatus = 403
+        val vm = viewModel()
+        val job = vm.uiState.onEach { }.launchIn(this)
+        runCurrent()
+        vm.endOrLeave(dispatcher)
+        runCurrent()
+        assertEquals("403 → 나가기로 대신", 1, api.left)
+        assertNull(vm.uiState.value.session)
         assertNull(vm.uiState.value.error)
         job.cancel()
+    }
+
+    @Test
+    fun `A115 - end reasons map from the clear record and token state`() {
+        val present = app.donghaeng.car.core.common.TokenStoreState.Present(creds)
+        assertEquals(SessionEndReason.GROUP_ENDED, GroupDriveViewModel.endReasonOf(present, "GROUP_ENDED"))
+        assertEquals(SessionEndReason.REMOVED, GroupDriveViewModel.endReasonOf(present, "MEMBER_LEFT_ME"))
+        assertEquals(SessionEndReason.ENDED_WHILE_OFFLINE, GroupDriveViewModel.endReasonOf(present, "RECONCILED"))
+        assertEquals(SessionEndReason.LEFT, GroupDriveViewModel.endReasonOf(present, "LEFT_LOCALLY"))
+        assertEquals("토큰이 없으면 사유와 상관없이 '연결 해제'", SessionEndReason.UNPAIRED, GroupDriveViewModel.endReasonOf(app.donghaeng.car.core.common.TokenStoreState.Empty, "GROUP_ENDED"))
+        assertEquals(SessionEndReason.OTHER, GroupDriveViewModel.endReasonOf(present, null))
     }
 }

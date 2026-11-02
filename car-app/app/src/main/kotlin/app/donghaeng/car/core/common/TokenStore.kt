@@ -102,6 +102,13 @@ interface TokenStore {
     suspend fun clear(reason: TokenClearReason)
 
     /**
+     * 닉네임만 바꾼다 — 저장소 잠금 안에서 **그 순간의 값**을 읽어 닉네임만 고쳐 쓴다(A055). 읽고-덮어쓰기([save])와 달리
+     * 그 사이 회전된 토큰을 옛 토큰으로 되돌리거나, 지운 자격 증명을 되살리지 않는다.
+     * 저장된 차가 [vehicleId] 가 아니거나(재페어링)·자격 증명이 없거나·이미 같은 닉네임이면 아무것도 하지 않고 null.
+     */
+    suspend fun updateNickname(vehicleId: String, nickname: String): StoredCredentials?
+
+    /**
      * 지금 저장된 refresh 토큰이 [expectedRefreshToken] 일 때만 [clear] 한다(compare-and-set — 비교와 삭제가 저장소 잠금 안에서 한 번에).
      * 갱신 응답을 기다리는 사이 재페어링([save])으로 들어온 새 자격 증명을 옛 거부 결과로 지우지 않게 한다(T33 리뷰). 지웠으면 true.
      */
@@ -149,6 +156,15 @@ class InMemoryTokenStore(
         val current = stored ?: return null
         if (current.refreshToken != expectedRefreshToken) return null
         val updated = current.copy(vehicleAccessToken = accessToken, refreshToken = refreshToken)
+        stored = updated
+        publish(updated)
+        return updated
+    }
+
+    override suspend fun updateNickname(vehicleId: String, nickname: String): StoredCredentials? {
+        val current = stored ?: return null
+        if (current.vehicleId != vehicleId || current.nickname == nickname) return null
+        val updated = current.copy(nickname = nickname)
         stored = updated
         publish(updated)
         return updated

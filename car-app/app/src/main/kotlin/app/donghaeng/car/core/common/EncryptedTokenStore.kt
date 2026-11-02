@@ -88,6 +88,16 @@ class EncryptedTokenStore(
 
     override suspend fun clear(reason: TokenClearReason) = mutex.withLock { clearUnlocked(reason) }
 
+    override suspend fun updateNickname(vehicleId: String, nickname: String): StoredCredentials? = mutex.withLock {
+        val current = currentUnlocked() ?: return null
+        if (current.vehicleId != vehicleId || current.nickname == nickname) return null
+        val updated = current.copy(nickname = nickname)
+        persistUnlocked(updated)
+        publish(updated)
+        DhLog.i("token store: nickname updated vehicleId=${TextMasking.maskVehicleId(vehicleId)} len=${nickname.length}")
+        updated
+    }
+
     override suspend fun clearIf(expectedRefreshToken: String, reason: TokenClearReason): Boolean = mutex.withLock {
         val current = currentUnlocked() ?: return false
         if (current.refreshToken != expectedRefreshToken) {

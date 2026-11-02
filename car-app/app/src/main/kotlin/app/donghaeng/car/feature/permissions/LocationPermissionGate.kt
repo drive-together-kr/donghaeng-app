@@ -43,6 +43,10 @@ class LocationPermissionViewModel @Inject constructor(
     @Volatile
     private var asked = false
 
+    /** 요청할 때 아직 없던 권한 — 결과에서 '새로 승인된 것'을 가린다(A051) */
+    @Volatile
+    private var missingAtAsk: Set<String> = emptySet()
+
     /** 지금 요청해야 하는가 */
     val shouldAsk: StateFlow<Boolean> = combine(sessionManager.session, drivingMonitor.isDriving()) { session, driving ->
         session != null && !driving && !asked && LocationPermissions.missing(context).isNotEmpty()
@@ -50,15 +54,28 @@ class LocationPermissionViewModel @Inject constructor(
 
     fun markAsked() {
         asked = true
+        missingAtAsk = runCatching { LocationPermissions.missing(context).toSet() }.getOrDefault(emptySet())
     }
 
     fun onResult(result: Map<String, Boolean>) {
         DhLog.i("location permissions: ${result.entries.joinToString { "${it.key.substringAfterLast('.')}=${it.value}" }}")
-        locationFeed.restart()
-        vehicleSignals.restart()   // CAR_SPEED 승인 → Car API 속도 재구독
         ptt.refreshPermissions()   // F16: RECORD_AUDIO 결과 → 무전 버튼 "마이크 권한 필요" 갱신
+        // A051: 새로 승인된 권한이 있을 때만 다시 붙인다 — 영구 거부(다이얼로그 없이 바로 결과)마다 위치 체인·차량 신호·FGS 를 다시 시작하지 않게
+        val newlyGranted = newlyGranted(missingAtAsk, result)
+        if (newlyGranted.isEmpty()) {
+            DhLog.i("location permissions: 새로 승인된 권한 없음 → 재시작 생략")
+            return
+        }
+        locationFeed.restart()     // 위치·FUSED_LOCATION 승인 → 위치 체인 재탐색(FUSED 가 앞에 붙는다, A-RT2)
+        vehicleSignals.restart()   // CAR_SPEED 승인 → Car API 속도 재구독
         // 앱이 앞에 있는 지금 포그라운드 서비스 타입을 새 권한에 맞춘다(location·microphone — 내비가 앞일 때도 위치·무전 녹음이 되게)
         driveSession.refreshType(sessionManager.session.value)
+    }
+
+    companion object {
+        /** 요청 전에 없었고 이번에 승인된 권한(순수 함수 — 단위 테스트). 요청 전 목록을 모르면(빈 집합) 승인된 것 전부 */
+        fun newlyGranted(missingBefore: Set<String>, result: Map<String, Boolean>): Set<String> =
+            result.filterValues { it }.keys.filter { missingBefore.isEmpty() || it in missingBefore }.toSet()
     }
 }
 

@@ -14,6 +14,8 @@ data class DrivingStatus(
     val activeRestrictions: Int? = null,
     val updates: Int = 0,
     val lastError: String? = null,
+    /** 연결·등록 실패 뒤 다시 시도한 횟수(A044) */
+    val retries: Int = 0,
 )
 
 /**

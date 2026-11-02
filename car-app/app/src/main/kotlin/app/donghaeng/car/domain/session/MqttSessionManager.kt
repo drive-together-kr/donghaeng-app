@@ -41,7 +41,12 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -57,6 +62,9 @@ data class ReceivedGroupEvent(val event: GroupEvent, val envelopeTsMs: Long, val
 
 /** 그룹 STATE 스냅샷의 봉투 ts(서버 발행)·수신 시각 — T31 지연 측정용 */
 data class ReceivedGroupState(val envelopeTsMs: Long, val receivedAtMs: Long, val members: Int)
+
+/** 서버와 소속 맞추기(reconcile, A000/A001) — 진단용. 결과는 짧은 영어 한 줄(민감 정보 없음) */
+data class ReconcileState(val count: Int = 0, val lastAtMs: Long? = null, val lastTrigger: String? = null, val lastResult: String? = null)
 
 /** 토큰 저장소 읽기 재시도 상태 (T33) — 진단·홈 배너용 */
 data class StoreRetryState(val attempts: Int = 0, val maxAttempts: Int = MqttSessionManager.STORE_RETRY_MAX, val exhausted: Boolean = false)
@@ -75,6 +83,14 @@ data class StoreRetryState(val attempts: Int = 0, val maxAttempts: Int = MqttSes
  * - 그룹 토픽 수신은 [groupEvents]/[groupState] 로 내보낸다(T25 주행 화면·T27 음성이 구독).
  * - 스냅샷의 내 차 닉네임이 저장값과 다르면(폰에서 이름을 바꿈) [TokenStore] 의 닉네임만 바꾼다 — 홈·설정·그룹 기본 이름이 따라온다.
  *
+ * - **reconcile**(A000/A001, docs/03 계약 1): MQTT 가 (다시) 붙을 때마다 차량 JWT 로 `GET /v1/vehicles/me/group` 을 불러 로컬 세션을 서버와 맞춘다 —
+ *   영속 세션(300 s)보다 오래 꺼져 있던 동안 놓친 `GROUP_JOINED`(전날 합류)·`GROUP_ENDED`·`MEMBER_LEFT` 를 따라잡는다. 서버가 그 경로를 모르면(404·405)
+ *   저장된 그룹만 `GET /groups/{id}` 로 확인해 끝났거나 내가 멤버가 아니면 지운다. 네트워크 실패면 아무것도 바꾸지 않는다(다음 연결 때 다시).
+ *   요청하는 동안 세션이 바뀌었으면(cmd·생성·나가기) 결과를 버린다. 그룹 토픽 구독이 거듭 거부돼도([MqttGateway.subscriptionDenied]) 다시 맞춘다.
+ * - 방장 갱신(A004): 그룹 이벤트 `LEADER_CHANGED` 와 스냅샷의 `leaderVehicleId` 로 세션의 방장·[GroupSession.isLeader] 를 맞춘다(방장이 아니게 되면 초대 삭제).
+ *   같은 그룹의 `GROUP_JOINED` 를 다시 받아도 세션(합류 시각·초대)을 유지하고 방장만 맞춘다.
+ * - 그룹 이벤트 `GROUP_ENDED` 도 세션 정리 신호로 쓴다(cmd 만 놓친 경우). 그룹이 바뀌거나 끝나면 [groupEvents] 의 replay 를 비운다(A010).
+ *
  * 앱 프로세스가 살아 있는 동안 페어링만 돼 있으면 연결을 유지한다 — 폰이 이 차를 그룹에 넣는 순간(`GROUP_JOINED`)을 받으려면
  * 그룹 전에도 cmd 를 듣고 있어야 하기 때문이다(T18). 백그라운드 지속은 T23 의 DriveSessionService 가 맡는다.
  * 코루틴 예외는 [CoroutineExceptionHandler] 로 로그만 남기고, 메시지 하나의 처리 실패가 수신 루프를 끊지 않게 한다.
@@ -85,11 +101,23 @@ class MqttSessionManager @Inject constructor(
     private val gateway: MqttGateway,
     private val sessionStore: GroupSessionStore,
     private val refresher: TokenRefresher,
+    /** 서버 소속 조회(reconcile). 기본값 = 조회하지 않음(테스트) — 앱은 MqttModule 이 REST 구현을 준다 */
+    private val membership: GroupMembershipSource = GroupMembershipSource.DISABLED,
 ) {
     private val started = AtomicBoolean(false)
     private lateinit var scope: CoroutineScope
 
+    /** 세션을 읽고-바꾸는 구간(cmd·reconcile·방장 갱신·생성·나가기)을 한 줄로 세운다. 안에서 다시 잡지 않는다 */
+    private val sessionMutex = Mutex()
+    private val reconcileMutex = Mutex()
+
+    private val _reconcile = MutableStateFlow(ReconcileState())
+    val reconcileState: StateFlow<ReconcileState> = _reconcile.asStateFlow()
+
     val session: StateFlow<GroupSession?> get() = sessionStore.session
+
+    /** 마지막 세션 삭제 기록(사유·시각) — 화면이 '왜 그룹이 끝났는지'를 고른다(A115) */
+    val lastSessionClear: StateFlow<app.donghaeng.car.core.common.ClearRecord?> get() = sessionStore.lastClear
 
     private val _groupEvents = MutableSharedFlow<GroupEvent>(replay = 20, extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     val groupEvents: SharedFlow<GroupEvent> = _groupEvents.asSharedFlow()
@@ -146,7 +174,18 @@ class MqttSessionManager @Inject constructor(
         // connectedAtMs 를 함께 봐서 RECONNECTING 이 합쳐져(StateFlow conflation) 안 보여도 새 접속은 놓치지 않는다
         scope.launch {
             gateway.status.map { (it.state == MqttState.CONNECTED) to it.connectedAtMs }.distinctUntilChanged().collect { (connected, _) ->
-                if (connected) guarded("mqtt connected") { refresher.onMqttConnected() }
+                if (connected) {
+                    guarded("mqtt connected") { refresher.onMqttConnected() }
+                    // A000/A001: (재)접속 = 서버에 닿는다 → 꺼져 있던 동안 놓친 그룹 변화를 맞춘다(실패해도 다음 접속 때 다시)
+                    requestReconcile("mqtt-connected")
+                }
+            }
+        }
+        // A018: 그룹 토픽 구독이 거듭 거부되면 '이 차가 멤버가 아님'일 수 있다 → 서버와 소속을 다시 맞춘다
+        scope.launch {
+            gateway.subscriptionDenied.collect { topic ->
+                val s = sessionStore.session.value
+                if (s != null && topic in s.subscribeTopics) requestReconcile("subscribe-denied")
             }
         }
         DhLog.i("mqtt session manager started")
@@ -180,17 +219,19 @@ class MqttSessionManager @Inject constructor(
                 cancelStoreRetry()
                 val previousVehicleId = vehicleId
                 vehicleId = null
-                if (previousVehicleId != null) {
-                    // 게이트웨이는 구독 목록을 기억해 다음 접속 때 다시 건다 — 다른 차량으로 다시 페어링될 수 있으니 옛 cmd 토픽은 뺀다
-                    gateway.unsubscribe(listOf(Topics.vehicleCmd(previousVehicleId)))
-                    gateway.disconnect()
-                }
-                val current = sessionStore.session.value
-                if (current != null) {
-                    gateway.unsubscribe(current.subscribeTopics)
-                    sessionStore.clear(SessionClearReason.UNPAIRED)
-                    _groupState.value = null
-                    DhLog.i("group session cleared (unpaired, last token clear=${tokenStore.lastClear.value?.reason ?: "?"})")
+                sessionMutex.withLock {
+                    val current = sessionStore.session.value
+                    // 끊기 **전에** 그룹 토픽 구독을 푼다(A070) — 끊긴 뒤 푼 토픽은 로컬 목록에서만 빠지고 브로커 영속 세션에 남는다.
+                    // 게이트웨이는 구독 목록을 기억해 다음 접속 때 다시 건다 — 다른 차량으로 다시 페어링될 수 있으니 옛 cmd 토픽도 뺀다
+                    if (current != null) gateway.unsubscribe(current.subscribeTopics)
+                    if (previousVehicleId != null) {
+                        gateway.unsubscribe(listOf(Topics.vehicleCmd(previousVehicleId)))
+                        gateway.disconnect()
+                    }
+                    if (current != null) {
+                        clearSessionLocked(SessionClearReason.UNPAIRED)
+                        DhLog.i("group session cleared (unpaired, last token clear=${tokenStore.lastClear.value?.reason ?: "?"})")
+                    }
                 }
             }
             is TokenStoreState.Present -> {
@@ -250,12 +291,18 @@ class MqttSessionManager @Inject constructor(
                     .onSuccess { event ->
                         _groupEvents.emit(event)
                         _groupEventsReceived.emit(ReceivedGroupEvent(event, envelopeTsMs = message.envelope.ts, receivedAtMs = message.receivedAtMs))
-                        // T30: 폰(공식 앱)·REST 가 이 차를 그룹에서 내보내면(MEMBER_LEFT, 내 차) 세션을 지운다 — GROUP_ENDED 와 같은 정리
-                        if (event.type == GroupEventType.MEMBER_LEFT.name && event.sourceVehicleId == vid) {
-                            gateway.unsubscribe(current.subscribeTopics)
-                            sessionStore.clear(SessionClearReason.MEMBER_LEFT_ME)
-                            _groupState.value = null
-                            DhLog.i("MEMBER_LEFT (me) groupId=${TextMasking.maskVehicleId(current.groupId)} → session cleared")
+                        when {
+                            // T30: 폰(공식 앱)·REST 가 이 차를 그룹에서 내보내면(MEMBER_LEFT, 내 차) 세션을 지운다 — GROUP_ENDED 와 같은 정리
+                            event.type == GroupEventType.MEMBER_LEFT.name && event.sourceVehicleId == vid ->
+                                clearIfStill(current.groupId, SessionClearReason.MEMBER_LEFT_ME, "MEMBER_LEFT (me)")
+                            // A000: 그룹 이벤트 GROUP_ENDED 도 정리 신호 — cmd 만 놓친 경우(서버는 이벤트를 cmd 보다 먼저 낸다)
+                            event.type == GroupEventType.GROUP_ENDED.name ->
+                                clearIfStill(current.groupId, SessionClearReason.GROUP_ENDED, "GROUP_ENDED event")
+                            // A004: 방장 승계·위임 — 세션의 방장을 바로 맞춘다(스냅샷도 같은 값으로 확정한다)
+                            event.type == GroupEventType.LEADER_CHANGED.name -> {
+                                val leader = runCatching { event.payload["leaderVehicleId"]?.jsonPrimitive?.contentOrNull }.getOrNull()
+                                if (!leader.isNullOrBlank()) updateLeader(current.groupId, leader, vid, "LEADER_CHANGED")
+                            }
                         }
                     }
                     .onFailure { DhLog.w("group event decode failed cause=${it.javaClass.simpleName}") }
@@ -268,6 +315,10 @@ class MqttSessionManager @Inject constructor(
                         stateCount++
                         _groupStatesReceived.emit(ReceivedGroupState(envelopeTsMs = message.envelope.ts, receivedAtMs = message.receivedAtMs, members = state.members.size))
                         syncNickname(state, vid)
+                        // A004: 이벤트를 놓쳤거나 앱을 다시 켠 뒤에도 스냅샷(2초마다)이 방장을 확정한다. 같으면 저장하지 않는다
+                        if (state.leaderVehicleId.isNotBlank() && state.leaderVehicleId != current.leaderVehicleId) {
+                            updateLeader(current.groupId, state.leaderVehicleId, vid, "state")
+                        }
                         if (stateCount == 1 || stateCount % 15 == 0) {
                             DhLog.i("group state #$stateCount members=${state.members.size} online=${state.members.count { it.online }} status=${state.members.joinToString(",") { it.status.name }}")
                         }
@@ -286,8 +337,9 @@ class MqttSessionManager @Inject constructor(
      * 그룹이 없을 때 바꾼 닉네임은 다음 그룹 스냅샷에서 반영된다(시연은 debug 리시버 `nickname` 으로 바로 맞춘다).
      */
     private suspend fun syncNickname(state: GroupState, vid: String) {
-        val updated = nicknameFromState(state, vid, tokenStore.state.value) ?: return
-        tokenStore.save(updated)
+        val target = nicknameFromState(state, vid, tokenStore.state.value) ?: return
+        // A055: 닉네임만 저장소 잠금 안에서 바꾼다 — 읽고-덮어쓰면 그 사이 회전된 토큰을 옛 토큰으로 되돌릴 수 있다
+        val updated = tokenStore.updateNickname(vid, target.nickname) ?: return
         DhLog.i("nickname synced from group state vid=${TextMasking.maskVehicleId(vid)} len=${updated.nickname.length}")
     }
 
@@ -303,24 +355,19 @@ class MqttSessionManager @Inject constructor(
                     DhLog.w("GROUP_JOINED decode failed cause=${it.javaClass.simpleName}")
                     return
                 }
-                val previous = sessionStore.session.value
-                if (previous != null && previous.groupId != cmd.groupId) gateway.unsubscribe(previous.subscribeTopics)
-                val session = GroupSession.from(cmd, System.currentTimeMillis())
-                sessionStore.save(session)
-                _groupState.value = null
-                gateway.subscribe(session.subscribeTopics)
                 note(type, cmd.groupId)
-                DhLog.i("GROUP_JOINED groupId=${TextMasking.maskVehicleId(cmd.groupId)} leader=${TextMasking.maskVehicleId(cmd.leaderVehicleId)} → subscribed group topics")
+                val vid = vehicleId ?: return
+                sessionMutex.withLock { applyServerGroupLocked(cmd, vid, "GROUP_JOINED") }
             }
             CmdType.GROUP_ENDED -> {
                 val cmd = runCatching { DhJson.decodeData<GroupEnded>(message.envelope).data }.getOrNull()
-                val current = sessionStore.session.value
                 note(type, cmd?.groupId)
-                if (current != null && (cmd == null || cmd.groupId == current.groupId)) {
-                    gateway.unsubscribe(current.subscribeTopics)
-                    sessionStore.clear(SessionClearReason.GROUP_ENDED)
-                    _groupState.value = null
-                    DhLog.i("GROUP_ENDED groupId=${TextMasking.maskVehicleId(current.groupId)} reason=${cmd?.reason} → session cleared")
+                sessionMutex.withLock {
+                    val current = sessionStore.session.value
+                    if (current != null && (cmd == null || cmd.groupId == current.groupId)) {
+                        clearSessionLocked(SessionClearReason.GROUP_ENDED)
+                        DhLog.i("GROUP_ENDED groupId=${TextMasking.maskVehicleId(current.groupId)} reason=${cmd?.reason} → session cleared")
+                    }
                 }
             }
             CmdType.TOKEN_REVOKED -> {
@@ -354,9 +401,12 @@ class MqttSessionManager @Inject constructor(
     // ---------------------------------------------------------------- group 모듈이 부르는 진입점 (T17)
 
     /** 이 차가 그룹을 만들었다(방장). 서버는 만든 차량에 GROUP_JOINED 를 보내지 않으므로 여기서 세션을 저장하고 그룹 토픽을 구독한다 */
-    suspend fun onGroupCreated(session: GroupSession) {
+    suspend fun onGroupCreated(session: GroupSession) = sessionMutex.withLock {
         val previous = sessionStore.session.value
-        if (previous != null && previous.groupId != session.groupId) gateway.unsubscribe(previous.subscribeTopics)
+        if (previous != null && previous.groupId != session.groupId) {
+            gateway.unsubscribe(previous.subscribeTopics)
+            _groupEvents.resetReplayCache()
+        }
         sessionStore.save(session)
         _groupState.value = null
         gateway.subscribe(session.subscribeTopics)
@@ -364,12 +414,126 @@ class MqttSessionManager @Inject constructor(
     }
 
     /** 나가기·종료를 이 차가 직접 했을 때 — 구독 해제 + 세션 삭제 */
-    suspend fun onGroupLeftLocally() {
+    suspend fun onGroupLeftLocally() = sessionMutex.withLock {
+        val current = sessionStore.session.value ?: return@withLock
+        clearSessionLocked(SessionClearReason.LEFT_LOCALLY)
+        DhLog.i("group session cleared (left/ended locally) groupId=${TextMasking.maskVehicleId(current.groupId)}")
+    }
+
+    // ---------------------------------------------------------------- 서버와 소속 맞추기 (A000/A001)
+
+    /** 백그라운드로 [reconcile] — 실패는 로그만 */
+    fun requestReconcile(trigger: String) {
+        if (!started.get()) return
+        scope.launch { guarded("reconcile $trigger") { reconcile(trigger) } }
+    }
+
+    /**
+     * 서버가 보는 이 차의 그룹과 로컬 세션을 맞춘다. 한 번에 하나만 돈다. 결과(짧은 영어)를 돌려준다 — 테스트·진단용.
+     * 요청을 보낸 뒤 세션이 바뀌었으면(그 사이 cmd·생성·나가기) 결과를 적용하지 않는다(그쪽이 더 새롭다).
+     */
+    suspend fun reconcile(trigger: String): String = reconcileMutex.withLock {
+        val vid = vehicleId ?: return@withLock "not-paired"
+        val before = sessionStore.session.value
+        val result = when (val m = membership.myActiveGroup()) {
+            is ServerMembership.Active -> sessionMutex.withLock {
+                if (sessionStore.session.value !== before) "skipped(changed)"
+                else applyServerGroupLocked(m.group, vid, "reconcile")
+            }
+            ServerMembership.None -> sessionMutex.withLock {
+                when {
+                    sessionStore.session.value !== before -> "skipped(changed)"
+                    before == null -> "none"
+                    else -> {
+                        clearSessionLocked(SessionClearReason.RECONCILED)
+                        DhLog.i("reconcile: server has no active group → stale session groupId=${TextMasking.maskVehicleId(before.groupId)} cleared")
+                        "cleared(none)"
+                    }
+                }
+            }
+            ServerMembership.Unsupported -> {
+                if (before == null) {
+                    "unsupported"
+                } else {
+                    // 옛 서버: 저장된 그룹만 확인한다(끝났거나 내가 멤버가 아니면 유령 세션)
+                    when (membership.checkGroup(before.groupId, vid)) {
+                        GroupCheck.GONE -> sessionMutex.withLock {
+                            if (sessionStore.session.value !== before) {
+                                "skipped(changed)"
+                            } else {
+                                clearSessionLocked(SessionClearReason.RECONCILED)
+                                DhLog.i("reconcile: group ended or not a member → session groupId=${TextMasking.maskVehicleId(before.groupId)} cleared")
+                                "cleared(gone)"
+                            }
+                        }
+                        GroupCheck.ACTIVE_MEMBER -> "kept"
+                        GroupCheck.UNKNOWN -> "unknown(detail)"
+                    }
+                }
+            }
+            is ServerMembership.Unknown -> "unknown(${m.summary})"
+        }
+        _reconcile.update { ReconcileState(count = it.count + 1, lastAtMs = System.currentTimeMillis(), lastTrigger = trigger, lastResult = result) }
+        DhLog.i("reconcile trigger=$trigger → $result")
+        result
+    }
+
+    /**
+     * 서버가 알려 준 그룹([g], cmd `GROUP_JOINED` 또는 계약 1 응답)을 세션에 반영한다. [sessionMutex] 를 잡은 상태에서만.
+     * 같은 그룹이면 합류 시각·초대를 유지하고 이름·방장·목적지·토픽만 맞춘다(A001 — 다시 보낸 cmd 가 방장을 강등하거나 합류 제안을 다시 띄우지 않게).
+     */
+    private suspend fun applyServerGroupLocked(g: GroupJoined, vid: String, source: String): String {
+        val previous = sessionStore.session.value
+        val amLeader = g.leaderVehicleId == vid
+        if (previous != null && previous.groupId == g.groupId) {
+            val merged = previous.copy(
+                name = g.name, leaderVehicleId = g.leaderVehicleId, destination = g.destination, topics = g.topics,
+                isLeader = amLeader, invite = if (amLeader) previous.invite else null,
+            )
+            if (merged == previous) return "same"
+            if (merged.topics != previous.topics) {
+                gateway.unsubscribe(previous.subscribeTopics)
+                gateway.subscribe(merged.subscribeTopics)
+            }
+            sessionStore.save(merged)
+            DhLog.i("$source same group groupId=${TextMasking.maskVehicleId(g.groupId)} → session updated leader=${TextMasking.maskVehicleId(g.leaderVehicleId)} isLeader=$amLeader")
+            return "updated"
+        }
+        if (previous != null) gateway.unsubscribe(previous.subscribeTopics)
+        _groupEvents.resetReplayCache()
+        val session = GroupSession.from(g, System.currentTimeMillis(), vid)
+        sessionStore.save(session)
+        _groupState.value = null
+        gateway.subscribe(session.subscribeTopics)
+        DhLog.i("$source groupId=${TextMasking.maskVehicleId(g.groupId)} leader=${TextMasking.maskVehicleId(g.leaderVehicleId)} isLeader=$amLeader → subscribed group topics")
+        return if (previous == null) "joined" else "switched"
+    }
+
+    /** 구독 해제 + 세션 삭제 + 스냅샷·replay 비우기. [sessionMutex] 를 잡은 상태에서만 */
+    private suspend fun clearSessionLocked(reason: SessionClearReason) {
         val current = sessionStore.session.value ?: return
         gateway.unsubscribe(current.subscribeTopics)
-        sessionStore.clear(SessionClearReason.LEFT_LOCALLY)
+        sessionStore.clear(reason)
         _groupState.value = null
-        DhLog.i("group session cleared (left/ended locally) groupId=${TextMasking.maskVehicleId(current.groupId)}")
+        _groupEvents.resetReplayCache()
+    }
+
+    /** [groupId] 가 아직 지금 세션이면 지운다(그룹 이벤트 경로 — 그 사이 다른 그룹으로 바뀌었으면 그대로) */
+    private suspend fun clearIfStill(groupId: String, reason: SessionClearReason, what: String) = sessionMutex.withLock {
+        if (sessionStore.session.value?.groupId != groupId) return@withLock
+        clearSessionLocked(reason)
+        DhLog.i("$what groupId=${TextMasking.maskVehicleId(groupId)} → session cleared")
+    }
+
+    /** A004: 방장이 바뀌었다 — 세션의 방장·isLeader 를 맞춘다(방장이 아니게 되면 초대 삭제). 값이 같으면 저장하지 않는다 */
+    private suspend fun updateLeader(groupId: String, leaderVehicleId: String, vid: String, source: String) = sessionMutex.withLock {
+        val s = sessionStore.session.value ?: return@withLock
+        if (s.groupId != groupId) return@withLock
+        val amLeader = leaderVehicleId == vid
+        val updated = s.copy(leaderVehicleId = leaderVehicleId, isLeader = amLeader, invite = if (amLeader) s.invite else null)
+        if (updated == s) return@withLock
+        sessionStore.save(updated)
+        DhLog.i("leader changed ($source) groupId=${TextMasking.maskVehicleId(groupId)} leader=${TextMasking.maskVehicleId(leaderVehicleId)} isLeader=$amLeader")
     }
 
     private fun note(type: CmdType, groupId: String?) {

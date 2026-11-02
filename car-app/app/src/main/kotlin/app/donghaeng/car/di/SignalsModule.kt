@@ -31,7 +31,18 @@ import dagger.hilt.InstallIn
 import app.donghaeng.car.core.network.TimeApi
 import app.donghaeng.car.domain.time.ClockSync
 import app.donghaeng.car.domain.latency.LatencyMeter
+import app.donghaeng.car.BuildConfig
+import app.donghaeng.car.adapter.speech.RecognizerChain
+import app.donghaeng.car.core.common.DrivingStateMonitor
+import app.donghaeng.car.domain.model.Priority
+import app.donghaeng.car.domain.ptt.PttController
+import app.donghaeng.car.domain.ptt.PttStage
+import app.donghaeng.car.domain.routesync.VoiceRouteAsk
+import app.donghaeng.car.domain.routesync.VoiceAnswer
+import app.donghaeng.car.domain.settings.SharedPrefsUserSettingsStore
+import app.donghaeng.car.domain.settings.UserSettings
 import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.flow.map
 import javax.inject.Singleton
 
 /** flavor 공통 도메인 수집기 바인딩 (T22). 어댑터는 flavor 별 AdapterModule 이 준다. */
@@ -67,7 +78,16 @@ object SignalsModule {
     @Singleton
     fun provideMyFixSource(feed: LocationFeed): MyFixSource = feed
 
-    /** T28: 선두 ROUTE_CHANGED 발행 / 멤버 ROUTE_FOLLOW_PROPOSAL 수락·거절 → ACK */
+    /** A120: 설정 화면 값(음성 안내·자동 따라가기·지연 표시) — `dh_settings`. 지연 표시 기본값은 debug 켬 / release 끔 */
+    @Provides
+    @Singleton
+    fun provideUserSettings(@ApplicationContext context: Context): UserSettings =
+        UserSettings(SharedPrefsUserSettingsStore(context), UserSettings.Defaults(latencyOverlay = BuildConfig.DEBUG))
+
+    /**
+     * T28: 선두 ROUTE_CHANGED 발행 / 멤버 ROUTE_FOLLOW_PROPOSAL 수락·거절 → ACK.
+     * A006/A034: 주행 중 제안은 F16 '네/아니' 인식 체인으로 음성으로 묻고([askWhileDriving]), 답이 없으면 정차까지 보류한다.
+     */
     @Provides
     @Singleton
     fun provideRouteSyncEngine(
@@ -77,6 +97,11 @@ object SignalsModule {
         navi: NaviAdapter,
         naviMonitor: NaviEventMonitor,
         voice: VoiceAnnouncer,
+        driving: DrivingStateMonitor,
+        voiceAdapter: VoiceAdapter,
+        recognizers: dagger.Lazy<RecognizerChain>,
+        ptt: dagger.Lazy<PttController>,
+        settings: UserSettings,
     ): RouteSyncEngine {
         fun vid() = (tokenStore.state.value as? TokenStoreState.Present)?.credentials?.vehicleId
         return RouteSyncEngine(
@@ -87,19 +112,47 @@ object SignalsModule {
             publishRouteChanged = { change -> vid()?.let { mqtt.publish(Topics.vehicleEvent(it), VehicleEventType.ROUTE_CHANGED.name, change, RouteChanged.serializer(), qos = 1) } ?: false },
             publishAck = { ack -> vid()?.let { mqtt.publish(Topics.vehicleAck(it), MessageTypes.ACK, ack, Ack.serializer(), qos = 1) } ?: false },
             speak = { text, priority -> voice.announce(text, priority, "ROUTE_FOLLOW_PROPOSAL") },
-        )
+            drivingFlow = driving.isDriving(),
+            askYesNo = { question -> askWhileDriving(question, voice, voiceAdapter, recognizers.get(), ptt.get()) },
+        ).also { it.setAutoFollow(settings.autoFollow) }
     }
+
+    /**
+     * 주행 중 경로 제안 음성 질문(A034) — 질문을 다 읽은 뒤에만 마이크를 연다(PTT 확인과 같은 순서). null = 묻지 않음(엔진이 읽고 정차까지 보류):
+     * 음성 안내 꺼짐 / 무전이 쓰는 중(마이크를 다투지 않는다) / 들을 수 있는 인식 단계가 없음(권한·모델·서비스).
+     */
+    private suspend fun askWhileDriving(
+        question: String,
+        announcer: VoiceAnnouncer,
+        voice: VoiceAdapter,
+        chain: RecognizerChain,
+        ptt: PttController,
+    ): VoiceAnswer? = VoiceRouteAsk.ask(
+        question = question,
+        voiceEnabled = { announcer.state.value.enabled },
+        pttBusy = ptt.state.map { it.stage != PttStage.IDLE },
+        pttBusyNow = { ptt.state.value.stage != PttStage.IDLE },
+        hasCandidate = { chain.hasCandidate() },
+        speakAndWait = { voice.speakAndWait(it, Priority.NORMAL, ROUTE_ASK_SPEAK_TIMEOUT_MS) },
+        listen = { chain.listen(ROUTE_ASK_LISTEN_MS).answer },
+    )
+
+    /** "…따라갈까요? 네 또는 아니요로 답해 주세요." ≈ 6 s + 엔진 지연 */
+    private const val ROUTE_ASK_SPEAK_TIMEOUT_MS = 12_000L
+
+    /** '네/아니' 듣는 시간 — PTT 확인(5 s)보다 조금 넉넉히(운전 중 답이 늦을 수 있다) */
+    private const val ROUTE_ASK_LISTEN_MS = 6_000L
 
     /** T27: 그룹 이벤트 → 음성 큐(우선순위·신선도 5s·내 이벤트 생략·대상 아님 생략) */
     @Provides
     @Singleton
-    fun provideVoiceAnnouncer(sessionManager: MqttSessionManager, voice: VoiceAdapter, clockSync: ClockSync): VoiceAnnouncer =
+    fun provideVoiceAnnouncer(sessionManager: MqttSessionManager, voice: VoiceAdapter, clockSync: ClockSync, settings: UserSettings): VoiceAnnouncer =
         // 신선도(5s) 판정은 서버 시계 기준(T31 ClockSync) — 차량 시계가 틀려도 옛 이벤트만 생략한다.
         // 급제동 대상(audience)이 없으면 최신 스냅샷으로 앞뒤를 본다(EventAudience)
         VoiceAnnouncer(
             events = sessionManager.groupEventsReceived, myVehicleId = { sessionManager.myVehicleId }, voice = voice,
             groupState = { sessionManager.groupState.value }, clock = { clockSync.serverNow() },
-        )
+        ).also { if (!settings.voiceEnabled) it.setEnabled(false) }   // A120: 꺼 둔 음성 안내는 다시 켜도 꺼진 채
 
     /** T31: 서버 시각 동기화 — 시작 직후·5분마다 `GET /v1/time` 3회, 왕복 최소 표본 */
     @Provides
@@ -109,8 +162,9 @@ object SignalsModule {
     /** T31: 그룹 EVENT·STATE 지연(ms) — 봉투 ts → 수신(시계 오프셋 보정) */
     @Provides
     @Singleton
-    fun provideLatencyMeter(sessionManager: MqttSessionManager, clockSync: ClockSync): LatencyMeter =
+    fun provideLatencyMeter(sessionManager: MqttSessionManager, clockSync: ClockSync, settings: UserSettings): LatencyMeter =
         LatencyMeter(events = sessionManager.groupEventsReceived, states = sessionManager.groupStatesReceived, clockState = clockSync.state)
+            .also { it.setOverlayEnabled(settings.latencyOverlay) }   // A120: 저장값(release 기본 끔)
 
     /** T26: 활성 그룹 동안 1Hz 판정 → `dh/v1/vehicle/{vid}/event` QoS 1 */
     @Provides
@@ -122,6 +176,7 @@ object SignalsModule {
         locationFeed: LocationFeed,
         vehicleSignals: VehicleSignals,
         naviMonitor: NaviEventMonitor,
+        routeSync: RouteSyncEngine,
     ): VehicleEventEngine = VehicleEventEngine(
         session = sessionManager.session,
         vehicleId = { (tokenStore.state.value as? TokenStoreState.Present)?.credentials?.vehicleId },
@@ -130,6 +185,8 @@ object SignalsModule {
         vehicle = vehicleSignals.state,
         naviEvents = naviMonitor.events,
         publish = { topic, type, payload -> mqtt.publish(topic, type, payload, JsonObject.serializer(), qos = 1) },
+        // A005: 그룹이 따라가는 목적지(선두가 바꾼 목적지 수락·발행) — 내비 도착이 그룹 목적지인지 가릴 때 함께 본다
+        followedDestination = { routeSync.state.value.followedDestination },
     )
 
     @Provides
