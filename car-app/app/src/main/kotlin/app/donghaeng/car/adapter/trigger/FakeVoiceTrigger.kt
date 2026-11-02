@@ -1,6 +1,8 @@
 package app.donghaeng.car.adapter.trigger
 
 import app.donghaeng.car.domain.ptt.PttSettings
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 
 /**
@@ -11,13 +13,14 @@ class FakeVoiceTrigger(
     settings: PttSettings,
     clock: () -> Long,
     private val reclaimDelayMs: Long = TriggerPolicy.RECLAIM_DELAY_MS,
-) : BaseVoiceTrigger(settings, clock) {
+    micAvailable: StateFlow<Boolean> = MutableStateFlow(true),
+) : BaseVoiceTrigger(settings, clock, micAvailable) {
 
     private var otherMedia = false
     private var otherStoppedAt: Long? = null
 
     val sessionActive: Boolean
-        get() = TriggerPolicy.sessionActive(groupActive.value, settings.handleButton.value, otherMedia, otherStoppedAt?.let { clock() - it }, reclaimDelayMs)
+        get() = TriggerPolicy.sessionActive(groupActive.value, settings.handleButton.value, otherMedia, otherStoppedAt?.let { clock() - it }, reclaimDelayMs, micAvailable.value)
 
     override fun yieldingMediaKeys(): Boolean = otherMedia || otherStoppedAt?.let { clock() - it < reclaimDelayMs } == true
 

@@ -39,4 +39,20 @@ class RecognizerResultsTest {
         assertEquals(ListenResult.Failed("stt error=2", permanent = false), AndroidSpeechYesNoRecognizer.resultOfError(SpeechRecognizer.ERROR_NETWORK))
         assertEquals(ListenResult.Failed("stt error=8", permanent = false), AndroidSpeechYesNoRecognizer.resultOfError(SpeechRecognizer.ERROR_RECOGNIZER_BUSY))
     }
+
+    @Test
+    fun `error 9 while the mic is blocked in the background is not permanent (B045)`() {
+        // 포그라운드 서비스에 microphone 이 아직 없을 때(백그라운드 시작) 난 9 — 타입이 올라가면 다시 시도한다
+        assertEquals(ListenResult.Failed("stt error=9 (mic-background)", permanent = false), AndroidSpeechYesNoRecognizer.resultOfError(9, micReady = false))
+        assertEquals(ListenResult.Failed("stt error=9", permanent = true), AndroidSpeechYesNoRecognizer.resultOfError(9, micReady = true))
+        assertEquals("언어 오류는 마이크와 무관하게 영구", ListenResult.Failed("stt error=13", permanent = true), AndroidSpeechYesNoRecognizer.resultOfError(13, micReady = false))
+    }
+
+    @Test
+    fun `Vosk result text and partial text`() {
+        assertEquals("네" to 0.9f, VoskResult.parseText("""{"text": "네", "result": [{"conf": 0.9, "word": "네"}]}"""))
+        assertEquals(null to null, VoskResult.parseText("{ not json"))
+        assertEquals("아니", VoskResult.partialText("""{"partial": "아니"}"""))
+        assertEquals(null, VoskResult.partialText(""))
+    }
 }

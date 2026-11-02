@@ -21,6 +21,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -33,7 +35,7 @@ import kotlinx.coroutines.withContext
  * HEADSETHOOK·MEDIA_PLAY_PAUSE·MEDIA_PLAY 가 [onMediaButtonEvent] 로 온다. 재생 상태를 PLAYING 으로 두면 Pleos 미디어 프레임워크가 동행을
  * '재생 중' 미디어로 잡는다 — 근거 표는 [PttSessionPlayback].
  *
- * - 켜는 조건은 [TriggerPolicy.sessionActive]: 그룹 있음 + '핸들 버튼으로 무전' + 다른 앱 미디어 재생 없음(+ 멈춘 뒤 15초).
+ * - 켜는 조건은 [TriggerPolicy.sessionActive]: 그룹 있음 + '핸들 버튼으로 무전' + 마이크를 쓸 수 있음([micAvailable], B046) + 다른 앱 미디어 재생 없음(+ 멈춘 뒤 15초).
  * - 다른 앱 미디어 감지: `AudioManager.AudioPlaybackCallback` 의 활성 재생 구성 중 용도가 MEDIA·GAME 인 것. 우리 무음 재생 창(직후 1.5초) 안의 MEDIA 는
  *   우리 것과 구별할 수 없어 판단을 미루고([TriggerPolicy.otherMediaFrom] = null), **창이 끝나면 활성 구성을 다시 읽어** 판단한다 — 그 사이 시작된 음악을 놓치지 않게.
  *   우리 무전 재생·TTS 는 USAGE_ASSISTANCE_NAVIGATION_GUIDANCE 라 셈에 들지 않는다.
@@ -44,7 +46,8 @@ class MediaSessionVoiceTrigger(
     settings: PttSettings,
     clock: () -> Long = SystemClock::elapsedRealtime,
     private val reclaimDelayMs: Long = TriggerPolicy.RECLAIM_DELAY_MS,
-) : BaseVoiceTrigger(settings, clock) {
+    micAvailable: StateFlow<Boolean> = MutableStateFlow(true),
+) : BaseVoiceTrigger(settings, clock, micAvailable) {
 
     private val appContext = context.applicationContext
     private val audioManager: AudioManager? = appContext.getSystemService(AudioManager::class.java)
@@ -72,6 +75,8 @@ class MediaSessionVoiceTrigger(
             runCatching { audioManager?.registerAudioPlaybackCallback(playbackCallback, main) }
                 .onFailure { DhLog.w("ptt: playback callback 등록 실패 ${it.javaClass.simpleName}") }
             runCatching { audioManager?.activePlaybackConfigurations }.getOrNull()?.let { onPlaybackConfigs(it) }
+            // 마이크 권한이 바뀌면 다시 판단(B046)
+            launch { micAvailable.drop(1).collect { onInputsChanged() } }
             // 설정 스위치가 바뀌면 다시 판단
             settings.handleButton.drop(1).collect {
                 _status.update { s -> s.copy(handleButton = it) }
@@ -115,7 +120,7 @@ class MediaSessionVoiceTrigger(
 
     override fun onInputsChanged() {
         val stoppedAgo = otherMediaStoppedAt?.let { clock() - it }
-        val want = TriggerPolicy.sessionActive(groupActive.value, settings.handleButton.value, otherMediaActive, stoppedAgo, reclaimDelayMs)
+        val want = TriggerPolicy.sessionActive(groupActive.value, settings.handleButton.value, otherMediaActive, stoppedAgo, reclaimDelayMs, micAvailable.value)
         main.post { if (want) activate() else deactivate(reason()) }
     }
 
@@ -125,6 +130,7 @@ class MediaSessionVoiceTrigger(
     private fun reason(): String = when {
         !groupActive.value -> "no-group"
         !settings.handleButton.value -> "setting-off"
+        !micAvailable.value -> "no-mic-permission"
         otherMediaActive -> "other-media"
         else -> "reclaim-wait"
     }

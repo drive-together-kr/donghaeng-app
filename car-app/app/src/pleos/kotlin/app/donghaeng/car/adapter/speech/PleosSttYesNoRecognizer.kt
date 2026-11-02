@@ -28,7 +28,13 @@ import java.util.Locale
  * 쓰는 조건(모두 참일 때만 — 하나라도 아니면 [unavailableReason] 으로 건너뛰고 체인이 Android SpeechRecognizer → Vosk → 카운트다운으로 간다):
  * 1. CaaS(`ai.pleos.playground.caas`) 설치 + 버전 ≥ SDK 최소 4.1.29(versionCode 4001029, SDK 매니페스트 meta-data) — AVD 실측 4.2.10.
  * 2. `pleos.car.permission.STT_SERVICE`(normal) 승인 — 없으면 SDK 의 모든 호출이 SecurityException.
- * 3. `initialize` 가 [INIT_TIMEOUT_MS] 안에 onSuccess. 실패는 영구 실패로 돌려 앱이 사는 동안 다시 시도하지 않는다.
+ * 3. `initialize` 가 [INIT_TIMEOUT_MS] 안에 onSuccess. onFailure·예외는 영구 실패로 돌려 앱이 사는 동안 다시 시도하지 않는다.
+ *    **시간 초과는 이번만 실패**(B045 — 차량 부팅 직후 CaaS 콜드 스타트로 3 s 를 넘겨도 프로세스 내내 음성 확인이 빠지지 않게): 다음 녹음 때 다시 시도하고,
+ *    [PleosSttInitPolicy.MAX_TIMEOUTS]번 연달아 넘길 때만 영구 실패로 굳힌다(TTS 의 `PleosTtsInitPolicy` 와 같은 생각).
+ *
+ * **판정(B014)**: 부분 결과(`isFinal=false` — SDK `UpdateSttResult`)로는 **아니만** 바로 끝내고, **네는 최종 결과**(`isFinal=true` — 끝점 검출 뒤
+ * `UpdateSttCompleted`)에서만 확정한다([YesNoParser.streamVerdict]) — "어… 아니 보내지 마"의 첫 부분 결과 "어"로 무전이 나가지 않게.
+ * 시간이 다 돼 최종 결과가 끝내 오지 않으면 무응답(NONE — 보관)으로 본다.
  *
  * **인스턴스 재사용**: `initialize`(CaaS 서비스 연결, 최대 [INIT_TIMEOUT_MS])는 [prepare](녹음 중)에 한 번 하고, 같은 인스턴스로 `request`/`stop` 을
  * 여러 번 한다(NONE 재듣기 포함). 확인 5초가 연결을 기다리느라 줄지 않게 하고, 그래도 [listen] 안에서 연결을 기다렸으면 그만큼 듣기 상한을 줄여
@@ -51,6 +57,9 @@ class PleosSttYesNoRecognizer(context: Context) : YesNoRecognizer {
 
     /** 초기화 영구 실패 사유 — 있으면 앱이 사는 동안 이 단계를 건너뛴다 */
     @Volatile private var initFailure: String? = null
+
+    /** 연달아 난 초기화 시간 초과 수(성공하면 0) — [PleosSttInitPolicy] */
+    @Volatile private var initTimeouts = 0
 
     private val idleRelease = Runnable { releaseReady("idle") }
 
@@ -107,11 +116,17 @@ class PleosSttYesNoRecognizer(context: Context) : YesNoRecognizer {
                 val started = SystemClock.elapsedRealtime()
                 val result = withTimeoutOrNull(INIT_TIMEOUT_MS) { initialized.await() }
                 when {
-                    !initialized.isCompleted -> initFailure = "init-timeout"
+                    !initialized.isCompleted -> {
+                        // 시간 초과는 이번만 — 연달아 [MAX_TIMEOUTS]번이면 굳힌다(B045)
+                        val n = ++initTimeouts
+                        if (PleosSttInitPolicy.permanentAfter(n)) initFailure = "init-timeout x$n"
+                        else DhLog.i("ptt: pleos stt init-timeout ${INIT_TIMEOUT_MS}ms ($n/${PleosSttInitPolicy.MAX_TIMEOUTS}) → 이번만 건너뜀, 다음 녹음 때 다시")
+                    }
                     result != null -> initFailure = "init $result"
                     else -> {
                         ok = true
                         ready = stt
+                        initTimeouts = 0
                         DhLog.i("ptt: pleos stt initialized ${SystemClock.elapsedRealtime() - started}ms")
                     }
                 }
@@ -129,7 +144,7 @@ class PleosSttYesNoRecognizer(context: Context) : YesNoRecognizer {
 
     override suspend fun listen(timeoutMs: Long): ListenResult {
         val t0 = SystemClock.elapsedRealtime()
-        val stt = ensureReady() ?: return ListenResult.Failed(initFailure ?: "init-unavailable", permanent = initFailure != null)
+        val stt = ensureReady() ?: return ListenResult.Failed(initFailure ?: if (initTimeouts > 0) "init-timeout" else "init-unavailable", permanent = initFailure != null)
         // 연결을 여기서 기다렸으면 그만큼 듣기를 줄인다 — 체인의 남은 시간(확인 5초)을 넘지 않게
         val budget = timeoutMs - (SystemClock.elapsedRealtime() - t0)
         if (budget < MIN_LISTEN_MS) {
@@ -141,8 +156,8 @@ class PleosSttYesNoRecognizer(context: Context) : YesNoRecognizer {
             val done = CompletableDeferred<ListenResult>()
             val listener = object : ResultListener {
                 override fun onUpdated(text: String, isFinal: Boolean) {
-                    val verdict = YesNoParser.parse(text)
-                    if (isFinal || verdict != YesNo.NONE) done.complete(ListenResult.Heard(verdict))
+                    // 아니는 부분 결과에서도 바로, 네는 최종 결과에서만(B014)
+                    YesNoParser.streamVerdict(text, isFinal)?.let { done.complete(ListenResult.Heard(it)) }
                 }
                 override fun onUpdatedEpdData(epdOn: Long, epdOff: Long) = Unit
                 override fun onStartedRecognition() = Unit
@@ -214,4 +229,15 @@ class PleosSttYesNoRecognizer(context: Context) : YesNoRecognizer {
             ErrorType.UNAVAILABLE_LANGUAGE, ErrorType.ON_DEVICE_ENGINE_ERROR,
         )
     }
+}
+
+/**
+ * Pleos STT `initialize` 시간 초과 규칙 — 순수(testPleos, B045). 한 번의 시간 초과(3 s — 확인 5 s 안에서 기다릴 수 있는 만큼)는 CaaS 콜드 스타트일 수 있어
+ * 이번만 건너뛰고 다음 녹음 때 다시 시도한다. [MAX_TIMEOUTS]번 연달아면 영구 실패로 굳힌다(매 무전마다 3 s 씩 잃지 않게).
+ */
+internal object PleosSttInitPolicy {
+    const val MAX_TIMEOUTS = 3
+
+    /** 연달아 [consecutiveTimeouts]번 시간 초과 → 영구 실패로 굳힐까 */
+    fun permanentAfter(consecutiveTimeouts: Int): Boolean = consecutiveTimeouts >= MAX_TIMEOUTS
 }

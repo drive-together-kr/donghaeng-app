@@ -36,6 +36,8 @@ class ChainedVoiceAdapterTest {
         override suspend fun speak(text: String, priority: Priority) = speak(text, priority, null)
         override suspend fun speak(text: String, priority: Priority, tag: String?) { spoken += Triple(text, priority, tag) }
         override fun stop() { stops++ }
+        val cancelled = mutableListOf<String>()
+        override fun cancel(tag: String) { cancelled += tag }
     }
 
     private val android = FakeRoute(VoicePath.ANDROID_TTS, "com.example.tts")
@@ -304,5 +306,45 @@ class ChainedVoiceAdapterTest {
         runCurrent()
         advanceTimeBy(6_001); runCurrent()
         assertEquals(SpeakResult.TIMEOUT, timeout.await())
+    }
+
+    @Test
+    fun `speakAndWait drops only its own sentence when the limit passes - a late prompt does not reach the open mic (B012)`() = runTest {
+        val c = chain(pleos)
+        pleos.ready(); runCurrent()
+        val r = async { c.speakAndWait("보낼까요?", Priority.NORMAL, 6_000) }
+        runCurrent()
+        val tag = pleos.spoken.single().third!!
+        advanceTimeBy(6_001); runCurrent()
+        assertEquals(SpeakResult.TIMEOUT, r.await())
+        assertEquals("그 꼬리표만 버린다", listOf(tag), pleos.cancelled)
+        assertEquals("전체 멈춤은 쓰지 않는다(급제동 안내가 함께 지워지지 않게)", 0, pleos.stops)
+    }
+
+    @Test
+    fun `speakAndWait cancelled by its caller drops its sentence, a finished one is not cancelled`() = runTest {
+        val c = chain(android)
+        android.ready(); runCurrent()
+        val r = async { c.speakAndWait("아빠 차 무전", Priority.NORMAL, 4_000) }
+        runCurrent()
+        val tag = android.spoken.single().third!!
+        r.cancel(); runCurrent()
+        assertEquals(listOf(tag), android.cancelled)
+
+        val ok = async { c.speakAndWait("보낼까요?", Priority.NORMAL, 4_000) }
+        runCurrent()
+        val tag2 = android.spoken.last().third!!
+        android.out.emit(UtteranceSignal.Done(VoicePath.ANDROID_TTS, tag2, testScheduler.currentTime)); runCurrent()
+        assertEquals(SpeakResult.SPOKEN, ok.await())
+        assertEquals("끝난 문장은 취소하지 않는다", listOf(tag), android.cancelled)
+    }
+
+    @Test
+    fun `cancel goes to every route and the chain reports an end signal for tagged sentences`() = runTest {
+        val c = chain(android, pleos)
+        c.cancel("evt_9")
+        assertEquals(listOf("evt_9"), android.cancelled)
+        assertEquals(listOf("evt_9"), pleos.cancelled)
+        assertTrue(c.reportsEnd)
     }
 }

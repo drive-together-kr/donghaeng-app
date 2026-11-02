@@ -71,6 +71,17 @@ class VoiceMessageClientTest {
     }
 
     @Test
+    fun `업로드 멱등 키 — 형식에 맞으면 Idempotency-Key 헤더, 없거나 형식이 틀리면 헤더 없이 (B073)`() = runTest {
+        repeat(3) { server.enqueue(MockResponse().setResponseCode(201).setBody("""{"voiceId":"vm_01","eventId":"evt_9","durationMs":3200,"expiresAtMs":1793000000000}""")) }
+        assertTrue(client.upload("grp_1", clip(1_000, "k1.m4a"), "audio/mp4", 3_200, idempotencyKey = "ptt-u1798000000000-1") is ApiResult.Success)
+        assertEquals("ptt-u1798000000000-1", server.takeRequest().getHeader("Idempotency-Key"))
+        client.upload("grp_1", clip(1_000, "k2.m4a"), "audio/mp4", 3_200)
+        assertEquals("키가 없으면 헤더도 없다(옛 호출)", null, server.takeRequest().getHeader("Idempotency-Key"))
+        client.upload("grp_1", clip(1_000, "k3.m4a"), "audio/mp4", 3_200, idempotencyKey = "짧음")
+        assertEquals("형식이 틀린 키는 보내지 않는다(서버 400 대신)", null, server.takeRequest().getHeader("Idempotency-Key"))
+    }
+
+    @Test
     fun `서버 오류 코드를 그대로 올린다 — 429 VOICE_RATE_LIMITED, 413`() = runTest {
         server.enqueue(MockResponse().setResponseCode(429).setBody("""{"error":{"code":"VOICE_RATE_LIMITED","message":"잠시 뒤","traceId":"t"}}"""))
         val r = client.upload("grp_1", clip(100), "audio/mp4", 1_000)

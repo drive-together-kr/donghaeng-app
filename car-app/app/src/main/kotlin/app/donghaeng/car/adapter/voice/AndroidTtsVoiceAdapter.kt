@@ -1,6 +1,8 @@
 package app.donghaeng.car.adapter.voice
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import app.donghaeng.car.core.common.DhLog
@@ -14,7 +16,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -26,14 +27,19 @@ import java.util.concurrent.atomic.AtomicReference
  * - 오디오: [AudioFocusGuard](`USAGE_ASSISTANCE_NAVIGATION_GUIDANCE`, 말하기 전 `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`, 마지막 문장이 끝나면 반납).
  *   문장 앞에 **선행 묵음 200 ms**(Pleos 가이드) — 블루투스/앰프가 깨어나며 첫 음절이 잘리는 것을 막는다.
  * - [Priority.CRITICAL] 은 `QUEUE_FLUSH` 로 재생 중인 안내를 끊는다. 큐 순서·신선도는 `VoiceAnnouncer` 가 결정한다.
+ * - 큐·신호·포커스 계산은 순수 클래스 [AndroidTtsQueue](엔진 = [TtsEnginePort] — JVM 단위 테스트)가 한다. 이 클래스는 TextToSpeech 생성·초기화·콜백 연결만.
  * - 진행 신호([signals]): **Started = 실제 소리 시작** — 본문 utterance 의 재생 차례(`onStart`)와 엔진 오디오 첫 조각(`onAudioAvailable`, API 24+)이
  *   **둘 다 온 시각(늦은 쪽)**. AOSP `SynthesisPlaybackQueueItem.run()` 은 `onStart` 를 먼저 보내고 엔진 오디오를 기다리므로(sherpa-onnx 는
  *   문장 합성을 끝낸 뒤에 오디오를 넘긴다) `onStart` 만 보면 합성이 3 s 넘게 걸려도 지연이 0.2~0.3 s 로 보인다(리뷰 2026-10-28).
  *   오디오 조각 신호 없이 끝나면(onDone) `onStart` 시각으로 대신한다. 지연 = 요청 → 그 시각(선행 묵음 200 ms 포함).
  *   `onDone` → Done, `onError` → Failed, 끊김 → Dropped.
+ * - [cancel](꼬리표 하나만 버림, B012·B013): Android TTS 는 큐에서 문장 하나만 지울 수 없다 → 그 문장이 **재생 차례가 되는 순간**(묵음·본문 onStart)
+ *   엔진을 멈추고, 그 뒤에 줄 서 있던 문장은 같은 꼬리표·요청 시각으로 다시 넣는다(이미 읽는 중이면 바로 멈추고 같은 방법). 그 문장에는 바로 Dropped("cancelled").
  * - F16: [speakAndWait] 는 같은 큐에 넣고 그 utterance 의 onDone/onError 를 기다린다(엔진 없음 → 즉시 [SpeakResult.FALLBACK], [stop] → 실패로 풀림).
- *   CRITICAL(`QUEUE_FLUSH`)이 큐를 비우면 지워진 문장에는 onDone·onError 가 오지 않고 **onStop** 만 온다 → 그때도 실패로 풀어 준다
- *   ("보낼까요?" 가 지워져도 상한까지 기다리지 않고 바로 마이크를 연다). 앱이 쓰는 체인([ChainedVoiceAdapter])은 경로와 무관하게 [signals] 로 같은 일을 한다.
+ *   CRITICAL(`QUEUE_FLUSH`)이 큐를 비우면 지워진 문장에는 onDone·onError 가 오지 않고 **onStop** 만 온다 → 그때도 실패로 풀어 준다.
+ *   앱이 쓰는 체인([ChainedVoiceAdapter])은 경로와 무관하게 [signals] 로 같은 일을 한다.
+ * - 오디오 포커스는 '콜백을 기다리는 utterance' 가 하나도 없을 때 반납한다(B050·B063 — speak·묵음이 ERROR 를 돌려주면 그 몫은 바로 뺀다,
+ *   엔진이 재생 도중 죽어 콜백이 끝내 오지 않으면 [AndroidTtsQueue.STALE_MS] 뒤 정리).
  *
  * 문장 원문은 **어떤 빌드에서도** 로그에 남기지 않는다(닉네임 포함, CLAUDE.md 규칙 8) — 길이와 utteranceId 만 남긴다.
  */
@@ -41,23 +47,12 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceRoute {
 
     private enum class State { INITIALIZING, READY, UNAVAILABLE }
 
-    /** 본문 utterance 한 개 — [startAt] = onStart(재생 차례), [audioAt] = 첫 onAudioAvailable(엔진 오디오 도착), [signaled] = Started 를 보냈다 */
-    private data class Pending(
-        val tag: String?,
-        val requestedAt: Long,
-        val startAt: Long? = null,
-        val audioAt: Long? = null,
-        val signaled: Boolean = false,
-    )
-
     override val path: VoicePath = VoicePath.ANDROID_TTS
 
     private val appContext = context.applicationContext
     private val state = AtomicReference(State.INITIALIZING)
-    private var utteranceSeq = 0L
-    private val outstanding = AtomicInteger(0)
-    private val focus = AudioFocusGuard(appContext)
-    private val pending = ConcurrentHashMap<String, Pending>()
+    private val guard = AudioFocusGuard(appContext)
+    private val main = Handler(Looper.getMainLooper())
 
     private val _status = MutableStateFlow(VoiceAdapterStatus(engine = "Android TextToSpeech"))
     override val status: StateFlow<VoiceAdapterStatus> = _status
@@ -72,6 +67,30 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceRoute {
         unavailable("생성 실패 ${t.javaClass.simpleName}")
         null
     }
+
+    private val queue = AndroidTtsQueue(
+        path = path,
+        engine = object : TtsEnginePort {
+            override fun playSilence(durationMs: Long, queueMode: Int, utteranceId: String): Int =
+                tts?.playSilentUtterance(durationMs, queueMode, utteranceId) ?: TextToSpeech.ERROR
+            override fun speak(text: String, queueMode: Int, utteranceId: String): Int =
+                tts?.speak(text, queueMode, null, utteranceId) ?: TextToSpeech.ERROR
+            override fun stop() {
+                runCatching { tts?.stop() }
+            }
+        },
+        focus = object : AudioFocusPort {
+            override fun request(): Boolean = guard.request().also { g -> _status.update { it.copy(focusGranted = g) } }
+            override fun abandon() { guard.abandon(); _status.update { it.copy(focusGranted = false) } }
+        },
+        clock = System::currentTimeMillis,
+        emit = { s ->
+            if (s is UtteranceSignal.Failed) _status.update { it.copy(failedCount = it.failedCount + 1) }
+            _signals.tryEmit(s)
+        },
+    )
+
+    private val staleCheck = Runnable { queue.purgeStale() }
 
     private fun unavailable(detail: String, engine: String? = null) {
         state.set(State.UNAVAILABLE)
@@ -101,22 +120,18 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceRoute {
         }
         runCatching { engine.setAudioAttributes(AudioFocusGuard.NAV_GUIDANCE) }
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) = onUtteranceProgress(utteranceId) { p, now -> if (p.startAt == null) p.copy(startAt = now) else p }
-            override fun onAudioAvailable(utteranceId: String?, audio: ByteArray?) =
-                onUtteranceProgress(utteranceId) { p, now -> if (p.audioAt == null) p.copy(audioAt = now) else p }
-            override fun onDone(utteranceId: String?) = onUtteranceFinished(utteranceId, ok = true, reason = null)
+            override fun onStart(utteranceId: String?) = queue.onStart(utteranceId)
+            override fun onAudioAvailable(utteranceId: String?, audio: ByteArray?) = queue.onAudio(utteranceId)
+            override fun onDone(utteranceId: String?) = queue.onDone(utteranceId)
             @Deprecated("API 21 미만 호환용")
-            override fun onError(utteranceId: String?) = onUtteranceFinished(utteranceId, ok = false, reason = "onError")
-            override fun onError(utteranceId: String?, errorCode: Int) = onUtteranceFinished(utteranceId, ok = false, reason = "onError code=$errorCode")
-            override fun onStop(utteranceId: String?, interrupted: Boolean) = onUtteranceStopped(utteranceId)
+            override fun onError(utteranceId: String?) = queue.onError(utteranceId, "onError")
+            override fun onError(utteranceId: String?, errorCode: Int) = queue.onError(utteranceId, "onError code=$errorCode")
+            override fun onStop(utteranceId: String?, interrupted: Boolean) = queue.onStop(utteranceId)
         })
         state.set(State.READY)
         _status.update { it.copy(ready = true, detail = "ko_KR 준비 (isLanguageAvailable=$available)", engine = engineName ?: it.engine) }
         DhLog.i("TTS 준비 완료 (Android TextToSpeech ${engineName ?: ""}, ko-KR)")
     }
-
-    /** F16: [speakAndWait] 가 기다리는 utterance → 완료 신호(onDone = true, onError·onStop = false) */
-    private val waiters = UtteranceWaiters()
 
     override suspend fun speak(text: String, priority: Priority) = speak(text, priority, null)
 
@@ -127,9 +142,9 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceRoute {
     override suspend fun speakAndWait(text: String, priority: Priority, timeoutMs: Long): SpeakResult {
         val done = CompletableDeferred<Boolean>()
         return when (enqueue(text, priority, tag = null, waiter = done)) {
-            Enqueued.FALLBACK -> SpeakResult.FALLBACK
-            Enqueued.FAILED -> SpeakResult.FAILED
-            Enqueued.QUEUED -> when (withTimeoutOrNull(timeoutMs) { done.await() }) {
+            AndroidTtsQueue.Enqueued.FALLBACK -> SpeakResult.FALLBACK
+            AndroidTtsQueue.Enqueued.FAILED -> SpeakResult.FAILED
+            AndroidTtsQueue.Enqueued.QUEUED -> when (withTimeoutOrNull(timeoutMs) { done.await() }) {
                 true -> SpeakResult.SPOKEN
                 false -> SpeakResult.FAILED
                 null -> SpeakResult.TIMEOUT
@@ -137,99 +152,27 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceRoute {
         }
     }
 
-    private enum class Enqueued { QUEUED, FALLBACK, FAILED }
-
-    private fun enqueue(text: String, priority: Priority, tag: String?, waiter: CompletableDeferred<Boolean>?): Enqueued {
-        val utteranceId = "dh-${utteranceSeq++}"
-        val engine = tts
-        if (engine == null || state.get() != State.READY) {
+    private fun enqueue(text: String, priority: Priority, tag: String?, waiter: CompletableDeferred<Boolean>?): AndroidTtsQueue.Enqueued {
+        if (tts == null || state.get() != State.READY) {
             // 체인은 준비된 후보에만 넘긴다 — 여기 오면 경쟁 상태(방금 불가로 바뀜). 실패로 알려 체인이 센다
-            DhLog.i("TTS 준비 안 됨 [$priority] ${describe(text, utteranceId)}")
+            DhLog.i("TTS 준비 안 됨 [$priority] (len=${text.length})")
             _status.update { it.copy(fallbackCount = it.fallbackCount + 1, lastUtteranceMs = System.currentTimeMillis()) }
             _signals.tryEmit(UtteranceSignal.Failed(path, tag, System.currentTimeMillis(), "준비 안 됨"))
-            return Enqueued.FALLBACK
+            return AndroidTtsQueue.Enqueued.FALLBACK
         }
-        if (waiter != null) waiters.register(utteranceId, waiter)
-        val granted = focus.request()
-        _status.update { it.copy(focusGranted = granted) }
-        val queueMode = if (priority == Priority.CRITICAL) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-        if (priority == Priority.CRITICAL) outstanding.set(0)
-        pending[utteranceId] = Pending(tag, System.currentTimeMillis())
-        // 선행 묵음 200 ms (묵음도 한 utterance 로 센다 → 끝나면 포커스 정리 대상)
-        outstanding.incrementAndGet()
-        engine.playSilentUtterance(PRE_SILENCE_MS, queueMode, "$utteranceId$SILENCE_SUFFIX")
-        outstanding.incrementAndGet()
-        val result = engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
-        return if (result != TextToSpeech.SUCCESS) {
-            outstanding.decrementAndGet()
-            pending.remove(utteranceId)
-            waiters.forget(utteranceId)
-            DhLog.w("TTS speak 실패 result=$result [$priority] ${describe(text, utteranceId)}")
-            _status.update { it.copy(failedCount = it.failedCount + 1) }
-            _signals.tryEmit(UtteranceSignal.Failed(path, tag, System.currentTimeMillis(), "speak result=$result"))
-            releaseFocusIfIdle()
-            Enqueued.FAILED
-        } else {
-            DhLog.d("TTS speak [$priority] ${describe(text, utteranceId)}")
+        val r = queue.enqueue(text, priority, tag, waiter)
+        if (r == AndroidTtsQueue.Enqueued.QUEUED) {
             _status.update { it.copy(spokenCount = it.spokenCount + 1, lastUtteranceMs = System.currentTimeMillis()) }
-            Enqueued.QUEUED
+            // 엔진이 재생 도중 죽어 콜백이 끝내 오지 않아도 포커스(덕킹)가 남지 않게 — 상한 뒤 한 번 정리
+            main.removeCallbacks(staleCheck)
+            main.postDelayed(staleCheck, AndroidTtsQueue.STALE_MS + STALE_CHECK_SLACK_MS)
         }
+        return r
     }
 
-    override fun stop() {
-        runCatching { tts?.stop() }
-        // 멈춘 문장을 기다리던 쪽(무전 확인·수신 알림)은 실패로 풀어 준다 — onDone 이 오지 않을 수 있다
-        waiters.failAll()
-        outstanding.set(0)
-        releaseFocusIfIdle()
-    }
+    override fun stop() = queue.stopAll()
 
-    /** onStart·onAudioAvailable — 둘 다 모이면 그 문장의 Started 를 한 번 보낸다(바인더 스레드 여럿이어도 맵 갱신은 원자적) */
-    private fun onUtteranceProgress(utteranceId: String?, update: (Pending, Long) -> Pending) {
-        if (utteranceId == null || utteranceId.endsWith(SILENCE_SUFFIX)) return
-        val now = System.currentTimeMillis()
-        var fire: Pending? = null
-        pending.computeIfPresent(utteranceId) { _, p ->
-            val n = update(p, now)
-            if (!n.signaled && soundStartAt(n.startAt, n.audioAt) != null) n.copy(signaled = true).also { fire = it } else n
-        }
-        fire?.let { p -> emitStarted(p, soundStartAt(p.startAt, p.audioAt) ?: now) }
-    }
-
-    private fun emitStarted(p: Pending, atMs: Long) {
-        _signals.tryEmit(UtteranceSignal.Started(path, p.tag, atMs, atMs - p.requestedAt))
-    }
-
-    private fun onUtteranceFinished(utteranceId: String?, ok: Boolean, reason: String?) {
-        if (!ok) DhLog.w("TTS utterance 오류 id=$utteranceId ${reason ?: ""}")
-        waiters.finish(utteranceId, ok)
-        if (utteranceId != null && !utteranceId.endsWith(SILENCE_SUFFIX)) {
-            pending.remove(utteranceId)?.let { p ->
-                val now = System.currentTimeMillis()
-                // 오디오 조각 신호 없이 끝남 → 재생 차례(onStart) 시각으로 대신한다
-                if (ok && !p.signaled && p.startAt != null) emitStarted(p, p.startAt)
-                _signals.tryEmit(if (ok) UtteranceSignal.Done(path, p.tag, now) else UtteranceSignal.Failed(path, p.tag, now, reason ?: "onError"))
-                if (!ok) _status.update { it.copy(failedCount = it.failedCount + 1) }
-            }
-        }
-        if (outstanding.decrementAndGet() <= 0) {
-            outstanding.set(0)
-            releaseFocusIfIdle()
-        }
-    }
-
-    /** CRITICAL(QUEUE_FLUSH)·stop 으로 끊긴 문장 — 실패로 세지 않는다. 포커스 수는 CRITICAL 이 이미 0 으로 맞췄다 */
-    private fun onUtteranceStopped(utteranceId: String?) {
-        if (waiters.finish(utteranceId, ok = false)) DhLog.i("TTS utterance 지워짐(onStop) id=$utteranceId → 기다리던 쪽 풀기")
-        if (utteranceId == null || utteranceId.endsWith(SILENCE_SUFFIX)) return
-        pending.remove(utteranceId)?.let { p -> _signals.tryEmit(UtteranceSignal.Dropped(path, p.tag, System.currentTimeMillis(), "interrupted")) }
-    }
-
-    private fun releaseFocusIfIdle() {
-        if (outstanding.get() > 0) return
-        focus.abandon()
-        _status.update { it.copy(focusGranted = false) }
-    }
+    override fun cancel(tag: String) = queue.cancel(tag)
 
     /** 자원 해제 — Application 수명과 같이 가므로 보통 호출하지 않는다. */
     fun shutdown() {
@@ -238,7 +181,7 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceRoute {
 
     internal companion object {
         const val PRE_SILENCE_MS = 200L
-        private const val SILENCE_SUFFIX = "-s"
+        private const val STALE_CHECK_SLACK_MS = 1_000L
 
         /**
          * 실제 소리 시작 시각 — 재생 차례(onStart)와 엔진 오디오 도착(첫 onAudioAvailable) 중 **늦은 쪽**, 둘 다 와야 정해진다(null = 아직).
@@ -249,6 +192,279 @@ class AndroidTtsVoiceAdapter(context: Context) : VoiceRoute {
 
         /** 로그용 요약 — 문장 원문 대신 길이와 utteranceId 만 (규칙 8). 빌드 타입과 무관하게 항상 동일. */
         internal fun describe(text: String, utteranceId: String): String = "(len=${text.length} id=$utteranceId)"
+    }
+}
+
+/** [AndroidTtsQueue] 가 쓰는 TextToSpeech 창구 — 반환값은 `TextToSpeech.SUCCESS`(0)/`ERROR`(-1). 단위 테스트에서 가짜로 바꾼다 */
+internal interface TtsEnginePort {
+    fun playSilence(durationMs: Long, queueMode: Int, utteranceId: String): Int
+    fun speak(text: String, queueMode: Int, utteranceId: String): Int
+    fun stop()
+}
+
+/**
+ * Android TTS 큐 상태(순수 — 엔진·포커스·시계·신호는 주입, JVM 단위 테스트). 엔진 콜백 스레드와 호출 스레드가 같이 쓰므로 상태는 [lock] 안에서만 바꾸고,
+ * 엔진 호출(바인더)·신호는 잠금 밖에서 한다.
+ *
+ * - 문장 한 개 = 선행 묵음 utterance(`dh-N-s`) + 본문(`dh-N`). id 는 잠금 안에서 매긴다(B065 — 동시 speak 에서 id 가 겹쳐 신호를 잃지 않게).
+ * - **포커스**: 콜백을 기다리는 utterance([entries])가 생길 때 요청하고, 하나도 없으면 반납한다. `playSilentUtterance`·`speak` 가 ERROR 를 돌려주면
+ *   그 utterance 는 콜백이 오지 않으므로 바로 뺀다(B050 — 전에는 묵음 몫 1 이 남아 음악이 줄어든 채였다). onStop 도 뺀다(CRITICAL 의 QUEUE_FLUSH·stop).
+ *   [STALE_MS] 넘게 콜백이 없는 utterance(엔진이 재생 도중 죽음)는 [purgeStale] 이 정리한다(B063).
+ * - [cancel]: 위 클래스 설명.
+ */
+internal class AndroidTtsQueue(
+    private val path: VoicePath,
+    private val engine: TtsEnginePort,
+    private val focus: AudioFocusPort,
+    private val clock: () -> Long,
+    private val emit: (UtteranceSignal) -> Unit,
+    private val preSilenceMs: Long = AndroidTtsVoiceAdapter.PRE_SILENCE_MS,
+    private val staleMs: Long = STALE_MS,
+) {
+    enum class Enqueued { QUEUED, FALLBACK, FAILED }
+
+    /** 본문 한 개(묵음 포함 한 문장). [order] = 넣은 순서(다시 넣을 때 순서를 지킨다) */
+    private class Sentence(
+        val order: Long,
+        val text: String,
+        val priority: Priority,
+        val tag: String?,
+        val requestedAt: Long,
+        var waiter: CompletableDeferred<Boolean>?,
+    ) {
+        var bodyId: String = ""
+        var silenceId: String? = null
+        /** 마지막으로 엔진에 넣은 시각(다시 넣으면 갱신) — 콜백 상한([STALE_MS]) 판단 */
+        var queuedAt: Long = requestedAt
+        var startAt: Long? = null
+        var audioAt: Long? = null
+        var signaled = false
+        /** 재생 차례가 됐다(묵음 또는 본문 onStart) */
+        var playing = false
+        /** [cancel] 됨 — 재생 차례가 되면 엔진을 멈춘다 */
+        var cancelled = false
+    }
+
+    private val lock = Any()
+    private var seq = 0L
+    /** 콜백을 기다리는 utterance id → 넣은 시각(포커스 계산) */
+    private val entries = LinkedHashMap<String, Long>()
+    /** 본문 utterance id → 문장 */
+    private val sentences = LinkedHashMap<String, Sentence>()
+    /** 묵음 utterance id → 문장 */
+    private val silences = HashMap<String, Sentence>()
+    private var focusHeld = false
+
+    /** 콜백을 기다리는 utterance 수(테스트·진단) */
+    val outstanding: Int get() = synchronized(lock) { entries.size }
+
+    fun enqueue(text: String, priority: Priority, tag: String?, waiter: CompletableDeferred<Boolean>? = null): Enqueued {
+        purgeStale()
+        val s = synchronized(lock) { Sentence(seq++, text, priority, tag, clock(), waiter) }
+        return submit(s, if (priority == Priority.CRITICAL) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD, fresh = true)
+    }
+
+    /** 문장 하나를 엔진에 넣는다(묵음 + 본문). [fresh] = 처음 넣음(다시 넣기면 실패 로그만 다르다) */
+    private fun submit(s: Sentence, queueMode: Int, fresh: Boolean): Enqueued {
+        synchronized(lock) {
+            val n = seq++
+            s.bodyId = "dh-$n"
+            s.silenceId = "dh-$n$SILENCE_SUFFIX"
+            s.startAt = null; s.audioAt = null; s.signaled = false; s.playing = false
+            val now = clock()
+            s.queuedAt = now
+            entries[s.silenceId!!] = now
+            entries[s.bodyId] = now
+            silences[s.silenceId!!] = s
+            sentences[s.bodyId] = s
+        }
+        requestFocus()
+        // 선행 묵음 200 ms — 실패하면(엔진 연결 끊김) 콜백이 오지 않으니 그 몫을 바로 뺀다. CRITICAL 의 QUEUE_FLUSH 는 본문이 대신 맡는다
+        val silenceOk = engine.playSilence(preSilenceMs, queueMode, s.silenceId!!) == TextToSpeech.SUCCESS
+        if (!silenceOk) synchronized(lock) { entries.remove(s.silenceId!!); silences.remove(s.silenceId!!); s.silenceId = null }
+        val bodyOk = engine.speak(s.text, if (silenceOk) TextToSpeech.QUEUE_ADD else queueMode, s.bodyId) == TextToSpeech.SUCCESS
+        if (bodyOk) {
+            DhLog.d("TTS speak [${s.priority}] ${AndroidTtsVoiceAdapter.describe(s.text, s.bodyId)}${if (fresh) "" else " (다시 넣음)"}")
+            return Enqueued.QUEUED
+        }
+        synchronized(lock) {
+            entries.remove(s.bodyId)
+            sentences.remove(s.bodyId)
+        }
+        DhLog.w("TTS speak 실패 [${s.priority}] ${AndroidTtsVoiceAdapter.describe(s.text, s.bodyId)}")
+        s.waiter?.complete(false)
+        emit(UtteranceSignal.Failed(path, s.tag, clock(), "speak result=ERROR"))
+        releaseFocusIfIdle()
+        return Enqueued.FAILED
+    }
+
+    fun onStart(utteranceId: String?) {
+        if (utteranceId == null) return
+        val stopFor: Sentence?
+        var fire: Sentence? = null
+        val now = clock()
+        synchronized(lock) {
+            val silence = silences[utteranceId]
+            val s = silence ?: sentences[utteranceId] ?: return
+            s.playing = true
+            if (silence == null && s.startAt == null) {
+                s.startAt = now
+                if (!s.signaled && AndroidTtsVoiceAdapter.soundStartAt(s.startAt, s.audioAt) != null) { s.signaled = true; fire = s }
+            }
+            stopFor = s.takeIf { it.cancelled }
+        }
+        if (stopFor != null) {
+            stopAndRefill(stopFor)
+            return
+        }
+        fire?.let { emitStarted(it) }
+    }
+
+    fun onAudio(utteranceId: String?) {
+        if (utteranceId == null) return
+        var fire: Sentence? = null
+        synchronized(lock) {
+            val s = sentences[utteranceId] ?: return
+            if (s.cancelled) return
+            if (s.audioAt == null) s.audioAt = clock()
+            if (!s.signaled && AndroidTtsVoiceAdapter.soundStartAt(s.startAt, s.audioAt) != null) { s.signaled = true; fire = s }
+        }
+        fire?.let { emitStarted(it) }
+    }
+
+    private fun emitStarted(s: Sentence) {
+        val at = AndroidTtsVoiceAdapter.soundStartAt(s.startAt, s.audioAt) ?: clock()
+        emit(UtteranceSignal.Started(path, s.tag, at, at - s.requestedAt))
+    }
+
+    fun onDone(utteranceId: String?) = finish(utteranceId, ok = true, reason = null)
+
+    fun onError(utteranceId: String?, reason: String) {
+        DhLog.w("TTS utterance 오류 id=$utteranceId $reason")
+        finish(utteranceId, ok = false, reason = reason)
+    }
+
+    private fun finish(utteranceId: String?, ok: Boolean, reason: String?) {
+        if (utteranceId == null) return
+        val s: Sentence?
+        synchronized(lock) {
+            entries.remove(utteranceId)
+            silences.remove(utteranceId)
+            s = sentences.remove(utteranceId)
+        }
+        if (s != null && !s.cancelled) {
+            s.waiter?.complete(ok)
+            // 오디오 조각 신호 없이 끝남 → 재생 차례(onStart) 시각으로 대신한다
+            val startAt = s.startAt
+            if (ok && !s.signaled && startAt != null) { s.signaled = true; emit(UtteranceSignal.Started(path, s.tag, startAt, startAt - s.requestedAt)) }
+            emit(if (ok) UtteranceSignal.Done(path, s.tag, clock()) else UtteranceSignal.Failed(path, s.tag, clock(), reason ?: "onError"))
+        }
+        releaseFocusIfIdle()
+    }
+
+    /** CRITICAL(QUEUE_FLUSH)·stop·취소로 끊긴 문장 — 실패로 세지 않는다(Dropped "interrupted"). 다시 넣은 문장의 옛 id 는 이미 빠져 있어 무시된다 */
+    fun onStop(utteranceId: String?) {
+        if (utteranceId == null) return
+        val s: Sentence?
+        synchronized(lock) {
+            entries.remove(utteranceId)
+            silences.remove(utteranceId)
+            s = sentences.remove(utteranceId)
+        }
+        if (s != null && !s.cancelled) {
+            if (s.waiter?.complete(false) == true) DhLog.i("TTS utterance 지워짐(onStop) id=$utteranceId → 기다리던 쪽 풀기")
+            emit(UtteranceSignal.Dropped(path, s.tag, clock(), "interrupted"))
+        }
+        releaseFocusIfIdle()
+    }
+
+    /** 전부 멈춤 — 엔진 stop(대기·재생 문장은 onStop 으로 Dropped), 기다리던 쪽은 실패로 풀고 포커스 반납 */
+    fun stopAll() {
+        val waiting: List<Sentence>
+        synchronized(lock) { waiting = sentences.values.toList() }
+        engine.stop()
+        waiting.forEach { it.waiter?.complete(false) }
+        synchronized(lock) { entries.clear() }
+        releaseFocusIfIdle()
+    }
+
+    /**
+     * [tag] 문장만 버린다 — 바로 Dropped("cancelled"). 이미 재생 차례면 지금 엔진을 멈추고 뒤에 줄 선 문장을 다시 넣는다. 아직이면 표시만 해 두고
+     * 재생 차례가 되는 순간([onStart]) 같은 일을 한다(Android TTS 는 큐에서 문장 하나만 지울 수 없다).
+     */
+    fun cancel(tag: String) {
+        val now: List<Sentence>
+        val marked: List<Sentence>
+        synchronized(lock) {
+            marked = sentences.values.filter { it.tag == tag && !it.cancelled }
+            marked.forEach { it.cancelled = true }
+            now = marked.filter { it.playing }
+        }
+        if (marked.isEmpty()) return
+        marked.forEach { s ->
+            s.waiter?.complete(false)
+            emit(UtteranceSignal.Dropped(path, s.tag, clock(), "cancelled"))
+        }
+        DhLog.i("TTS 문장 취소 n=${marked.size} 재생중=${now.size}")
+        now.firstOrNull()?.let { stopAndRefill(it) }
+    }
+
+    /** [s](취소됨)가 재생 차례다 — 엔진을 멈추고, 뒤에 줄 서 있던(취소되지 않은) 문장을 같은 순서·꼬리표·요청 시각으로 다시 넣는다 */
+    private fun stopAndRefill(s: Sentence) {
+        val followers: List<Sentence>
+        synchronized(lock) {
+            // 멈추면 엔진 큐의 모든 utterance 에 onStop 이 온다 — 옛 id 는 미리 빼 두어 그 onStop 을 무시한다
+            followers = sentences.values.filter { it !== s && !it.cancelled && it.order > s.order }.sortedBy { it.order }
+            val drop = sentences.values.filter { it === s || it.cancelled || it.order > s.order }
+            drop.forEach { d ->
+                sentences.remove(d.bodyId); entries.remove(d.bodyId)
+                d.silenceId?.let { silences.remove(it); entries.remove(it) }
+            }
+        }
+        engine.stop()
+        DhLog.i("TTS 취소한 문장 차례 → 멈추고 뒤 문장 ${followers.size}개 다시 넣음")
+        followers.forEach { submit(it, TextToSpeech.QUEUE_ADD, fresh = false) }
+        releaseFocusIfIdle()
+    }
+
+    /** 콜백이 [staleMs] 넘게 오지 않은 utterance 정리(엔진이 재생 도중 죽음) — 포커스(덕킹)가 남지 않게 */
+    fun purgeStale() {
+        val now = clock()
+        val dead: List<Sentence>
+        synchronized(lock) {
+            val oldIds = entries.filterValues { now - it > staleMs }.keys.toList()
+            dead = sentences.values.filter { now - it.queuedAt > staleMs }
+            if (oldIds.isEmpty() && dead.isEmpty()) return
+            oldIds.forEach { entries.remove(it); silences.remove(it) }
+            dead.forEach { d ->
+                sentences.remove(d.bodyId); entries.remove(d.bodyId)
+                d.silenceId?.let { silences.remove(it); entries.remove(it) }
+            }
+        }
+        DhLog.w("TTS 콜백 없는 utterance 정리 n=${dead.size} (${staleMs / 1_000}s — 엔진 끊김?)")
+        dead.filter { !it.cancelled }.forEach { s ->
+            s.waiter?.complete(false)
+            emit(UtteranceSignal.Dropped(path, s.tag, now, "stale"))
+        }
+        releaseFocusIfIdle()
+    }
+
+    private fun requestFocus() {
+        synchronized(lock) { focusHeld = true }
+        focus.request()
+    }
+
+    private fun releaseFocusIfIdle() {
+        val release = synchronized(lock) {
+            if (entries.isNotEmpty() || !focusHeld) false else { focusHeld = false; true }
+        }
+        if (release) focus.abandon()
+    }
+
+    companion object {
+        /** 콜백을 기다리는 상한 — 넘으면 엔진이 죽은 것으로 보고 정리(가장 긴 문장 + 엔진 지연보다 넉넉히) */
+        const val STALE_MS = 60_000L
+        const val SILENCE_SUFFIX = "-s"
     }
 }
 

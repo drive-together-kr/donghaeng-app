@@ -14,6 +14,7 @@ import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.model.NextTurnResult
 import app.donghaeng.car.domain.model.toLogString
 import app.donghaeng.car.domain.session.ReceivedGroupEvent
+import app.donghaeng.car.domain.voice.VoiceCue
 import app.donghaeng.car.feature.drive.DriveFormat
 import app.donghaeng.car.feature.drive.Tone
 import app.donghaeng.protocol.EventAudience
@@ -43,6 +44,8 @@ data class EventCard(
     val category: String,
     val title: String,
     val tone: Tone,
+    /** 누르면 동행 정차 대시보드를 연다 — 주행 중에 올린 카드는 false(누른다고 순정 내비를 덮지 않게, B125) */
+    val openOnTap: Boolean = true,
 )
 
 sealed interface CardDecision {
@@ -196,9 +199,17 @@ class CardThrottle(
  *   (회전을 지났어도 다음 회전이 또 300 m 안이면 계속 미룬다), 120초 넘게 밀린 카드는 버린다. 미룬 카드가 없을 때 TBT 를 모르면 바로 올린다 —
  *   미룬 카드가 있으면 새 카드도 줄 끝에 서고, '모름'이 3번 연달아 와야 놓는다.
  *
+ * - **위험 카드(급제동·에어백, B067)** — [voiceCues] 가 있을 때만: ① 받는 순간 음성이 늦을 게 분명하면(화면만 경로·평균 지연 3 s 초과 —
+ *   [EventHighlightPolicy.expectLate]) TBT 게이트를 건너뛰고 바로 올린다(카드 + 음성 모드에는 패널 강조가 없어 회전 직전 몇 초 동안 경고가 하나도 없게 된다).
+ *   ② 미뤘는데 [EventHighlightPolicy.VOICE_DEADLINE_MS](3초) 안에 그 이벤트의 음성이 시작되지 않으면 재확인 루프가 그 카드만 놓는다.
+ *   ③ 위험 카드는 [TurnCardGate] 의 짧은 상한(DI 15초) 뒤 버린다 — 지난 급제동이 회전 뒤 늦게 떠 헷갈리지 않게. 맞바꾸는 점: 위험 카드는 TBT 를 잠깐(5초) 가릴 수 있다.
+ * - **주행 중 카드는 눌러도 동행을 열지 않는다(B125)** — 올릴 때 [isDriving] 이면 [EventCard.openOnTap] = false(탭 동작 없음, 5초 뒤 저절로 사라짐).
+ *   정차 중에 올린 카드만 정차 대시보드로 연결한다.
+ *
  * 로그: `surface: card <종류> id=… category=… mode=… tbt=…`(올림), `surface: card deferred type=… tbt=…m kind=… why=near|tbt-unknown|burst`,
  * `surface: card released type=… reason=far|no-guidance|unknown tbt=… after=…s`, `surface: card still held — …`(연속 회전),
- * `surface: card expired type=…`, `surface: card skip <종류> reason=…`(debug 빌드).
+ * `surface: card expired type=…`, `surface: card danger … gate skipped (voice late)`, `surface: card danger released (no voice in 3s)`,
+ * `surface: card skip <종류> reason=…`(debug 빌드).
  */
 class EventCardNotifier(
     private val events: Flow<ReceivedGroupEvent>,
@@ -217,6 +228,10 @@ class EventCardNotifier(
     private val throttle: CardThrottle = CardThrottle(),
     private val gate: TurnCardGate = TurnCardGate(),
     private val recheckMs: Long = TurnCardGate.RECHECK_MS,
+    /** 음성 경로·지연·eventId 별 음성 시작(VoiceCueTracker) — 위험 카드 규칙(B067). null = 그 규칙 없이 예전대로 */
+    private val voiceCues: (() -> VoiceCue)? = null,
+    /** 지금 주행 중인가 — 주행 중에 올리는 카드는 눌러도 동행을 열지 않는다(B125) */
+    private val isDriving: () -> Boolean = { false },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private var job: Job? = null
@@ -256,6 +271,12 @@ class EventCardNotifier(
                 val limited = throttle.check(e, clock())
                 // 빈도 한도(burst)에 걸려도 미룬 카드 줄이 있으면 버리지 않고 줄 끝에 세운다 — 줄이 풀릴 때 옛 소식만 남고 새 소식이 사라지지 않게
                 if (limited != null && !(limited == "burst" && gate.heldCount > 0)) return@withLock skip(limited, e)
+                // 위험 + 음성이 늦을 게 분명 → TBT 게이트를 건너뛰고 바로(B067 ①)
+                val cue = voiceCues?.let { runCatching(it).getOrNull() }
+                if (limited == null && cue != null && EventHighlightPolicy.isDanger(d.card.type) && EventHighlightPolicy.expectLate(cue)) {
+                    DhLog.i("surface: card danger ${d.card.type} gate skipped (voice late path=${cue.path ?: "-"} avg=${cue.avgLatencyMs ?: "-"}ms)")
+                    return@withLock if (post(d.card, e, clock())) CardOutcome.POSTED else CardOutcome.SKIPPED
+                }
                 val reading = readTurn()
                 val now = clock()
                 if (gate.heldCount == 0 && !gate.isNear(reading)) {
@@ -362,18 +383,44 @@ class EventCardNotifier(
         val reading = readTurn()
         val now = clock()
         settle(gate.observe(reading, now), now)
+        releaseSilentDanger(now)
         publishGate()
         return gate.heldCount > 0
     }
 
+    /**
+     * 미룬 위험 카드 중 [EventHighlightPolicy.VOICE_DEADLINE_MS](3초) 넘게 기다렸는데 그 이벤트의 음성이 아직 시작되지 않은 것은 놓는다(B067 ②) —
+     * 카드 + 음성 모드에서 음성도 카드도 없는 시간이 길어지지 않게. [voiceCues] 가 없으면 아무것도 안 한다. [mutex] 안에서 부른다.
+     */
+    private fun releaseSilentDanger(now: Long) {
+        val cue = voiceCues?.let { runCatching(it).getOrNull() } ?: return
+        gate.heldList()
+            .filter { EventHighlightPolicy.isDanger(it.card.type) && now - it.sinceMs >= EventHighlightPolicy.VOICE_DEADLINE_MS && cue.starts[it.event.event.eventId] == null }
+            .forEach { h ->
+                gate.take(h.card.type) ?: return@forEach
+                when (val limited = throttle.check(h.event, now)) {
+                    null -> {
+                        DhLog.i("surface: card danger released (no voice in ${EventHighlightPolicy.VOICE_DEADLINE_MS / 1000}s) type=${h.card.type} after=${(now - h.sinceMs) / 1000}s")
+                        _state.update { s -> s.copy(released = s.released + 1) }
+                        post(h.card, h.event, now)
+                    }
+                    "burst" -> gate.putBack(h)
+                    else -> skip(limited, h.event)
+                }
+            }
+    }
+
     private fun post(card: EventCard, e: ReceivedGroupEvent, now: Long): Boolean {
-        val ok = runCatching { poster.post(card, groupName()) }
+        // 주행 중에 올리는 카드는 눌러도 동행을 열지 않는다(B125) — 앞 화면은 늘 순정 내비
+        val driving = runCatching(isDriving).getOrDefault(false)
+        val shown = if (driving) card.copy(openOnTap = false) else card
+        val ok = runCatching { poster.post(shown, groupName()) }
             .onFailure { DhLog.w("surface: card post 실패 ${it.javaClass.simpleName}") }
             .getOrDefault(false)
         return if (ok) {
             throttle.record(e, now)
             _state.update { it.copy(posted = it.posted + 1, lastType = card.type) }
-            DhLog.i("surface: card ${card.type} id=${card.notificationId} category=${card.category} mode=${mode.value} tbt=${gate.lastReading?.toLogString() ?: "-"}")
+            DhLog.i("surface: card ${card.type} id=${card.notificationId} category=${card.category} mode=${mode.value} tbt=${gate.lastReading?.toLogString() ?: "-"} tap=${if (shown.openOnTap) "open" else "none"}")
             true
         } else {
             skip("not-posted", e)
@@ -450,7 +497,8 @@ class AndroidCardPoster(context: Context) : CardPoster {
             .setTimeoutAfter(EventCardPolicy.TIMEOUT_MS)
             .setAutoCancel(true)
             .setOnlyAlertOnce(false)
-            .setContentIntent(open)
+            // 주행 중에 올린 카드는 탭 동작 없음(B125 — 순정 내비를 덮지 않게). 5초 뒤 저절로 사라진다
+            .apply { if (card.openOnTap) setContentIntent(open) }
             .build()
         return try {
             manager.notify(card.notificationId, n)

@@ -57,6 +57,19 @@ object YesNoParser {
         }
     }
 
+    /**
+     * 스트리밍 인식기(Pleos STT — 부분 결과 `isFinal=false` 는 지금까지 들은 전체 가설, 끝점 검출 뒤 `isFinal=true`) 한 번의 갱신 → 끝낼 판정(B014).
+     * **아니는 부분 결과에서도 바로**, **네는 최종 결과에서만** — "어… 아니 보내지 마"의 첫 부분 결과 "어"(네)로 무전이 나가지 않게. null = 계속 듣기.
+     */
+    fun streamVerdict(text: String?, isFinal: Boolean): YesNo? {
+        val v = parse(text)
+        return when {
+            v == YesNo.NO -> YesNo.NO
+            isFinal -> v
+            else -> null
+        }
+    }
+
     private fun isYesToken(token: String): Boolean {
         val stem = token.removeSuffix("요").removeSuffix("용").ifEmpty { token }
         return segmentable(stem) || segmentable(token)
@@ -79,4 +92,67 @@ object YesNoParser {
     }
 
     private val YES_SET: Set<String> = YES_WORDS.toSet()
+}
+
+/**
+ * 구간(한 마디)마다 결과를 내는 인식기(Vosk — `onResult` = 침묵으로 한 구간 끝, `onPartialResult` = 지금 구간의 중간 가설)의 판정 누적(B014). 순수.
+ *
+ * - 판정은 **지금까지의 구간 + 지금 부분 결과를 이어 붙인 문장 전체**로([YesNoParser.parse] — 아니 우선, 문장 전체가 네일 때만 네).
+ * - 아니(NO)는 부분 결과·구간 어디서든 바로 끝.
+ * - 네(YES)는 구간이 끝난 뒤 [confirmMs] 동안 문장이 계속 네일 때만 확정 — "어… 아니"처럼 '어' 뒤에 잠깐 멈춰도(구간이 끝나도) 바로 보내지 않게.
+ *   그 사이 다른 말이 들려 문장이 네가 아니게 되면 기다림을 푼다.
+ * - 듣기가 끝날 때([onFinal])는 문장 전체 판정 그대로.
+ */
+class YesNoSegments(private val confirmMs: Long = YES_CONFIRM_MS) {
+    private val segments = ArrayList<String>()
+    private var partial: String? = null
+    private var yesSince: Long? = null
+
+    /** 지금까지 들은 문장 전체의 판정 */
+    fun current(): YesNo = YesNoParser.parse((segments + listOfNotNull(partial)).joinToString(" "))
+
+    /** 네 확정을 기다리는 중이면 확정 시각, 아니면 null */
+    val confirmAt: Long? get() = yesSince?.plus(confirmMs)
+
+    /** 부분 결과 — 아니면 NO(끝), 그 밖은 null(계속). 네 확정 대기 중에 문장이 네가 아니게 되면 대기를 푼다 */
+    fun onPartial(text: String?): YesNo? {
+        partial = text?.takeIf { it.isNotBlank() }
+        return check(now = null)
+    }
+
+    /** 한 구간 끝 — 아니면 NO(끝), 네면 [now] 부터 확정 대기, 그 밖은 null(계속) */
+    fun onSegment(text: String?, now: Long): YesNo? {
+        text?.takeIf { it.isNotBlank() }?.let { segments += it }
+        partial = null
+        return check(now)
+    }
+
+    /** 확정 시각이 지났고 문장이 여전히 네면 YES, 아니면 null */
+    fun onTick(now: Long): YesNo? {
+        val at = confirmAt ?: return null
+        return if (now >= at && current() == YesNo.YES) YesNo.YES else null
+    }
+
+    /** 듣기 끝(마지막 결과) — 문장 전체 판정 */
+    fun onFinal(text: String?): YesNo {
+        text?.takeIf { it.isNotBlank() }?.let { segments += it }
+        partial = null
+        return current()
+    }
+
+    private fun check(now: Long?): YesNo? {
+        val v = current()
+        if (v == YesNo.NO) return YesNo.NO
+        if (v == YesNo.YES) {
+            if (yesSince == null && now != null) yesSince = now
+        } else {
+            yesSince = null
+        }
+        return null
+    }
+
+    companion object {
+        /** 구간이 끝난 뒤 네를 확정하기까지 더 듣는 시간 */
+        const val YES_CONFIRM_MS = 700L
+    }
 }

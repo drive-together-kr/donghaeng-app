@@ -14,7 +14,21 @@ data class RecordedClip(
     val durationMs: Long,
     val sizeBytes: Long,
     val injected: Boolean = false,
-)
+) {
+    companion object {
+        /** 서버 계약 길이 상한(docs/03 §2.6 — 16 000 ms, `VoiceMessageClient.MAX_DURATION_MS` 와 같다) */
+        const val MAX_DURATION_MS = 16_000L
+
+        /** 상한을 이만큼까지 넘은 길이는 잰 값의 오차(준비 시간·틱)로 보고 자른다 — 더 길면 정말 긴 파일(디버그 주입)이라 그대로 둔다(거절된다) */
+        const val OVERSHOOT_TOLERANCE_MS = 3_000L
+
+        /**
+         * 녹음 길이를 계약 상한으로 자른다(B062) — 최대 15 s 녹음에 녹음기 준비·틱 지연이 더해져 16 s 를 조금 넘으면
+         * 업로드가 `client-bad-duration` 으로 거절되고 다시 보내기도 영원히 실패하기 때문. 아래쪽(0.7 s 미만 판정)은 건드리지 않는다.
+         */
+        fun clampDuration(ms: Long): Long = if (ms in (MAX_DURATION_MS + 1)..(MAX_DURATION_MS + OVERSHOOT_TOLERANCE_MS)) MAX_DURATION_MS else ms
+    }
+}
 
 /** [VoiceRecorder.start] 결과 */
 sealed interface RecordStart {

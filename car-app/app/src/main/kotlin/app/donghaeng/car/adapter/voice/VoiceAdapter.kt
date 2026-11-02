@@ -96,6 +96,13 @@ interface VoiceAdapter {
     /** 문장 진행 신호(시작·끝·실패). 기본 = 신호 없음(테스트 대역) */
     val signals: Flow<UtteranceSignal> get() = emptyFlow()
 
+    /**
+     * 꼬리표를 붙여 넘긴 문장마다 **끝 신호**(Done·Failed·Dropped·NoAudio 중 하나)를 [signals] 로 반드시 내는가.
+     * true 면 `VoiceAnnouncer` 가 길이 추정 대신 그 끝 신호(상한 있음)를 기다린 뒤 다음 문장을 넘긴다 — 어댑터 큐 깊이가 1 로 유지돼
+     * 우선순위(급제동 HIGH)가 어댑터 큐에서 LOW 뒤에 밀리지 않는다(B011). 기본 false(신호 없는 테스트 대역 — 예전처럼 길이 추정만큼 기다린다).
+     */
+    val reportsEnd: Boolean get() = false
+
     /** 문장을 읽는다. [Priority.CRITICAL] 은 재생 중인 안내를 끊는다. */
     suspend fun speak(text: String, priority: Priority)
 
@@ -114,6 +121,13 @@ interface VoiceAdapter {
     /** 재생 중인 안내를 즉시 멈춘다. */
     fun stop()
 
+    /**
+     * [tag] 를 붙여 넘긴 문장 **하나만** 버린다(B012·B013) — 아직 큐에 있으면 빼고, 읽는 중이면 끊는다. 그 문장에는 `Dropped("cancelled")`
+     * (또는 끊김 "interrupted")가 나간다. 다른 문장(급제동 HIGH 등)은 그대로 둔다 — 전체 [stop] 과 다른 점.
+     * 이미 끝났거나 모르는 꼬리표면 아무것도 하지 않는다. 기본 = 아무것도 안 함(테스트 대역).
+     */
+    fun cancel(tag: String) = Unit
+
     companion object {
         /** [speakAndWait] 기본 상한 — "보낼까요? 네 또는 아니라고 말하세요" ≈ 3초 + 엔진 지연 */
         const val DEFAULT_WAIT_MS = 8_000L
@@ -131,7 +145,7 @@ enum class SpeakResult {
     /** 읽기 실패(speak 오류·onError) */
     FAILED,
 
-    /** 상한 안에 끝나지 않았다(엔진은 계속 읽을 수 있다) */
+    /** 상한 안에 끝나지 않았다 — 체인([ChainedVoiceAdapter])은 그 문장을 버린다([VoiceAdapter.cancel]): 늦게 나와 마이크·녹음 재생과 겹치지 않게(B012) */
     TIMEOUT,
 
     /** 완료를 알 수 없는 구현 */

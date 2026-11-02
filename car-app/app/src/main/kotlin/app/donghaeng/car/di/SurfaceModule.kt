@@ -19,6 +19,7 @@ import app.donghaeng.car.surface.PanelPositionStore
 import app.donghaeng.car.surface.SharedPrefsPanelPositionStore
 import app.donghaeng.car.surface.SurfaceFeed
 import app.donghaeng.car.surface.SurfaceState
+import app.donghaeng.car.surface.TurnCardGate
 import app.donghaeng.car.surface.TurnProbe
 import dagger.Module
 import dagger.Provides
@@ -103,6 +104,11 @@ object SurfaceModule {
         nextTurn = { turns.read() },
         clock = SystemClock::elapsedRealtime,
         groupState = { sessionManager.groupState.value },
+        // 위험 카드(B067): 음성이 늦을 게 분명하면 게이트를 건너뛰고, 미뤄도 3초 안에 음성이 없으면 놓고, 15초 넘게 밀리면 버린다
+        gate = TurnCardGate(dangerMaxDeferMs = TurnCardGate.DANGER_MAX_DEFER_MS),
+        voiceCues = { state.voiceCue() },
+        // 주행 중 카드는 눌러도 동행을 열지 않는다(B125)
+        isDriving = { state.isDriving.value },
     )
 
     @Provides

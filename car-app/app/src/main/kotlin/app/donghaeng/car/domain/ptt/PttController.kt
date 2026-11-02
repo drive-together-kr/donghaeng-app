@@ -57,8 +57,18 @@ import kotlinx.coroutines.withTimeoutOrNull
  * 사이클마다 번호를 매긴다([PttState.cycleSeq]·[PttState.idleCycleSeq]) — `PttRuntime` 이 받은 무전을 끊은 누름 뒤의 흐름이
  * IDLE 로 끝났는지(보냄·취소·보관·짧음·실패 어느 쪽이든) 가려 끊긴 무전을 처음부터 다시 틀게 한다.
  *
+ * **음성 안내와 마이크가 섞이지 않게(B012·B013)**: 녹음을 열기 직전 [micOpening](기기: VoiceAnnouncer.yieldToMic — 이미 넘긴 NORMAL·LOW 안내를 멈추고
+ * 무전 뒤 다시)을 부르고, 이 상태 기계가 낸 안내("보냈어요."·"취소했어요." 등 — 꼬리표 `ptt-N`)도 아직 남았으면 버린다. "보낼까요?"·"5초 뒤 보낼게요"를
+ * 상한 안에 다 읽지 못하면(TIMEOUT) 체인이 그 문장을 버린다 — 늦게 나와 열린 마이크와 겹치지 않게.
+ * **마이크를 쓸 수 없는 백그라운드(B015)**: [micUsable] 이 false(API 30+ 에서 동행 화면이 안 보이고 포그라운드 서비스에 microphone 타입이 없음 —
+ * 녹음이 무음이 된다)면 녹음하지 않고 [PttPrompts.MIC_BACKGROUND] + NOTICE RECORD_FAILED. 디버그 주입 녹음은 이 검사를 건너뛴다.
+ * **멱등 키(B073, docs/03 계약 3)**: 녹음 한 개마다 키 하나(`u<시각>-<순번>` — '보내지 않은 무전' id 와 같다)를 만들어 첫 전송과 다시 보내기에 같은 키를
+ * `Idempotency-Key` 로 보낸다 — 서버가 커밋했는데 응답을 잃은 뒤 다시 보내도 그룹에 두 번 나가지 않는다.
+ *
  * @param recipients 받는 차 수(나 제외, 모르면 null → 0)
  * @param micGranted 마이크 권한을 다시 읽는다(누를 때마다)
+ * @param micUsable 지금 녹음하면 소리가 담기는가(권한과 별개 — 백그라운드 while-in-use 제한). 기본 true
+ * @param micOpening 녹음을 열기 직전(음성 안내를 비킨다). 기본 = 아무것도 안 함
  * @param clock 단조 시계(기기: SystemClock.elapsedRealtime) — 녹음 길이·카운트다운
  * @param wallClock 벽시계 — '보내지 않은 무전' 시각 표시
  * @param store '보내지 않은 무전' 저장소(기본 메모리 — 기기 DI 는 파일)
@@ -78,6 +88,8 @@ class PttController(
     private val wallClock: () -> Long = System::currentTimeMillis,
     private val maxUnsent: Int = MAX_UNSENT,
     private val store: UnsentVoiceStore = InMemoryUnsentVoiceStore(),
+    private val micUsable: () -> Boolean = { true },
+    private val micOpening: () -> Unit = {},
 ) {
     private sealed interface Command {
         data class Press(val source: String) : Command
@@ -92,8 +104,11 @@ class PttController(
         data object RestoreTimeout : Command
     }
 
-    /** 사이클 하나가 쥔 녹음 파일 — 보냈거나 목록으로 넘기면 null(사이클이 끝날 때 남아 있으면 지운다) */
-    private class ClipHolder(var clip: RecordedClip?)
+    /**
+     * 사이클 하나가 쥔 녹음 파일 — 보냈거나 목록으로 넘기면 null(사이클이 끝날 때 남아 있으면 지운다).
+     * [key] = 이 녹음의 전송 멱등 키(B073) — '보내지 않은 무전'에 넣으면 그 id 가 되어 다시 보내기도 같은 키를 쓴다.
+     */
+    private class ClipHolder(var clip: RecordedClip?, val key: String? = null)
 
     private sealed interface Race<out T> {
         data class Done<T>(val value: T) : Race<T>
@@ -321,7 +336,7 @@ class PttController(
     // ---------------------------------------------------------------- 사이클
 
     private suspend fun recordCycle(gid: String) {
-        val holder = ClipHolder(null)
+        val holder = ClipHolder(null, key = newUnsentId())
         var recording = false
         try {
             val mic = safeMic()
@@ -332,6 +347,18 @@ class PttController(
                 notice(PttNotice.MIC_PERMISSION)
                 return
             }
+            // 권한은 있어도 지금 녹음하면 무음이 되는 상태(백그라운드 + 포그라운드 서비스에 microphone 없음, B015) — 무음을 보내지 않고 안내만
+            if (!recorder.hasPendingInjection && !safeMicUsable()) {
+                DhLog.w("ptt: mic not usable in background (FGS microphone 없음) → 녹음 안 함 — 동행 화면을 한 번 열면 붙는다")
+                _state.update { it.copy(stats = it.stats.copy(micBlocked = it.stats.micBlocked + 1)) }
+                speakLater(PttPrompts.MIC_BACKGROUND)
+                notice(PttNotice.RECORD_FAILED)
+                return
+            }
+            // 마이크를 열기 전에 음성 안내를 비킨다(B013) — 이 상태 기계의 지난 안내("보냈어요."·"취소했어요."…)와 이미 넘긴 NORMAL·LOW 안내가
+            // 녹음 한가운데 나와 그룹에 보내는 무전에 섞이지 않게(Pleos 경로는 시작이 5~9 s 늦다). 급제동(HIGH)·에어백은 그대로 둔다
+            cancelOwnPrompts()
+            runCatching(micOpening).onFailure { DhLog.w("ptt: micOpening 실패 ${it.javaClass.simpleName}") }
             // 녹음기를 여는 동안(MediaRecorder prepare·포커스 — 실기기 수백 ms)에도 바쁨으로 보인다. 그 사이 누름은 presses 로 가서 녹음 루프가 시작할 때 버린다
             // (빠른 두 번 탭이 새 사이클을 세워 녹음기를 다투지 않게). 화면은 바로 '녹음 중'이 된다
             _state.update {
@@ -352,7 +379,8 @@ class PttController(
             _state.update { it.copy(stats = it.stats.copy(recordings = it.stats.recordings + 1)) }
             // 인식 준비(Vosk 모델 적재 수 초)는 녹음하는 동안 미리
             scope.launch { runCatching { listener.prepare() } }
-            val endReason = recordLoop()
+            val loop = recordLoop()
+            val endReason = loop.reason
             recording = false
             val clip = when (val stop = recorder.stop()) {
                 is RecordStop.Clip -> stop.clip
@@ -367,7 +395,9 @@ class PttController(
                 }
             }
             holder.clip = clip
-            DhLog.i("ptt: recorded end=$endReason dur=${clip.durationMs}ms bytes=${clip.sizeBytes} inject=${clip.injected}")
+            // 실마이크인데 녹음 내내 입력이 0 이면 무음(마이크 막힘·AVD hw.audioInput=no) — 막지는 않고 로그만(보관 뒤 다시 보내기 시연이 있다)
+            val silent = !clip.injected && loop.peakLevel <= 0f
+            DhLog.i("ptt: recorded end=$endReason dur=${clip.durationMs}ms bytes=${clip.sizeBytes} inject=${clip.injected}${if (silent) " silent=true" else ""}")
             if (clip.durationMs < timings.minRecordMs) {
                 tooShort(clip.durationMs)
                 return
@@ -385,20 +415,26 @@ class PttController(
         send(gid, ClipHolder(null), item.toClip(), unsentId = item.id)
     }
 
+    /** 녹음 루프 결과 — [reason] 다시 누르면 "press", 15초가 차면 "max". [peakLevel] = 녹음 동안 입력 크기 최댓값(0 = 무음) */
+    private class LoopResult(val reason: String, val peakLevel: Float)
+
     /** 녹음 루프 — 다시 누르면 "press", 15초가 차면 "max" */
-    private suspend fun recordLoop(): String {
+    private suspend fun recordLoop(): LoopResult {
         val started = clock()
+        var peak = 0f
         drainPresses()
         while (true) {
             val left = timings.maxRecordMs - (clock() - started)
-            if (left <= 0) return "max"
+            if (left <= 0) return LoopResult("max", peak)
+            val level = recorder.currentLevel()
+            if (level > peak) peak = level
             _state.update {
                 it.copy(
                     stage = PttStage.RECORDING, remainingS = PttFormat.ceilSeconds(left), totalS = (timings.maxRecordMs / 1000).toInt(),
-                    level = recorder.currentLevel(), listening = false, countdownMode = false, notice = null, sentTo = 0,
+                    level = level, listening = false, countdownMode = false, notice = null, sentTo = 0,
                 )
             }
-            if (withTimeoutOrNull(minOf(timings.tickMs, left)) { presses.receive() } != null) return "press"
+            if (withTimeoutOrNull(minOf(timings.tickMs, left)) { presses.receive() } != null) return LoopResult("press", peak)
         }
     }
 
@@ -482,8 +518,10 @@ class PttController(
     /** 보내기 — 성공이면 파일을 지우고 SENT 3초, 실패면 '보내지 않은 무전'에 두고 NOTICE SEND_FAILED */
     private suspend fun send(gid: String, holder: ClipHolder, clip: RecordedClip, unsentId: String? = null) {
         _state.update { it.copy(stage = PttStage.SENDING, remainingS = 0, listening = false, countdownMode = false, notice = null) }
+        // 같은 녹음이면 첫 전송·다시 보내기가 같은 키(B073) — 응답을 잃고 다시 보내도 서버가 한 번만 저장·알린다
+        val key = (unsentId ?: holder.key)?.let(::idempotencyKeyOf)
         val outcome = try {
-            sender.send(gid, clip)
+            sender.send(gid, clip, key)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -561,10 +599,8 @@ class PttController(
         val clip = holder.clip ?: return
         holder.clip = null   // 이제 목록(과 저장소)이 파일을 쥔다
         val now = wallClock()
-        var id: String
-        do {
-            id = "u$now-${++unsentSeq}"
-        } while (_unsent.value.any { it.id == id })
+        // 녹음 때 만든 키를 id 로 — 다시 보내기가 첫 전송과 같은 멱등 키를 쓴다(B073)
+        val id = holder.key?.takeIf { k -> _unsent.value.none { it.id == k } } ?: newUnsentId()
         val draft = UnsentVoice(id, gid, clip.file, clip.mime, clip.durationMs, now, reason, failure)
         // 앱 내부 저장소로 옮긴다(재시작 뒤에도 남게). 실패하면 이번 프로세스 동안 캐시 파일로 들고 있는다
         val stored = runCatching { store.add(draft) }.getOrNull()
@@ -573,6 +609,16 @@ class PttController(
         list.drop(maxUnsent).forEach { runCatching { store.remove(it.id) }; it.file.delete() }
         _unsent.value = list.take(maxUnsent)
         DhLog.i("ptt: kept unsent reason=$reason n=${_unsent.value.size} persisted=${if (stored != null) "yes" else "no"} total=${persistedCount()}")
+    }
+
+    /** '보내지 않은 무전' id 겸 녹음 멱등 키 — `u<벽시계 ms>-<순번>`(파일 이름으로도 쓴다 — 영숫자·`-` 만) */
+    private fun newUnsentId(): String {
+        val now = wallClock()
+        var id: String
+        do {
+            id = "u$now-${++unsentSeq}"
+        } while (_unsent.value.any { it.id == id })
+        return id
     }
 
     private fun removeUnsent(id: String, deleteFile: Boolean): Boolean {
@@ -619,11 +665,21 @@ class PttController(
         while (presses.tryReceive().isSuccess) Unit
     }
 
-    /** 짧은 안내 음성 — 기다리지 않는다(화면 안내와 함께 나간다) */
+    /** 이 상태 기계가 낸 짧은 안내의 꼬리표(최근 [MAX_PROMPT_TAGS]개) — 다음 녹음을 열 때 아직 남았으면 버린다(B013) */
+    private val promptTags = ArrayDeque<String>()
+    private var promptSeq = 0L
+
+    /** 짧은 안내 음성 — 기다리지 않는다(화면 안내와 함께 나간다). 꼬리표 `ptt-N` 을 붙여 다음 녹음 직전에 버릴 수 있게 한다 */
     private fun speakLater(text: String) {
+        val tag = synchronized(promptTags) {
+            "ptt-${++promptSeq}".also { t ->
+                promptTags.addLast(t)
+                while (promptTags.size > MAX_PROMPT_TAGS) promptTags.removeFirst()
+            }
+        }
         scope.launch {
             try {
-                voice.speak(text, Priority.NORMAL)
+                voice.speak(text, Priority.NORMAL, tag)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -632,10 +688,26 @@ class PttController(
         }
     }
 
+    /** 지난 사이클의 안내("보냈어요."·"취소했어요."…)가 아직 남았으면 버린다 — 새 녹음에 섞이지 않게. 이미 끝난 꼬리표는 어댑터가 무시한다 */
+    private fun cancelOwnPrompts() {
+        val tags = synchronized(promptTags) { promptTags.toList().also { promptTags.clear() } }
+        tags.forEach { t -> runCatching { voice.cancel(t) } }
+    }
+
     private fun safeMic(): Boolean = runCatching(micGranted).getOrDefault(false)
+
+    /** 판단이 예외로 실패하면 녹음을 막지 않는다(true) — 무음 가능성보다 무전을 못 보내는 쪽이 더 나쁘다 */
+    private fun safeMicUsable(): Boolean = runCatching(micUsable).getOrDefault(true)
 
     companion object {
         const val MAX_UNSENT = 5
         const val COUNTDOWN_TICK_MS = 200L
+        const val MAX_PROMPT_TAGS = 8
+
+        /**
+         * 녹음(= '보내지 않은 무전' id) → 업로드 멱등 키(docs/03 계약 3, `[A-Za-z0-9_-]{8,64}`) — 첫 전송과 다시 보내기가 같은 값.
+         * 앞에 `ptt-` 를 붙여 짧은 id(테스트 시계)도 8자를 넘게 하고, 64자로 자른다.
+         */
+        fun idempotencyKeyOf(unsentId: String): String = "ptt-$unsentId".take(64)
     }
 }

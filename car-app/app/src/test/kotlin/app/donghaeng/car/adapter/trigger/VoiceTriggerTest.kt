@@ -134,4 +134,26 @@ class VoiceTriggerTest {
         assertEquals(listOf("SEARCH", "MEDIA_PLAY_PAUSE"), presses.map { it.key })
         job.cancel()
     }
+
+    @Test
+    fun `without a usable mic the handle keys stay with the music app, screen taps still work (B046)`() = runTest {
+        assertFalse(TriggerPolicy.sessionActive(groupActive = true, handleButton = true, otherMediaActive = false, otherMediaStoppedAgoMs = null, micAvailable = false))
+        assertFalse(TriggerPolicy.interceptActivityKey(KeyEvent.KEYCODE_HEADSETHOOK, groupActive = true, handleButton = true, yieldingMedia = false, micAvailable = false))
+        val now = 70_000L
+        val mic = kotlinx.coroutines.flow.MutableStateFlow(false)
+        val t = FakeVoiceTrigger(PttSettings(InMemoryPttSettingsStore(true)), clock = { now }, micAvailable = mic)
+        val presses = mutableListOf<PttPress>()
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) { t.presses.toList(presses) }
+        t.start()
+        t.setGroupActive(true)
+        assertFalse("마이크 권한 없음 → 세션을 켜지 않는다", t.sessionActive)
+        assertFalse("재생/정지 키를 빼앗지 않는다", t.simulateMediaKey(KeyEvent.KEYCODE_HEADSETHOOK, down, eventTimeMs = now))
+        assertFalse(t.onActivityKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, down, 0, now))
+        t.press(PttTriggerSource.DASHBOARD)
+        assertEquals("화면 탭은 그대로(권한 안내를 보인다)", listOf(PttTriggerSource.DASHBOARD), presses.map { it.source })
+        mic.value = true
+        assertTrue(t.sessionActive)
+        assertTrue(t.simulateMediaKey(KeyEvent.KEYCODE_HEADSETHOOK, down, eventTimeMs = now + 1_000))
+        job.cancel()
+    }
 }

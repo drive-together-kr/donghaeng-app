@@ -161,7 +161,7 @@ class DemoControlReceiver : BroadcastReceiver() {
             }
             "voice" -> {
                 val on = intent.getBooleanExtra("on", true)
-                voice.setEnabled(on)
+                voice.setEnabled(on, persist = false)   // 시연·지연 측정의 일시 전환 — 설정 값(저장)은 건드리지 않는다
                 DhLog.i("demo: voice=$on")
             }
             "voice_sample" -> {

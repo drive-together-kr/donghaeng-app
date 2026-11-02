@@ -19,6 +19,10 @@ import app.donghaeng.protocol.EventAudience
  *   '지금' 수신된다(receivedAt = 지금). 이들은 봉투 ts 가 오래돼 여기서 빠진다 — 카드(60 s)·음성(5 s)이 거르는 이벤트를 패널·띠가 '방금'으로 띄우지 않게.
  * - 나이("N초 전") = 서버 시계 지금 − 봉투 ts(발생 시각). 시계 동기화 전이면 serverNow = 로컬 시계(오차는 수 초).
  * - 순서 = 발생 시각(봉투 ts) 최신 먼저 — 재접속 때 한꺼번에 들어와도 실제 순서대로.
+ * - **위험 이벤트는 소식 줄을 붙잡는다(B016)**: '방금 소식' 후보 중 위험 톤(급제동·에어백, [EventHighlightPolicy.isDanger])이 **아직 그 음성이 시작되지
+ *   않았거나** 강조 중(BLINK·STEADY — 음성 시작 + 3초)이면 더 최신 INFO·CAUTION 이벤트보다 먼저 보인다(여럿이면 그중 최신). 급제동 직후 다른 차의
+ *   무전·프리셋 메시지가 와도 빨간 강조가 가려지지 않게 — 음성이 늦을 때 화면이 먼저 알린다는 설계(docs/05 §5.2)를 지킨다.
+ *   음성이 시작돼 강조가 끝나면 다시 최신순. 음성 값([VoiceCue])이 없는 호출이면 창 안의 위험 톤을 먼저 본다.
  */
 object SurfaceEvents {
     const val BANNER_WINDOW_MS = 10_000L
@@ -36,15 +40,26 @@ object SurfaceEvents {
 
     fun isFresh(e: ReceivedGroupEvent, serverNowMs: Long): Boolean = serverNowMs - e.envelopeTsMs <= FRESHNESS_MS
 
-    /** '방금 소식' 후보 중 가장 최근(없으면 null) */
-    fun banner(events: List<ReceivedGroupEvent>, myVehicleId: String?, nowMs: Long, serverNowMs: Long): ReceivedGroupEvent? =
-        othersOnly(events, myVehicleId)
-            .filter { nowMs - it.receivedAtMs <= BANNER_WINDOW_MS && isFresh(it, serverNowMs) }
-            .minWithOrNull(newestFirst)
+    /** '방금 소식' 후보 중 붙잡는 위험 이벤트([holdsBanner]) 먼저, 없으면 가장 최근(없으면 null) */
+    fun banner(events: List<ReceivedGroupEvent>, myVehicleId: String?, nowMs: Long, serverNowMs: Long, cue: VoiceCue? = null): ReceivedGroupEvent? {
+        val candidates = othersOnly(events, myVehicleId).filter { nowMs - it.receivedAtMs <= BANNER_WINDOW_MS && isFresh(it, serverNowMs) }
+        return candidates.filter { holdsBanner(it, nowMs, cue) }.minWithOrNull(newestFirst) ?: candidates.minWithOrNull(newestFirst)
+    }
+
+    /**
+     * 이 위험 이벤트가 소식 줄을 붙잡나(B016) — 위험 톤이고, 음성 값이 없거나([cue] null), 그 이벤트의 음성이 아직 시작되지 않았거나, 강조 중(BLINK·STEADY).
+     * 음성이 강조 전에 시작돼(빠른 경로) 강조가 없으면 붙잡지 않는다 — 이미 귀로 들었다.
+     */
+    fun holdsBanner(e: ReceivedGroupEvent, nowMs: Long, cue: VoiceCue?): Boolean {
+        if (!EventHighlightPolicy.isDanger(e.event.type)) return false
+        if (cue == null) return true
+        if (cue.starts[e.event.eventId] == null) return true
+        return EventHighlightPolicy.decide(e.event.type, e.event.eventId, e.receivedAtMs, nowMs, cue) != EventHighlight.NONE
+    }
 
     /** [cue] 가 있으면 위험 이벤트 강조([EventHighlightPolicy] — 음성 시작이 3초를 넘기면 빨간 강조 + 깜빡임)를 함께 정한다 */
     fun bannerUi(events: List<ReceivedGroupEvent>, myVehicleId: String?, nowMs: Long, serverNowMs: Long, cue: VoiceCue? = null): EventBannerUi? =
-        banner(events, myVehicleId, nowMs, serverNowMs)?.let { e ->
+        banner(events, myVehicleId, nowMs, serverNowMs, cue)?.let { e ->
             EventBannerUi(
                 text = DriveFormat.eventText(e.event.type, e.event.speech),
                 tone = DriveFormat.eventTone(e.event.type),

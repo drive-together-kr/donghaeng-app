@@ -2,6 +2,7 @@ package app.donghaeng.car.domain.ptt
 
 import app.donghaeng.car.adapter.audio.PlayOutcome
 import app.donghaeng.car.adapter.audio.VoiceClipPlayer
+import app.donghaeng.car.adapter.voice.SpeakResult
 import app.donghaeng.car.adapter.voice.VoiceAdapter
 import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.model.Priority
@@ -125,7 +126,7 @@ fun interface VoiceFetcher {
  *    [VoiceClipPlayer](MediaPlayer + `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`). VoiceAnnouncer 는 같은 문구를 읽지 않는다.
  * 5. 재생 중 [state].playing(보낸 차·위치/길이) → 끝나면 큐가 비었을 때 [lingerMs](3초) 머문 뒤 사라진다.
  * 6. 재생 중 무전 버튼을 누르면 [interrupt] — 멈추고 INTERRUPTED('다 못 들음')로 '지난 무전'에 둔다. "○○ 무전" 알림을 읽는 중·재생 준비 중이어도 멈춘다
- *    (알림+재생 한 덩어리를 코루틴 하나로 돌려 취소한다. 알림을 읽다 끊기면 TTS 큐를 비운다 — Android TTS 는 문장 하나만 지울 수 없다).
+ *    (알림+재생 한 덩어리를 코루틴 하나로 돌려 취소한다. 알림을 읽다 끊기면 그 알림 문장만 버린다 — 체인의 꼬리표 취소, B012).
  *    `resumeAfterFlow` 면(무전 버튼 누름 — 사용자 결정 2026-10-28) 끊긴 무전을 큐 맨 앞에 '다시 틀 것'으로 세우고, 내 녹음·확인 흐름이 IDLE 로 끝나
  *    [resumeInterrupted] 가 불릴 때까지(PttRuntime 이 부른다) **다른 대기 무전보다 먼저** 기다렸다가 알림부터 처음부터 다시 튼다 → 다 들으면 PLAYED.
  *    60초 신선도는 보지 않고 대신 끊긴 때부터 [RESUME_MAX_WAIT_MS](2분) 상한 — 넘으면 다시 틀지 않고 '다 못 들음'으로 남긴다(탭 재생).
@@ -447,17 +448,20 @@ class VoicePlayback(
         finishPlay(item, file, outcome)
     }
 
-    /** "○○ 무전" 알림(엔진이 없으면 즉시) → 재생. 취소되면 알림 TTS 도 멈춘다 */
+    /**
+     * "○○ 무전" 알림(엔진이 없으면 즉시) → 재생. 알림을 상한([announceTimeoutMs]) 안에 다 읽지 못했거나(TIMEOUT) 끊겨 취소되면 **그 알림 문장만** 버린다 —
+     * 체인의 speakAndWait 가 그 꼬리표를 취소한다(B012: 늦게 나온 알림이 녹음 재생 위에 겹치거나 새 녹음에 섞이지 않게). 전에는 취소 때 TTS 큐 전체를
+     * 비워(`voice.stop()`) 같은 때 읽던 급제동(HIGH) 안내까지 지웠다.
+     */
     private suspend fun announceAndPlay(item: Item, file: File): PlayOutcome {
         val v = item.voice
         if (announceEnabled()) {
             val text = v.speech?.trim()?.takeIf { it.isNotEmpty() } ?: PttPrompts.incoming(v.nickname)
             currentCoroutineContext().ensureActive()
             try {
-                voice.speakAndWait(text, Priority.NORMAL, announceTimeoutMs)
+                val r = voice.speakAndWait(text, Priority.NORMAL, announceTimeoutMs)
+                if (r == SpeakResult.TIMEOUT) DhLog.i("ptt: voice announce timeout ${announceTimeoutMs}ms → 알림 버리고 재생 voiceId=${v.voiceId}")
             } catch (e: CancellationException) {
-                // 큐에 넣은 알림이 계속 나오지 않게(녹음에 섞이거나 끝난 그룹의 알림이 나온다) — Android TTS 는 문장 하나만 지울 수 없어 큐를 비운다
-                runCatching { voice.stop() }
                 throw e
             } catch (e: Exception) {
                 DhLog.w("ptt: voice announce 실패 ${e.javaClass.simpleName}")

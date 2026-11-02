@@ -5,10 +5,14 @@ import app.donghaeng.car.core.common.DhLog
 import app.donghaeng.car.domain.ptt.YesNo
 import app.donghaeng.car.domain.ptt.YesNoParser
 import app.donghaeng.protocol.DhJson
+import app.donghaeng.car.domain.ptt.YesNoSegments
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -34,6 +38,10 @@ import java.io.RandomAccessFile
  * - 단어 문법([YesNoParser.VOSK_GRAMMAR_WORDS] + `[unk]`)으로 어휘를 제한한다 — 소형 모델은 실행 중 문법을 받는다. 모델 어휘에 없는 낱말은 Vosk 가 경고만 남기고 뺀다.
  * - 모델 적재는 수 초 걸려 [prepare](녹음 중)에 한 번 하고 앱이 사는 동안 들고 있는다.
  * - 마이크: `SpeechService`(AudioRecord 16 kHz). 결과 JSON `{"text": "…", "result": [{"conf":…}]}` 의 text 를 [YesNoParser] 로 판정, 낱말 신뢰도 평균을 conf 로.
+ * - **판정(B014)** = [YesNoSegments]: 지금까지의 구간 + 부분 결과를 이은 문장 전체로 본다. 아니는 부분 결과에서도 바로 끝, **네는 구간이 끝난 뒤
+ *   [YesNoSegments.YES_CONFIRM_MS] 더 들어** 문장이 계속 네일 때만 확정("어… 아니"처럼 '어' 뒤에 잠깐 멈춰도 네로 보내지 않게).
+ * - **모델 적재를 기다린 시간만큼 듣기를 줄인다(B064)** — 남은 시간이 [MIN_LISTEN_MS] 보다 짧으면 `model-loading`(이번만 실패)으로 다음 단계·카운트다운에 넘긴다
+ *   (체인·컨트롤러의 확인 상한을 넘기지 않게). 로그 `ptt: vosk model-loading budget=…ms`.
  * - [listenWav]: 마이크 대신 WAV PCM 을 직접 `acceptWaveForm` 에 흘린다(디버그 주입 — 16 kHz·모노·16 bit 만).
  * - **취소돼도 마이크를 닫는다**: 확인 중 누름·주입 답(`RecognizerChain` 의 first())·컨트롤러 시간 초과·그룹 변경으로 듣기가 취소되는 일이 흔하다.
  *   정리(`stop`·`shutdown`·`close`)는 `NonCancellable` 로 돌린다 — 취소된 코루틴에서 그냥 `withContext` 를 부르면 블록을 돌기 전에 CancellationException 이 나
@@ -90,7 +98,14 @@ class VoskYesNoRecognizer(
         Recognizer(m, SAMPLE_RATE, VoskResult.GRAMMAR_JSON).apply { setWords(true) }
 
     override suspend fun listen(timeoutMs: Long): ListenResult {
+        val t0 = System.currentTimeMillis()
         val m = loadModel() ?: return ListenResult.Failed(modelReason() ?: "no-model", permanent = loadError != null)
+        // 적재를 여기서 기다렸으면 그만큼 듣기를 줄인다(B064) — 체인의 남은 시간(확인 5초)을 넘지 않게
+        val budget = timeoutMs - (System.currentTimeMillis() - t0)
+        if (budget < MIN_LISTEN_MS) {
+            DhLog.i("ptt: vosk model-loading budget=${budget}ms → 다음 단계")
+            return ListenResult.Failed("model-loading", permanent = false)
+        }
         val recognizer = try {
             newRecognizer(m)
         } catch (e: Exception) {
@@ -104,29 +119,53 @@ class VoskYesNoRecognizer(
             runCatching { recognizer.close() }
             return ListenResult.Failed("mic-${e.javaClass.simpleName}", permanent = false)
         }
+        // 구간·부분 결과를 이어 문장 전체로 판정(B014) — 콜백(메인 스레드)과 확정 타이머가 같이 쓰므로 잠근다
+        val segs = YesNoSegments()
+        var lastConf: Float? = null
+        fun heard(a: YesNo) = ListenResult.Heard(a, lastConf)
         return try {
             val listener = object : RecognitionListener {
-                override fun onPartialResult(hypothesis: String?) = Unit
+                override fun onPartialResult(hypothesis: String?) {
+                    val text = VoskResult.partialText(hypothesis)
+                    synchronized(segs) { segs.onPartial(text) }?.let { done.complete(heard(it)) }
+                }
                 override fun onResult(hypothesis: String?) {
-                    val r = parseResult(hypothesis)
-                    if (r.answer != YesNo.NONE) done.complete(r)   // 한 마디 끝 — 네/아니면 바로 끝낸다
+                    // 한 마디 끝 — 아니면 바로, 네면 조금 더 들어 확정(아래 타이머)
+                    val (text, conf) = VoskResult.parseText(hypothesis)
+                    if (conf != null) lastConf = conf
+                    synchronized(segs) { segs.onSegment(text, System.currentTimeMillis()) }?.let { done.complete(heard(it)) }
                 }
                 override fun onFinalResult(hypothesis: String?) {
-                    done.complete(parseResult(hypothesis))
+                    val (text, conf) = VoskResult.parseText(hypothesis)
+                    if (conf != null) lastConf = conf
+                    done.complete(heard(synchronized(segs) { segs.onFinal(text) }))
                 }
                 override fun onError(exception: Exception?) {
                     done.complete(ListenResult.Failed("vosk-${exception?.javaClass?.simpleName ?: "error"}", permanent = false))
                 }
                 override fun onTimeout() {
-                    done.complete(ListenResult.Heard(YesNo.NONE))
+                    done.complete(heard(synchronized(segs) { segs.current() }))
                 }
             }
             val started = withContext(Dispatchers.Main) { service.startListening(listener) }
             if (!started) return ListenResult.Failed("mic-busy", permanent = false)
-            withTimeoutOrNull(timeoutMs) { done.await() } ?: run {
-                // 시간이 다 됐다 — stop() 은 마지막 결과(onFinalResult)를 낸다
-                withContext(Dispatchers.Main) { runCatching { service.stop() } }
-                withTimeoutOrNull(STOP_GRACE_MS) { done.await() } ?: ListenResult.Heard(YesNo.NONE)
+            coroutineScope {
+                // 네 확정 타이머 — 구간이 끝난 뒤 조금 더 들었는데도 문장이 네면 끝낸다
+                val ticker = launch {
+                    while (!done.isCompleted) {
+                        delay(CONFIRM_TICK_MS)
+                        synchronized(segs) { segs.onTick(System.currentTimeMillis()) }?.let { done.complete(heard(it)) }
+                    }
+                }
+                try {
+                    withTimeoutOrNull(budget) { done.await() } ?: run {
+                        // 시간이 다 됐다 — stop() 은 마지막 결과(onFinalResult)를 낸다
+                        withContext(Dispatchers.Main) { runCatching { service.stop() } }
+                        withTimeoutOrNull(STOP_GRACE_MS) { done.await() } ?: heard(synchronized(segs) { segs.current() })
+                    }
+                } finally {
+                    ticker.cancel()
+                }
             }
         } finally {
             // 취소된 뒤에도 반드시 돈다(NonCancellable) — stop() 은 녹음 스레드를 멈추고 join, shutdown() 은 AudioRecord 해제
@@ -151,6 +190,9 @@ class VoskYesNoRecognizer(
             } catch (e: Exception) {
                 return@withContext ListenResult.Failed("recognizer-${e.javaClass.simpleName}", permanent = false)
             }
+            // 마이크 듣기와 같은 판정(B014) — 아니는 구간에서 바로, 네는 파일을 끝까지 듣고 문장 전체로(파일은 실시간보다 빨리 흐른다)
+            val segs = YesNoSegments()
+            var lastConf: Float? = null
             try {
                 withTimeoutOrNull(timeoutMs) {
                     RandomAccessFile(file, "r").use { raf ->
@@ -163,13 +205,16 @@ class VoskYesNoRecognizer(
                             if (n <= 0) break
                             left -= n
                             if (recognizer.acceptWaveForm(buf, n)) {
-                                val r = parseResult(recognizer.result)
-                                if (r.answer != YesNo.NONE) return@withTimeoutOrNull r
+                                val (text, conf) = VoskResult.parseText(recognizer.result)
+                                if (conf != null) lastConf = conf
+                                if (segs.onSegment(text, 0L) == YesNo.NO) return@withTimeoutOrNull ListenResult.Heard(YesNo.NO, lastConf)
                             }
                         }
                     }
-                    parseResult(recognizer.finalResult)
-                } ?: ListenResult.Heard(YesNo.NONE)
+                    val (text, conf) = VoskResult.parseText(recognizer.finalResult)
+                    if (conf != null) lastConf = conf
+                    ListenResult.Heard(segs.onFinal(text), lastConf)
+                } ?: ListenResult.Heard(segs.current(), lastConf)
             } finally {
                 runCatching { recognizer.close() }
             }
@@ -180,11 +225,13 @@ class VoskYesNoRecognizer(
         const val SAMPLE_RATE = 16_000f
         const val CHUNK_BYTES = 8_000   // 0.25 s
         const val STOP_GRACE_MS = 1_000L
+        /** 적재를 기다리고 남은 듣기 시간이 이보다 짧으면 이 단계를 건너뛴다(다음 단계에 시간을 넘긴다) — Pleos STT 와 같은 값 */
+        const val MIN_LISTEN_MS = 1_500L
+        /** 네 확정 타이머 간격 */
+        const val CONFIRM_TICK_MS = 100L
         /** 앱 `files/` 아래 모델 폴더 이름(tools/demo 가 여기에 푼다) */
         const val MODEL_DIR_NAME = "vosk-ko-small"
     }
-
-    private fun parseResult(json: String?): ListenResult.Heard = VoskResult.parse(json)
 }
 
 /** Vosk 문법·결과 JSON 처리(순수 — JNI 를 건드리지 않아 JVM 단위 테스트에서 쓴다) */
@@ -194,10 +241,23 @@ object VoskResult {
 
     /** 결과 JSON `{"text": "…", "result": [{"conf": …, "word": …}]}` → 판정 + 낱말 신뢰도 평균. 깨진 JSON 은 NONE */
     fun parse(json: String?): ListenResult.Heard {
-        if (json.isNullOrBlank()) return ListenResult.Heard(YesNo.NONE)
-        val obj = runCatching { DhJson.json.parseToJsonElement(json).jsonObject }.getOrNull() ?: return ListenResult.Heard(YesNo.NONE)
+        val (text, conf) = parseText(json)
+        return ListenResult.Heard(YesNoParser.parse(text), conf)
+    }
+
+    /** 결과 JSON → (문장, 낱말 신뢰도 평균). 깨진 JSON·빈 값은 (null, null) — 문장은 판정에만 쓰고 로그에 남기지 않는다 */
+    fun parseText(json: String?): Pair<String?, Float?> {
+        if (json.isNullOrBlank()) return null to null
+        val obj = runCatching { DhJson.json.parseToJsonElement(json).jsonObject }.getOrNull() ?: return null to null
         val text = (obj["text"] as? JsonPrimitive)?.content
         val confs = (obj["result"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.get("conf")?.jsonPrimitive?.floatOrNull }.orEmpty()
-        return ListenResult.Heard(YesNoParser.parse(text), confs.takeIf { it.isNotEmpty() }?.average()?.toFloat())
+        return text to confs.takeIf { it.isNotEmpty() }?.average()?.toFloat()
+    }
+
+    /** 부분 결과 JSON `{"partial": "…"}` → 문장(없으면 null) */
+    fun partialText(json: String?): String? {
+        if (json.isNullOrBlank()) return null
+        val obj = runCatching { DhJson.json.parseToJsonElement(json).jsonObject }.getOrNull() ?: return null
+        return (obj["partial"] as? JsonPrimitive)?.content
     }
 }

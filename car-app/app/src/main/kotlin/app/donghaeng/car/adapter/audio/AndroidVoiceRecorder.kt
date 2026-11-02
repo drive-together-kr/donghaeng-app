@@ -87,6 +87,8 @@ class AndroidVoiceRecorder(
         }
         recorder = r
         outFile = file
+        // 길이는 실제 녹음이 시작된 뒤부터 잰다(B062) — 포커스·prepare 시간(HAL 이 늦게 깨면 1 s 넘음)이 녹음 길이에 들어가 16 s 상한을 넘지 않게
+        startedAt = clock()
         DhLog.i("ptt: recording start inject=false rate=$SAMPLE_RATE bitrate=$BIT_RATE")
         return RecordStart.Started
     }
@@ -131,8 +133,9 @@ class AndroidVoiceRecorder(
             file?.delete()
             return RecordStop.Failed("stop-failed", elapsed)
         }
-        DhLog.i("ptt: recording end dur=${elapsed}ms bytes=${file.length()} inject=false")
-        return RecordStop.Clip(RecordedClip(file, AudioMime.MP4, elapsed, file.length(), injected = false))
+        val duration = RecordedClip.clampDuration(elapsed)
+        DhLog.i("ptt: recording end dur=${duration}ms bytes=${file.length()} inject=false")
+        return RecordStop.Clip(RecordedClip(file, AudioMime.MP4, duration, file.length(), injected = false))
     }
 
     private fun copyInjected(source: File, elapsed: Long): RecordStop {

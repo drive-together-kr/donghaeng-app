@@ -19,11 +19,13 @@ import kotlin.coroutines.cancellation.CancellationException
  * - 회전을 지났어도 **바뀐 다음 회전이 다시 [nearM] 안이면 계속 붙잡는다**(연속 회전 — 놓으면 그 회전의 TBT 를 가린다). 이때 [Update.turnChanged] 로 알린다(로그용).
  *   연속 회전이 길게 이어지면 아래 120초 폐기가 막는다.
  * - 버리기: [maxDeferMs](120초) 넘게 미뤄진 카드 — 그만큼 지난 소식은 음성으로 이미 들었고 카드로 띄우기엔 늦다.
+ *   위험 카드(급제동·에어백)는 [dangerMaxDeferMs](기본 = [maxDeferMs], 앱 DI 15초) 뒤 버린다 — 지난 급제동이 회전 뒤 늦게 떠 헷갈리지 않게(B067).
  */
 class TurnCardGate(
     private val nearM: Int = NEAR_M,
     private val maxDeferMs: Long = MAX_DEFER_MS,
     private val unknownReleaseCount: Int = UNKNOWN_RELEASE_COUNT,
+    private val dangerMaxDeferMs: Long = maxDeferMs,
 ) {
     /** 미룬 카드 한 장 — [sinceMs] 는 처음 미룬 시각(같은 종류로 바뀌면 새 카드의 시각) */
     data class Held(val card: EventCard, val event: ReceivedGroupEvent, val sinceMs: Long)
@@ -62,7 +64,7 @@ class TurnCardGate(
     fun observe(reading: NextTurnResult, nowMs: Long): Update {
         lastReading = reading
         unknownStreak = if (reading == NextTurnResult.Unknown) unknownStreak + 1 else 0
-        val expired = held.values.filter { nowMs - it.sinceMs > maxDeferMs }
+        val expired = held.values.filter { nowMs - it.sinceMs > limitOf(it) }
         expired.forEach { held.remove(it.card.type) }
         val reason = releaseReason(reading)
         val turnChanged = reason == null && held.isNotEmpty() && changedTurn(reading)
@@ -86,6 +88,14 @@ class TurnCardGate(
     /** 모두 비운다(모드가 바뀌어 카드를 안 쓰게 됐을 때) — 비운 카드 */
     fun clear(): List<Held> = held.values.toList().also { held.clear(); reference = null; unknownStreak = 0 }
 
+    /** 지금 미룬 카드(미룬 순서) */
+    fun heldList(): List<Held> = held.values.toList()
+
+    /** [type] 카드 하나를 줄에서 뺀다(위험 카드를 먼저 놓을 때) — 없으면 null */
+    fun take(type: String): Held? = held.remove(type)
+
+    private fun limitOf(h: Held): Long = if (EventHighlightPolicy.isDanger(h.card.type)) dangerMaxDeferMs else maxDeferMs
+
     private fun releaseReason(reading: NextTurnResult): String? = when (reading) {
         NextTurnResult.Unknown -> "unknown".takeIf { unknownStreak >= unknownReleaseCount }
         NextTurnResult.NoGuidance -> "no-guidance"
@@ -104,6 +114,9 @@ class TurnCardGate(
 
         /** 이보다 오래 미뤄진 카드는 버린다 */
         const val MAX_DEFER_MS = 120_000L
+
+        /** 위험 카드(급제동·에어백)를 미루는 상한(앱 DI) — 넘으면 버린다(B067) */
+        const val DANGER_MAX_DEFER_MS = 15_000L
 
         /**
          * 미룬 카드가 있을 때 '모름'이 이만큼 연달아 오면 놓는다(재확인 1초 + 조회 최대 0.8 s → 약 3~5초).

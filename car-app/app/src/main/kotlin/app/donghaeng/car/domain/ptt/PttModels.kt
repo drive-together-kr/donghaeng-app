@@ -73,7 +73,8 @@ data class UnsentVoice(
     /** 마지막 전송 실패 사유(로그용 요약 — `HTTP 429 VOICE_RATE_LIMITED`·`network …`) */
     val failure: String? = null,
 ) {
-    fun toClip(): RecordedClip = RecordedClip(file, mime, durationMs, file.length(), injected = false)
+    /** 길이는 계약 상한으로 자른다(B062 — 옛 빌드가 준비 시간까지 세어 16 s 를 넘긴 항목도 다시 보내기가 영원히 실패하지 않게) */
+    fun toClip(): RecordedClip = RecordedClip(file, mime, RecordedClip.clampDuration(durationMs), file.length(), injected = false)
 }
 
 /** 보내기 단계 상태 — 패널·대시보드는 surface `PttUiMapper` 로 `PttUi` 를 만든다 */
@@ -113,9 +114,11 @@ data class PttStats(
     val sendFailed: Int = 0,
     val countdowns: Int = 0,
     val ignoredPresses: Int = 0,
+    /** 마이크를 쓸 수 없는 백그라운드라 녹음하지 않은 수(B015) */
+    val micBlocked: Int = 0,
 ) {
     override fun toString(): String =
-        "presses=$presses rec=$recordings sent=$sent cancelled=$cancelled kept=$kept short=$tooShort sendFailed=$sendFailed countdown=$countdowns ignored=$ignoredPresses"
+        "presses=$presses rec=$recordings sent=$sent cancelled=$cancelled kept=$kept short=$tooShort sendFailed=$sendFailed countdown=$countdowns ignored=$ignoredPresses micBlocked=$micBlocked"
 }
 
 /** 보내기 결과 */
@@ -129,6 +132,12 @@ sealed interface SendOutcome {
 /** 무전 올리기 — 기기: `VoiceMessageClient.upload`, 테스트: 대본 */
 fun interface VoiceSender {
     suspend fun send(groupId: String, clip: RecordedClip): SendOutcome
+
+    /**
+     * [idempotencyKey](docs/03 계약 3 — 같은 녹음이면 첫 전송·다시 보내기가 같은 키)를 함께 보낸다. 기기 구현은 `Idempotency-Key` 헤더로.
+     * 기본 = 키 없이 [send](키를 모르는 테스트 대역).
+     */
+    suspend fun send(groupId: String, clip: RecordedClip, idempotencyKey: String?): SendOutcome = send(groupId, clip)
 }
 
 /** 상태 기계 시간 규칙(사용자 지시 — 15 s·0.7 s·5 s·3 s) */
@@ -163,6 +172,9 @@ object PttPrompts {
     const val SEND_FAILED = "보내지 못했어요. 멈춘 뒤 목록에서 다시 보낼 수 있어요."
     const val MIC_PERMISSION = "마이크 권한이 필요해요. 차를 세운 뒤 허용해 주세요."
     const val RECORD_FAILED = "녹음하지 못했어요."
+
+    /** 백그라운드라 마이크가 막혀 있다(B015 — 포그라운드 서비스에 microphone 타입 없음) */
+    const val MIC_BACKGROUND = "지금은 마이크를 쓸 수 없어요. 차를 세운 뒤 동행 화면을 한 번 열어 주세요."
 
     /** 받은 무전 알림 — 서버 speech("{닉네임} 무전")가 없을 때 */
     fun incoming(nickname: String?): String = nickname?.trim()?.takeIf { it.isNotEmpty() }?.let { "$it 무전" } ?: "무전이 왔어요"
