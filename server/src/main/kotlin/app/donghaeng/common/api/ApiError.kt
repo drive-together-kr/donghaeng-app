@@ -3,6 +3,7 @@ package app.donghaeng.common.api
 import app.donghaeng.protocol.rest.ErrorCodes
 import jakarta.validation.ConstraintViolationException
 import org.slf4j.LoggerFactory
+import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.http.HttpStatusCode
 import org.springframework.http.MediaType
@@ -68,8 +69,12 @@ class GlobalExceptionHandler {
         ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON)
 
     @ExceptionHandler(ApiException::class)
-    fun handleApi(e: ApiException): ResponseEntity<ApiError> =
-        json(e.status).body(ApiError.of(e.code, e.message))
+    fun handleApi(e: ApiException): ResponseEntity<ApiError> {
+        val builder = json(e.status)
+        // 빈도 제한(429 RATE_LIMITED 등)은 다시 보낼 때까지의 초를 알려 준다 (docs/03 §1·§2.3)
+        if (e is app.donghaeng.common.web.RateLimitedException) builder.header(HttpHeaders.RETRY_AFTER, e.retryAfterSeconds.toString())
+        return builder.body(ApiError.of(e.code, e.message))
+    }
 
     @ExceptionHandler(MethodArgumentNotValidException::class)
     fun handleValidation(e: MethodArgumentNotValidException): ResponseEntity<ApiError> {

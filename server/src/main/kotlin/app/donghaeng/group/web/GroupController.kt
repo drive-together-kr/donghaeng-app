@@ -4,6 +4,7 @@ import app.donghaeng.group.GroupErrors
 import app.donghaeng.group.GroupService
 import app.donghaeng.protocol.DhJson
 import app.donghaeng.protocol.GroupEvent
+import app.donghaeng.protocol.rest.ApiHeaders
 import app.donghaeng.protocol.rest.ApiPaths
 import app.donghaeng.protocol.rest.GroupCreateRequest
 import app.donghaeng.protocol.rest.GroupCreateResponse
@@ -21,6 +22,7 @@ import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
@@ -84,9 +86,17 @@ class GroupController(private val groups: GroupService) {
     fun delegateLeader(@AuthenticationPrincipal jwt: Jwt, @PathVariable groupId: String, @RequestBody req: LeaderRequest): GroupDetailResponse =
         groups.delegateLeader(jwt.toCaller(), groupId, req)
 
-    /** 사용자 JWT(멤버 차량 소유자) → 201 GroupEvent(PASSENGER_MESSAGE) / 400 INVALID_MESSAGE / 404 */
+    /**
+     * 사용자 JWT(멤버 차량 소유자) → 201 GroupEvent(PASSENGER_MESSAGE) / 400 INVALID_MESSAGE·VALIDATION_FAILED(키 형식) / 404 / 409 / 429 RATE_LIMITED.
+     * 선택 헤더 `Idempotency-Key` — 같은 키의 재시도는 첫 201 응답을 그대로 받는다(다시 저장·팬아웃 안 함, 계약 3).
+     */
     @PostMapping("/{groupId}/messages")
     @ResponseStatus(HttpStatus.CREATED)
-    fun postMessage(@AuthenticationPrincipal jwt: Jwt, @PathVariable groupId: String, @RequestBody req: PassengerMessageRequest): GroupEvent =
-        groups.postMessage(jwt.requireUser(), groupId, req)
+    fun postMessage(
+        @AuthenticationPrincipal jwt: Jwt,
+        @PathVariable groupId: String,
+        @RequestHeader(name = ApiHeaders.IDEMPOTENCY_KEY, required = false) idempotencyKey: String?,
+        @RequestBody req: PassengerMessageRequest,
+    ): GroupEvent =
+        groups.postMessage(jwt.requireUser(), groupId, req, idempotencyKey)
 }

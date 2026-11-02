@@ -17,6 +17,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties
  *   비어 있으면 검사하지 않는다(로컬 개발·테스트). 공개 VM 에서 이메일만으로 아무 계정이나 로그인되지 않게 클라우드에서는 반드시 설정한다(T32).
  * - `dh.mqtt.enabled` (`DH_MQTT_ENABLED`): 서버의 브로커 접속을 끌 수 있다(테스트·브로커 없는 로컬 실행). 기본 true.
  * - `dh.presence.*`: 스냅샷 주기(2s)·오프라인/정차 판정(60s)·도착 반경(150 m)·Redis 상태 TTL(600s) — presence(T24).
+ * - `dh.rate-limit.*`: 공개 경로 IP 당 분당 요청 수(로그인·디바이스 코드 30)·동승자 메시지 그룹당 최소 간격(2 s) — docs/03 §1·§2.3.
  */
 @ConfigurationProperties("dh")
 class DhProperties(
@@ -25,6 +26,7 @@ class DhProperties(
     val jwt: Jwt = Jwt(),
     val presence: Presence = Presence(),
     val auth: Auth = Auth(),
+    val rateLimit: RateLimit = RateLimit(),
     carIdSalt: String? = null,
     internalToken: String? = null,
 ) {
@@ -52,6 +54,14 @@ class DhProperties(
         /** 비어 있으면 null — `POST /v1/auth/login` 이 키를 검사하지 않는다 */
         val devLoginKey: String? = devLoginKey?.trim()?.takeIf { it.isNotEmpty() }
     }
+
+    /** 빈도 제한 (C094·C106, docs/03 §1·§2.3) */
+    data class RateLimit(
+        /** `POST /v1/auth/login`·`POST /v1/device/code` — IP 당 분당 요청 수. 0 이하면 끈다 */
+        val ipPerMinute: Int = 30,
+        /** `POST /v1/groups/{id}/messages` — 같은 그룹의 동승자 메시지 최소 간격(ms). 0 이하면 끈다 */
+        val passengerMessageIntervalMs: Long = 2_000,
+    )
 
     /** presence(T24): 스냅샷 주기·멤버 상태 판정 기준 (docs/03 §5.3) */
     data class Presence(

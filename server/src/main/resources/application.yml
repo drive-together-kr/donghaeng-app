@@ -65,5 +65,13 @@ dh:
   # F16 무전 보관 정리(VoiceRetention): 만료(업로드 + 24h) 무전 삭제 주기(ms). 그룹 종료 시 삭제는 즉시(GROUP_ENDED), 다운로드는 만료 시각을 직접 비교한다.
   voice:
     purge-interval-ms: ${DH_VOICE_PURGE_INTERVAL_MS:600000}
+  # 빈도 제한(docs/03 §1·§2.3): 로그인·디바이스 코드 발급은 IP 당 분당 30회, 동승자 메시지는 그룹당 2초에 1건 → 429 RATE_LIMITED(+Retry-After). 0 이면 끔.
+  rate-limit:
+    ip-per-minute: ${DH_RATE_LIMIT_IP_PER_MINUTE:30}
+    passenger-message-interval-ms: ${DH_RATE_LIMIT_MESSAGE_INTERVAL_MS:2000}
+  # 보관 정리(1시간마다): group_event 24h 초과·만료 디바이스 코드(+1h)·만료 초대(+1일)·만료 refresh·만료 재시도 키(docs/06 §3)
+  retention:
+    interval-ms: ${DH_RETENTION_INTERVAL_MS:3600000}
+    initial-delay-ms: ${DH_RETENTION_INITIAL_DELAY_MS:120000}
   # CarInfo 차량 ID 해시 salt (docs/04 vehicle.car_info_id_hash). 운영에서는 반드시 바꾸고, 바꾼 뒤에는 유지한다.
   car-id-salt: ${DH_CAR_ID_SALT:dev-salt-change-me}

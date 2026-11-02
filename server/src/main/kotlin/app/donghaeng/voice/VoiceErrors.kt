@@ -26,6 +26,10 @@ internal object VoiceErrors {
     fun rateLimited() =
         ApiException(HttpStatus.TOO_MANY_REQUESTS, ErrorCodes.VOICE_RATE_LIMITED, "무전은 ${VoiceRules.RATE_WINDOW.seconds}초에 한 번 보낼 수 있어요.")
 
+    /** 보관 상한(C113) — 같은 429 코드(차량 앱은 빈도 제한과 같이 '잠시 뒤 다시')지만 문구로 구분한다 */
+    fun quotaExceeded(detail: String) =
+        ApiException(HttpStatus.TOO_MANY_REQUESTS, ErrorCodes.VOICE_RATE_LIMITED, "무전을 너무 많이 보냈어요. 잠시 뒤 다시 보내 주세요. ($detail)")
+
     /** 토큰 `typ` 이 맞지 않음 — group 의 같은 오류(`GroupErrors.wrongPrincipal`)와 같은 403 `FORBIDDEN` */
     fun wrongPrincipal(detail: String) =
         ApiException(HttpStatus.FORBIDDEN, ErrorCodes.FORBIDDEN, detail)

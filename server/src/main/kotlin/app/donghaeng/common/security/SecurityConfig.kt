@@ -1,6 +1,7 @@
 package app.donghaeng.common.security
 
 import app.donghaeng.common.api.ApiError
+import app.donghaeng.protocol.rest.ApiPaths
 import app.donghaeng.protocol.rest.ErrorCodes
 import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.servlet.http.HttpServletResponse
@@ -61,6 +62,8 @@ class SecurityConfig(private val objectMapper: ObjectMapper) {
                     .requestMatchers("/v1/me/**", "/v1/device/approve", "/v1/groups/join").hasRole(ROLE_USER)
                     .requestMatchers(HttpMethod.POST, "/v1/groups").hasRole(ROLE_VEHICLE)
                     .requestMatchers(HttpMethod.POST, "/v1/groups/*/voice").hasRole(ROLE_VEHICLE)
+                    // 차량 자신(docs/03 §1.3·§2.3): 지금 소속 그룹 조회(재접속 동기화)·자기 페어링 해제
+                    .requestMatchers(ApiPaths.VEHICLES_ME, "${ApiPaths.VEHICLES_ME}/**").hasRole(ROLE_VEHICLE)
                     .anyRequest().authenticated()
             }
         return http.build()
@@ -119,7 +122,7 @@ class SecurityConfig(private val objectMapper: ObjectMapper) {
             "/actuator/info",
             "/.well-known/jwks.json",
             "/pair",
-            "/v1/time",
+            ApiPaths.TIME,
             "/j/**",
             "/v1/auth/login",
             "/v1/auth/exchange",

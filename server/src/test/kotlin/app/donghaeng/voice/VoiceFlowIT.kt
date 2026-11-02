@@ -8,6 +8,7 @@ import app.donghaeng.protocol.GroupEvent
 import app.donghaeng.protocol.GroupEventType
 import app.donghaeng.protocol.Place
 import app.donghaeng.protocol.VoiceMessagePayload
+import app.donghaeng.protocol.rest.ApiHeaders
 import app.donghaeng.protocol.rest.ApiPaths
 import app.donghaeng.protocol.rest.DeviceApproveRequest
 import app.donghaeng.protocol.rest.DeviceCodeRequest
@@ -188,6 +189,7 @@ class VoiceFlowIT {
         mime: MediaType = M4A,
         durationMs: String? = "4200",
         filename: String? = "ptt.m4a",
+        idempotencyKey: String? = null,
     ): ResponseEntity<String> {
         val parts = LinkedMultiValueMap<String, Any>()
         if (audio != null) {
@@ -208,6 +210,7 @@ class VoiceFlowIT {
             contentType = MediaType.MULTIPART_FORM_DATA
             accept = listOf(MediaType.APPLICATION_JSON)
             if (bearer != null) setBearerAuth(bearer)
+            if (idempotencyKey != null) set(ApiHeaders.IDEMPOTENCY_KEY, idempotencyKey)
         }
         return rest.exchange(voicePath(groupId), HttpMethod.POST, HttpEntity(parts, headers), String::class.java)
     }
@@ -472,6 +475,22 @@ class VoiceFlowIT {
         } finally {
             pool.shutdownNow()
         }
+    }
+
+    @Test
+    fun `contract 3 - an upload retried with the same Idempotency-Key gets the first 201 and is stored and fanned out once`() {
+        val a = driver("ik-a", "아빠 차")
+        val b = driver("ik-b", "엄마 차")
+        val gid = group(a, b)
+        val first: VoiceUploadResponse = upload(gid, b.vehicleToken, idempotencyKey = "unsent-voice-0001").assertOk(201).decode()
+        // 응답 유실 뒤 3초 안의 재시도 — 429 가 아니라 같은 201
+        val again: VoiceUploadResponse = upload(gid, b.vehicleToken, idempotencyKey = "unsent-voice-0001").assertOk(201).decode()
+        assertEquals(first, again)
+        assertEquals(1, voiceCount(gid), "다시 저장하지 않는다")
+        assertEquals(1, recorded.events.count { it.groupId == gid && it.event.type == GroupEventType.VOICE_MESSAGE.name }, "다시 팬아웃하지 않는다")
+        upload(gid, b.vehicleToken, idempotencyKey = "bad key!").assertError(400, ErrorCodes.VALIDATION_FAILED)
+        // 키 없이 바로 보내면 평소대로 3초 규칙
+        upload(gid, b.vehicleToken).assertError(429, ErrorCodes.VOICE_RATE_LIMITED)
     }
 
     @Test

@@ -45,4 +45,11 @@ class SpeechComposerTest {
         assertEquals("아빠 차 무전", speech.voiceMessage("아빠 차"))
         assertEquals("삼촌 무전", speech.voiceMessage("삼촌"))
     }
+
+    @Test
+    fun `경로 변경 피드 문구 — 경유지가 있으면 경유지, 없으면 목적지`() {
+        assertEquals("아빠 차가 경로를 바꿨어요(경유지 덕평휴게소)", speech.routeChanged("아빠 차", "덕평휴게소", "광주"))
+        assertEquals("삼촌이 경로를 바꿨어요(목적지 속초)", speech.routeChanged("삼촌", null, "속초"))
+        assertEquals("삼촌이 경로를 바꿨어요(목적지 속초)", speech.routeChanged("삼촌", " ", "속초"))
+    }
 }

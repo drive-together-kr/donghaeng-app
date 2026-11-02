@@ -25,9 +25,19 @@ object ApiPaths {
     const val ME_GROUPS = "$BASE/me/groups"
     const val GROUPS = "$BASE/groups"
     const val GROUPS_JOIN = "$BASE/groups/join"
+    /** P1(T50) 예정 — 서버 매핑 없음(docs/03 §3) */
     const val POI_REST_AREAS = "$BASE/poi/rest-areas"
     const val JWKS = "/.well-known/jwks.json"
     const val PAIR_PAGE = "/pair"
+
+    /** `GET /v1/time` — 서버 시각(인증 없음, docs/03 머리말). 응답 [ServerTimeResponse] */
+    const val TIME = "$BASE/time"
+
+    /** `DELETE /v1/vehicles/me` — 차량 JWT 로 자기 페어링 해제(docs/03 §1.3) */
+    const val VEHICLES_ME = "$BASE/vehicles/me"
+
+    /** `GET /v1/vehicles/me/group` — 차량 JWT, 지금 소속된 진행 중 그룹(200 `GroupJoined`) 또는 204(docs/03 §2.3) */
+    const val VEHICLES_ME_GROUP = "$BASE/vehicles/me/group"
 
     fun meVehicle(vehicleId: String): String = "$ME_VEHICLES/$vehicleId"
     fun group(groupId: String): String = "$GROUPS/$groupId"
@@ -36,6 +46,7 @@ object ApiPaths {
     fun groupEnd(groupId: String): String = "$GROUPS/$groupId/end"
     fun groupLeader(groupId: String): String = "$GROUPS/$groupId/leader"
     fun groupMessages(groupId: String): String = "$GROUPS/$groupId/messages"
+    fun groupVoice(groupId: String): String = "$GROUPS/$groupId/voice"
 
     /** 차량 페어링 QR 내용: `{DH_PUBLIC_BASE_URL}/pair?c={userCode}` (하이픈 없는 6자리) */
     fun pairUrl(publicBaseUrl: String, userCode: String): String = "${publicBaseUrl.trimEnd('/')}$PAIR_PAGE?c=$userCode"
@@ -51,6 +62,38 @@ object ApiHeaders {
      * 로컬 서버는 검사하지 않는다. 값은 저장소·로그에 남기지 않는다.
      */
     const val DEV_LOGIN_KEY = "X-Dev-Login-Key"
+
+    /**
+     * 재시도 안전 키(선택, docs/03 §2.3·§2.6) — `POST /groups/{id}/messages`(사용자)·`POST /groups/{id}/voice`(차량).
+     * 형식은 [IdempotencyKey.isValid](`[A-Za-z0-9_-]{8,64}`, 아니면 400 `VALIDATION_FAILED`). 서버는 (호출자, 경로, 키) 의 **첫 성공(2xx) 응답**을
+     * 24시간 기억하고, 같은 키가 다시 오면 저장·팬아웃 없이 그 응답(상태·본문)을 그대로 돌려준다. 실패(4xx·5xx)는 기억하지 않는다 — 같은 키로 다시 보내면 다시 처리한다.
+     */
+    const val IDEMPOTENCY_KEY = "Idempotency-Key"
+}
+
+/** [ApiHeaders.IDEMPOTENCY_KEY] 값 규칙 — 클라이언트(차량 앱·companion)와 서버가 같은 규칙을 쓴다 */
+object IdempotencyKey {
+    private val PATTERN = Regex("^[A-Za-z0-9_-]{8,64}$")
+
+    /** 8~64자, 영문·숫자·`_`·`-` 만 (UUID 문자열 36자도 맞는다) */
+    fun isValid(key: String): Boolean = PATTERN.matches(key)
+}
+
+/**
+ * 그룹 이벤트 `MEMBER_LEFT.payload.reason` 값 (docs/03 §5.4). 서버가 이 상수로 만들고, 클라이언트는 모르는 값이 와도 '나감'으로 다룬다.
+ */
+object MemberLeftReason {
+    /** 스스로 나감(`POST /groups/{id}/leave`) */
+    const val LEFT = "LEFT"
+
+    /** 다른 그룹을 만들거나 다른 초대로 합류해 자동으로 나감(docs/03 §2.5) */
+    const val SWITCHED_GROUP = "SWITCHED_GROUP"
+
+    /** 페어링 해제 — 폰 `DELETE /me/vehicles/{id}` 또는 차량 `DELETE /vehicles/me` (docs/03 §1.3) */
+    const val UNPAIRED = "UNPAIRED"
+
+    /** 다른 계정이 같은 차를 승인해 소유권이 넘어감(docs/03 §1.2) */
+    const val OWNER_CHANGED = "OWNER_CHANGED"
 }
 
 /** 오류 코드 상수 — docs/03 오류 형식 `{ "error": { "code", "message", "traceId" } }` 의 `code` 값. */
@@ -61,6 +104,12 @@ object ErrorCodes {
     const val FORBIDDEN = "FORBIDDEN"
     const val NOT_FOUND = "NOT_FOUND"
     const val INTERNAL_ERROR = "INTERNAL_ERROR"
+
+    /**
+     * 429: 빈도 제한 — `POST /auth/login`·`POST /device/code` 는 IP 당 분당 30회, `POST /groups/{id}/messages` 는 그룹당 2초에 1건(docs/03 §1·§2.3).
+     * 응답 헤더 `Retry-After`(초)를 지킨 뒤 다시 보낸다. (`/device/token` 폴링의 429 는 [SLOW_DOWN], 무전은 [VOICE_RATE_LIMITED])
+     */
+    const val RATE_LIMITED = "RATE_LIMITED"
 
     // 인증 (§1.1)
     const val INVALID_TOKEN = "INVALID_TOKEN"
@@ -85,7 +134,7 @@ object ErrorCodes {
     const val VOICE_TOO_LARGE = "VOICE_TOO_LARGE"               // 413: 오디오가 512 KB 초과
     const val INVALID_VOICE = "INVALID_VOICE"                   // 400: audio 파일이 없음·비었음, durationMs 가 정수 1~16 000 이 아님
     const val UNSUPPORTED_VOICE_TYPE = "UNSUPPORTED_VOICE_TYPE" // 415: audio 의 Content-Type 이 audio/mp4·audio/aac·audio/wav 가 아님
-    const val VOICE_RATE_LIMITED = "VOICE_RATE_LIMITED"         // 429: 같은 차가 3초 안에 두 번째 업로드
+    const val VOICE_RATE_LIMITED = "VOICE_RATE_LIMITED"         // 429: 같은 차가 3초 안에 두 번째 업로드, 또는 보관 상한(차 1시간 60건·그룹 50 MB) 초과
 }
 
 /** 오류 응답 봉투 (클라이언트 파싱용). 서버는 같은 모양을 `common/api/ApiError` 로 만든다. */
@@ -98,6 +147,10 @@ data class ErrorBody(
     val message: String,
     val traceId: String? = null,
 )
+
+/** `GET /v1/time` 응답 (docs/03 머리말, T31 `ClockSync`) — 서버 시각 epoch ms */
+@Serializable
+data class ServerTimeResponse(val serverTimeMs: Long)
 
 // ---------------------------------------------------------------- §1.1 사용자 인증 (companion 모듈 — 공식 앱 계정)
 

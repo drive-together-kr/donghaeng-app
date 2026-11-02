@@ -223,9 +223,11 @@ class PresenceIT {
         presenceIngestor.onPresence(b.vehicleId, false, now)
         assertEquals(MemberStatus.OFFLINE, detailOk(gid, a.userToken).snapshot!!.member(b.vehicleId).status)
         presenceIngestor.onPresence(b.vehicleId, true, now)
-        ingest(b.vehicleId, Telemetry(lat = 37.5090, lon = 127.0, heading = 0f, speedKph = 0f, locSource = LocSource.ANDROID), now - 61_000) // stoppedSince 는 이미 now 로 기록돼 있음
-        val stoppedState = detailOk(gid, a.userToken).snapshot!!.member(b.vehicleId)
-        assertEquals(MemberStatus.OFFLINE, stoppedState.status, "61초 전 위치만 있으면 OFFLINE")
+        // C099·계약 4: 차 시계가 61 s 늦어 봉투 ts 가 61 s 전이어도 상태 시각은 서버 수신 시각 — 달리는(보내는) 차가 OFFLINE 으로 보이지 않는다
+        ingest(b.vehicleId, Telemetry(lat = 37.5090, lon = 127.0, heading = 0f, speedKph = 0f, locSource = LocSource.ANDROID), now - 61_000)
+        val slowClockState = detailOk(gid, a.userToken).snapshot!!.member(b.vehicleId)
+        assertEquals(MemberStatus.DRIVING, slowClockState.status, "늦은 시계여도 방금 받은 위치 — 정지 60초 전이라 DRIVING")
+        assertTrue(slowClockState.ageMs!! in 0..10_000, "ageMs=${slowClockState.ageMs}")
 
         // 5) 선두 A 가 목적지 반경 안에서 정지 → ARRIVED
         ingest(a.vehicleId, Telemetry(lat = DEST.lat + 0.0005, lon = DEST.lon, heading = 0f, speedKph = 0f, locSource = LocSource.NAVI), now + 2_000)

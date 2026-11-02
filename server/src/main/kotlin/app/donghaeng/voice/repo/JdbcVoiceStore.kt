@@ -36,6 +36,20 @@ class JdbcVoiceStore(private val jdbc: NamedParameterJdbcTemplate) : VoiceStore 
             OffsetDateTime::class.java,
         )?.toInstant()
 
+    override fun countSince(vehicleId: String, since: Instant): Int =
+        jdbc.queryForObject(
+            "SELECT count(*) FROM voice_message WHERE sender_vehicle_id = :vehicleId AND created_at > :since",
+            mapOf("vehicleId" to vehicleId, "since" to since.toDb()),
+            Int::class.javaObjectType,
+        ) ?: 0
+
+    override fun activeBytesOfGroup(groupId: String, now: Instant): Long =
+        jdbc.queryForObject(
+            "SELECT coalesce(sum(size_bytes), 0) FROM voice_message WHERE group_id = :groupId AND expires_at > :now",
+            mapOf("groupId" to groupId, "now" to now.toDb()),
+            Long::class.javaObjectType,
+        ) ?: 0L
+
     override fun insert(meta: VoiceMeta, audio: ByteArray) {
         jdbc.update(
             """

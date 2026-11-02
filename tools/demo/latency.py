@@ -26,7 +26,7 @@
 - dev 로그인: --email(또는 DH_DEMO_EMAIL). 클라우드는 접속 키 DH_DEV_LOGIN_KEY 환경 변수(api.py 와 같은 방식 — 출력·파일에 쓰지 않는다).
   사용자 토큰 수명이 1시간이라 ③ 앞에서 새로 받고(캐시 토큰을 그대로 쓰지 않는다), 그래도 401 이면 메시지마다 한 번 다시 로그인해 다시 보낸다.
 - 메시지는 음성으로도 읽히므로 ③ 동안 두 차 음성을 잠시 끄고 끝나면 원래대로 돌린다(--keep-voice 면 그대로). 그룹 소식에 '지연 측정 i/K' 가 남는다 — 시험용 그룹에서.
-- 서버의 동승자 메시지에는 빈도 제한이 없다(GroupService.postMessage — 429 는 무전 3 s·페어링 폴링뿐). 기본 간격 1.5 s 는 수신·음성 처리가 겹치지 않게 둔 것.
+- 서버의 동승자 메시지는 그룹당 2초에 1건이다(2026-11 C106 — 넘으면 429 RATE_LIMITED, docs/03 §2.3). 기본 간격 2.5 s 는 그 제한과 수신·음성 처리가 겹치지 않게 둔 것.
 - 출력·파일에 토큰·이메일·좌표·닉네임·메시지 원문 이외의 사용자 값은 남기지 않는다(서버 주소는 scheme://host[:port] 만).
 """
 import argparse
@@ -859,7 +859,7 @@ def main():
     p.add_argument("--email", default=os.environ.get("DH_DEMO_EMAIL"), help="dev 로그인 이메일(클라우드는 DH_DEV_LOGIN_KEY 환경 변수도)")
     p.add_argument("--group", help="메시지를 보낼 그룹 ID(기본: 내 활성 그룹 중 멤버 2대 이상인 첫 그룹)")
     p.add_argument("--messages", type=int, default=20, help="그룹 메시지 수 K")
-    p.add_argument("--msg-gap-s", type=float, default=1.5, help="메시지 간격(서버 빈도 제한 없음 — 수신·음성 처리가 겹치지 않게)")
+    p.add_argument("--msg-gap-s", type=float, default=2.5, help="메시지 간격(서버는 그룹당 2초에 1건 — 2 s 미만이면 429)")
     p.add_argument("--rtt-n", type=int, default=30, help="왕복 프로브 횟수(첫 표본 포함)")
     p.add_argument("--gap-ms", type=int, default=300, help="왕복 프로브 간격")
     p.add_argument("--settle-s", type=float, default=5.0, help="마지막 메시지 뒤 수신 대기")

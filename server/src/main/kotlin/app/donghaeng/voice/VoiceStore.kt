@@ -31,6 +31,12 @@ interface VoiceStore {
     /** 그 차가 마지막으로 올린 시각(저장된 것 중). 없으면 null */
     fun lastCreatedAt(vehicleId: String): Instant?
 
+    /** 그 차가 [since] 뒤에 올린(남아 있는) 무전 수 — 보관 상한(C113) */
+    fun countSince(vehicleId: String, since: Instant): Int
+
+    /** 그룹의 아직 만료되지 않은([now] 기준) 무전 바이트 합 — 보관 상한(C113) */
+    fun activeBytesOfGroup(groupId: String, now: Instant): Long
+
     fun insert(meta: VoiceMeta, audio: ByteArray)
 
     /** 그룹·ID 가 맞고 [now] 에 아직 만료되지 않은 무전. 없으면 null */

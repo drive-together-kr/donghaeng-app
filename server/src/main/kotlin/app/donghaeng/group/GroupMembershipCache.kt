@@ -35,6 +35,21 @@ class GroupMembershipCache(private val redis: StringRedisTemplate) {
         redis.delete(keys)
     }
 
+    /**
+     * read-repair(C101): 캐시의 [cached] 를 DB 의 [truth] 로 맞춘다. truth 가 null 이면 소속 키를 지우고(옛 그룹 멤버 집합에서도 뺀다),
+     * 있으면 소속 키·멤버 집합을 truth 로 쓴다. 트랜잭션 밖(또는 읽기 전용)에서 불려도 된다 — 다음 쓰기(합류·나가기)가 다시 덮는다.
+     */
+    fun repair(vehicleId: String, cached: String?, truth: String?) = safely("repair") {
+        if (cached != null && cached != truth) {
+            redis.opsForSet().remove(membersKey(cached), vehicleId)
+            if (truth == null) redis.delete(vehicleGroupKey(vehicleId))
+        }
+        if (truth != null) {
+            redis.opsForSet().add(membersKey(truth), vehicleId)
+            redis.opsForValue().set(vehicleGroupKey(vehicleId), truth)
+        }
+    }
+
     /** 차량의 현재 그룹 (캐시 기준). 없으면 null */
     fun activeGroupOf(vehicleId: String): String? =
         try {
