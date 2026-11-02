@@ -111,6 +111,8 @@ class PleosNaviAdapter(context: Context) : NaviAdapter {
             close()
             return@callbackFlow
         }
+        // RA-1: 구독 직후 당겨 온 목적지(현재값)인지 — 그 사이 onDestinationChanged(변경 알림)가 오면 그 뒤 응답은 변경이다
+        val destinationPullPending = AtomicBoolean(true)
         val listener = object : NaviHelperEventListener {
             override fun onCurrentLocationInfo(info: CurrentLocationInfo) = guard("onCurrentLocationInfo") {
                 val fix = Fix(
@@ -151,14 +153,16 @@ class PleosNaviAdapter(context: Context) : NaviAdapter {
 
             override fun onDestinationChanged() = guard("onDestinationChanged") {
                 DhLog.i("navi onDestinationChanged → getDestinationInfo")
+                destinationPullPending.set(false)
                 h.getDestinationInfo()
             }
 
             override fun onDestinationInfo(info: DestinationInfo) = guard("onDestinationInfo") {
                 val place = info.toPlace()
                 lastDestination.set(place)
-                DhLog.i("navi onDestinationInfo ${place.toLogString()} remain=${info.remainDistance}m/${info.remainTime}s")
-                trySend(NaviEvent.DestinationChanged(place))
+                val snapshot = destinationPullPending.getAndSet(false)
+                DhLog.i("navi onDestinationInfo ${place.toLogString()} remain=${info.remainDistance}m/${info.remainTime}s snapshot=$snapshot")
+                trySend(NaviEvent.DestinationChanged(place, snapshot = snapshot))
             }
 
             override fun onWaypointChanged(info: WaypointChangedInfo) = guard("onWaypointChanged") {

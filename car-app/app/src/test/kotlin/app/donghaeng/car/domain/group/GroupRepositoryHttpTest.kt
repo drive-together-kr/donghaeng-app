@@ -83,6 +83,23 @@ class GroupRepositoryHttpTest {
         assertNull(sessions.session.value)
     }
 
+    /** RA-5: 나가기 요청이 오가는 사이 다른 그룹에 합류(GROUP_JOINED 적용)했으면 204 를 받아도 새 그룹 세션은 지우지 않는다 */
+    @Test
+    fun `RA-5 - a leave answered after the car moved to another group does not clear the new group`() = runTest {
+        val sessions = InMemoryGroupSessionStore(session)
+        val repo = repository(sessions)
+        val g2 = session.copy(groupId = "grp_2", name = "새 그룹", topics = GroupTopics("dh/v1/group/grp_2/state", "dh/v1/group/grp_2/event"))
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                kotlinx.coroutines.runBlocking { sessions.save(g2) }   // 응답 전에 새 그룹이 적용됐다
+                return MockResponse().setResponseCode(204)
+            }
+        }
+        assertTrue(repo.leave() is ApiResult.Success)
+        assertEquals("grp_2", sessions.session.value?.groupId)
+        assertTrue(sessions.clearReasons.isEmpty())
+    }
+
     @Test
     fun `A004 - end answered 403 (no longer leader) falls back to leave`() = runTest {
         val sessions = InMemoryGroupSessionStore(session.copy(isLeader = true))

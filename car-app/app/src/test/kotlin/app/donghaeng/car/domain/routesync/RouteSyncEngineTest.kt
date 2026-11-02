@@ -37,6 +37,9 @@ class RouteSyncEngineTest {
     private val navi = FakeNaviAdapter()
     private val routeChanges = mutableListOf<RouteChanged>()
     private val acks = mutableListOf<Ack>()
+
+    /** ACK 를 보낸 가상 시각(RA-2 상한 확인) */
+    private val ackTimes = mutableListOf<Long>()
     private val spoken = mutableListOf<Pair<String, Priority>>()
 
     private val driving = MutableStateFlow(false)
@@ -49,7 +52,7 @@ class RouteSyncEngineTest {
         ask: (suspend (String) -> VoiceAnswer?)? = null,
     ) = RouteSyncEngine(
         session = session, proposals = proposals, naviEvents = naviEvents, navi = navi,
-        publishRouteChanged = { routeChanges += it; true }, publishAck = { acks += it; true },
+        publishRouteChanged = { routeChanges += it; true }, publishAck = { acks += it; ackTimes += scheduler.currentTime; true },
         speak = { t, p -> spoken += t to p },
         proposeDestinationOnJoin = joinProposal,
         dispatcher = StandardTestDispatcher(scheduler), clock = { scheduler.currentTime },
@@ -277,9 +280,11 @@ class RouteSyncEngineTest {
             assertNotNull(e.state.value.pending)
             assertTrue(acks.isEmpty())
 
-            // 정차 → 다시 보이고 다시 읽는다, 그때부터 30초
+            // 정차 → (정차가 5 s 이어지면) 다시 보이고 다시 읽는다, 그때부터 30초
             spoken.clear()
             driving.value = false; runCurrent()
+            assertTrue("정차 직후에는 아직 보류(RA-2)", e.state.value.pending!!.heldUntilParked)
+            advanceTimeBy(RouteSyncEngine.PARK_SETTLE_MS); runCurrent()
             val again = e.state.value.pending!!
             assertTrue(!again.heldUntilParked)
             assertEquals(30_000L, again.expiresAtMs - testScheduler.currentTime)
@@ -303,6 +308,63 @@ class RouteSyncEngineTest {
             assertEquals(Ack("prp_x", false), acks.single())
             assertEquals(1, e.state.value.autoDeclined)
             assertEquals(RouteSyncEngine.SPEECH_HOLD_EXPIRED, spoken.last().first)
+        } finally { e.stop() }
+    }
+
+    /**
+     * RA-2(리뷰 프로브): 정차 20 s·주행 60 s 를 15번(20분) — 예전엔 정차마다 질문 전체·출발마다 '정차하면 다시 물어볼게요'(음성 30회),
+     * 상한이 매번 다시 10분으로 늘어 ACK 가 끝내 가지 않았다. 이제 상한은 처음 보류한 때부터, 다시 읽기는 한 번, '정차하면…'도 한 번.
+     */
+    @Test
+    fun `RA-2 - stop and go keeps the first hold deadline, re-reads once and acks false within the cap`() = runTest {
+        session.value = memberSession
+        driving.value = true
+        val e = engine(testScheduler, withDriving = true, ask = { VoiceAnswer.NO_ANSWER }); e.start(); runCurrent()
+        try {
+            proposals.emit(proposal("prp_sg")); runCurrent()
+            val speech = e.state.value.pending!!.speech
+            assertTrue(e.state.value.pending!!.heldUntilParked)
+            repeat(15) {
+                advanceTimeBy(60_000); runCurrent()          // 주행 60 s
+                driving.value = false; runCurrent()
+                advanceTimeBy(20_000); runCurrent()          // 신호 대기 20 s(카드는 보이지만 답하지 않음)
+                driving.value = true; runCurrent()
+            }
+            assertNull("상한이 지나 끝났다", e.state.value.pending)
+            assertEquals(listOf(Ack("prp_sg", false)), acks)
+            assertTrue("ACK false 는 처음 보류한 때부터 10분(+카드 30초) 안 — 실제 ${ackTimes.single()}ms", ackTimes.single() <= RouteSyncEngine.HOLD_MAX_MS + RouteSyncEngine.AUTO_DECLINE_MS)
+            assertEquals("'정차하면 다시 물어볼게요'는 처음 한 번", 1, spoken.count { it.first == RouteSyncEngine.SPEECH_HOLD })
+            assertEquals("정차해 다시 읽기는 한 번", 1, spoken.count { it.first == speech })
+            assertTrue("음성 상한(보류·다시 읽기·넘어감 3줄): $spoken", spoken.size <= 3)
+            assertEquals(1, e.state.value.held)
+            assertEquals(1, e.state.value.autoDeclined)
+        } finally { e.stop() }
+    }
+
+    @Test
+    fun `RA-2 - a stop shorter than the settle time does not re-expose, and driving on does not repeat the hold line`() = runTest {
+        session.value = memberSession
+        driving.value = true
+        val e = engine(testScheduler, withDriving = true, ask = { VoiceAnswer.NO_ANSWER }); e.start(); runCurrent()
+        try {
+            proposals.emit(proposal("prp_short")); runCurrent()
+            val deadline = e.state.value.pending!!.expiresAtMs
+            spoken.clear()
+            driving.value = false; runCurrent()
+            advanceTimeBy(RouteSyncEngine.PARK_SETTLE_MS - 2_000); runCurrent()   // 정체 속 3 s 멈춤
+            driving.value = true; runCurrent()
+            advanceTimeBy(30_000); runCurrent()
+            val p = e.state.value.pending!!
+            assertTrue("다시 보이지 않았다", p.heldUntilParked)
+            assertEquals("상한 그대로", deadline, p.expiresAtMs)
+            assertTrue("다시 읽거나 '정차하면…'을 되풀이하지 않는다: $spoken", spoken.isEmpty())
+            // 다시 보인 뒤 답 없이 출발 → 다시 보류해도 상한은 처음 그대로
+            driving.value = false; runCurrent()
+            advanceTimeBy(RouteSyncEngine.PARK_SETTLE_MS); runCurrent()
+            assertTrue(!e.state.value.pending!!.heldUntilParked)
+            driving.value = true; runCurrent()
+            assertEquals(deadline, e.state.value.pending!!.expiresAtMs)
+            assertEquals(1, e.state.value.held)
         } finally { e.stop() }
     }
 
@@ -356,7 +418,8 @@ class RouteSyncEngineTest {
         val e = engine(testScheduler); e.start(); runCurrent()
         try {
             val x = Place(37.7719, 128.9479, "경포해변")
-            naviEvents.emit(NaviEvent.DestinationChanged(x)); runCurrent()
+            // 구독 직후 어댑터가 당겨 온 현재값(snapshot) — 경유지는 당겨 오지 않아 빠져 있다
+            naviEvents.emit(NaviEvent.DestinationChanged(x, snapshot = true)); runCurrent()
             advanceTimeBy(2_500); runCurrent()
             assertTrue("재시작 직후 현재값은 다시 보내지 않는다", routeChanges.isEmpty())
             // 그 뒤 진짜 변화는 보낸다
@@ -364,6 +427,56 @@ class RouteSyncEngineTest {
             advanceTimeBy(2_500); runCurrent()
             assertEquals(1, routeChanges.size)
             assertEquals(listOf(waypoint), routeChanges.single().waypoints)
+        } finally { e.stop() }
+    }
+
+    /** RA-1(리뷰 프로브): 복원된 방장 — 첫 값이 그룹 목적지·경유지 없음이면 기준선이 안 잡혀, 9.5 s 뒤 실제 휴게소 추가가 '기준선'으로 버려졌다 */
+    @Test
+    fun `RA-1 - after a restart the first bundle is the only baseline, a waypoint added seconds later is published`() = runTest {
+        for (snapshot in listOf(true, false)) {
+            routeChanges.clear()
+            session.value = leaderSession.copy(joinedAtMs = testScheduler.currentTime)   // 엔진 시작 전 합류 = 복원된 세션
+            advanceTimeBy(60_000)
+            val e = engine(testScheduler); e.start(); runCurrent()
+            try {
+                naviEvents.emit(NaviEvent.DestinationChanged(dest, snapshot = snapshot)); runCurrent()   // 그룹 목적지 그대로
+                advanceTimeBy(9_500); runCurrent()
+                naviEvents.emit(NaviEvent.WaypointChanged(listOf(waypoint))); runCurrent()
+                advanceTimeBy(2_500); runCurrent()
+                assertEquals("snapshot=$snapshot — 시작 10초 안의 실제 경유지 추가도 보낸다", 1, routeChanges.size)
+                assertEquals(listOf(waypoint), routeChanges.single().waypoints)
+            } finally { e.stop() }
+            session.value = null; runCurrent()
+        }
+    }
+
+    @Test
+    fun `RA-1 - no destination at restart, a destination set right after is published`() = runTest {
+        advanceTimeBy(600_000)
+        session.value = leaderSession.copy(joinedAtMs = 1_000L)
+        val e = engine(testScheduler); e.start(); runCurrent()
+        try {
+            naviEvents.emit(NaviEvent.DestinationChanged(null, snapshot = true)); runCurrent()   // 안내 중 아님
+            advanceTimeBy(5_000); runCurrent()
+            val y = Place(37.7719, 128.9479, "경포해변")
+            naviEvents.emit(NaviEvent.DestinationChanged(y)); runCurrent()
+            advanceTimeBy(2_500); runCurrent()
+            assertEquals(listOf(y), routeChanges.map { it.destination })
+        } finally { e.stop() }
+    }
+
+    @Test
+    fun `RA-1 - when the navi gave no current value, the first change notification right after a restart is not swallowed`() = runTest {
+        advanceTimeBy(600_000)
+        session.value = leaderSession.copy(joinedAtMs = 1_000L)
+        val e = engine(testScheduler); e.start(); runCurrent()
+        try {
+            // 안내 중이 아니면 구독 직후 응답이 없다 → 첫 경로 이벤트가 곧 운전자의 실제 변경(onDestinationChanged)
+            advanceTimeBy(8_000)
+            val y = Place(37.7719, 128.9479, "경포해변")
+            naviEvents.emit(NaviEvent.DestinationChanged(y)); runCurrent()
+            advanceTimeBy(2_500); runCurrent()
+            assertEquals(listOf(y), routeChanges.map { it.destination })
         } finally { e.stop() }
     }
 

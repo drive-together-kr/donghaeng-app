@@ -75,7 +75,8 @@ class GroupRepository @Inject constructor(
         val current = sessionStore.session.value ?: return ApiResult.Success(Unit)
         val result = safeUnitCall { api.leave(current.groupId) }
         if (result is ApiResult.Success || result is ApiResult.HttpFailure.NotFound || (result as? ApiResult.HttpFailure)?.status == 409) {
-            sessionManager.onGroupLeftLocally()
+            // RA-5: 나간 그룹만 지운다 — 요청 사이 다른 그룹에 합류(GROUP_JOINED)했으면 그 세션은 둔다
+            sessionManager.onGroupLeftLocally(current.groupId)
         }
         return result
     }
@@ -88,7 +89,7 @@ class GroupRepository @Inject constructor(
         val current = sessionStore.session.value ?: return ApiResult.Success(Unit)
         val result = safeUnitCall { api.end(current.groupId) }
         if (result is ApiResult.Success || (result as? ApiResult.HttpFailure)?.status == 409) {
-            sessionManager.onGroupLeftLocally()
+            sessionManager.onGroupLeftLocally(current.groupId)
         } else if ((result as? ApiResult.HttpFailure)?.status == 403) {
             DhLog.w("group end 403 (no longer leader) groupId=${TextMasking.maskVehicleId(current.groupId)} → leave instead")
             return leave()

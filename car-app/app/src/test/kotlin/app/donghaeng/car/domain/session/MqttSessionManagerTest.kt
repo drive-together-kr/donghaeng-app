@@ -605,6 +605,41 @@ class MqttSessionManagerTest {
         }
     }
 
+    /**
+     * RA-5: 호출 쪽(그룹 관리 화면 상세·나가기 204)이 G1 을 보고 '지우자' 고 정한 뒤 잠금을 잡기 전에 G2 의 GROUP_JOINED 가 먼저 적용됐다 —
+     * 예전 onGroupLeftLocally() 는 잠금 안에서 그룹을 다시 보지 않아 새 그룹 G2 세션을 지웠다(서버는 G2 멤버인데 차에는 그룹 없음).
+     */
+    @Test
+    fun `RA-5 - leaving locally clears only the group the caller saw, a newer GROUP_JOINED in between survives`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val tokens = InMemoryTokenStore(creds)
+        val gateway = InMemoryMqttGateway()
+        val sessions = InMemoryGroupSessionStore()
+        val manager = manager(tokens, gateway, sessions)
+        manager.start(dispatcher)
+        runCurrent()
+        gateway.emitInbound(Topics.vehicleCmd("veh_B"), CmdType.GROUP_JOINED.name, "srv_1", joined, GroupJoined.serializer())
+        runCurrent()
+        val seen = sessions.session.value!!.groupId   // 호출 쪽이 본 그룹(grp_1)
+
+        // 그 사이 폰이 이 차를 G2 로 옮겼다 — MQTT 수집 쪽이 먼저 잠금을 잡아 적용
+        val g2 = GroupJoined("grp_2", "새 그룹", "veh_C", Place(37.5, 127.0, "서울"), GroupTopics("dh/v1/group/grp_2/state", "dh/v1/group/grp_2/event"))
+        gateway.emitInbound(Topics.vehicleCmd("veh_B"), CmdType.GROUP_JOINED.name, "srv_1", g2, GroupJoined.serializer(), seq = 2)
+        runCurrent()
+
+        manager.onGroupLeftLocally(seen)
+        runCurrent()
+        assertEquals("새 그룹 세션은 남는다", "grp_2", sessions.session.value?.groupId)
+        assertTrue(gateway.subscriptions.containsAll(listOf("dh/v1/group/grp_2/state", "dh/v1/group/grp_2/event")))
+        assertTrue("LEFT_LOCALLY 로 지우지 않았다", SessionClearReason.LEFT_LOCALLY !in sessions.clearReasons)
+
+        // 지금 그룹을 넘기면 지운다
+        manager.onGroupLeftLocally("grp_2")
+        runCurrent()
+        assertNull(sessions.session.value)
+        assertEquals(SessionClearReason.LEFT_LOCALLY, sessions.clearReasons.last())
+    }
+
     @Test
     fun `T33 리뷰 - 인증 거부 뒤 새 토큰으로 다시 붙으면 MQTT 발 회전 백오프가 처음부터`() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)

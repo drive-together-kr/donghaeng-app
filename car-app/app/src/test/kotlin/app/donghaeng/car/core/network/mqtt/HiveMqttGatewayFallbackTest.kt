@@ -42,6 +42,24 @@ class HiveMqttGatewayFallbackTest {
         assertEquals(AttemptFailure.UNREACHABLE, mqttFailureKind(IllegalStateException("x")))
     }
 
+    /** RA-8: '브로커 앞단은 답했지만 브로커가 아직 준비 안 됨'(재시작 신호)만 고른다 — 시간 초과·TLS 실패·연결 재설정은 아니다(8883 차단일 수 있다) */
+    @Test
+    fun `broker-not-ready - refused, closed before CONNACK and a 5xx websocket upgrade, not timeouts or handshake failures`() {
+        assertTrue(mqttBrokerNotReady(ConnectionFailedException(ConnectException("Connection refused: /1.2.3.4:8883"))))
+        assertTrue(mqttBrokerNotReady(ConnectionFailedException(ConnectException("failed to connect: ECONNREFUSED (Connection refused)"))))
+        assertTrue(mqttBrokerNotReady(com.hivemq.client.mqtt.exceptions.ConnectionClosedException("Server closed connection without DISCONNECT.")))
+        val badGateway = io.netty.handler.codec.http.DefaultFullHttpResponse(io.netty.handler.codec.http.HttpVersion.HTTP_1_1, io.netty.handler.codec.http.HttpResponseStatus.BAD_GATEWAY)
+        assertTrue(mqttBrokerNotReady(ConnectionFailedException(io.netty.handler.codec.http.websocketx.WebSocketClientHandshakeException("Invalid handshake response getStatus: 502 Bad Gateway", badGateway))))
+
+        val badRequest = io.netty.handler.codec.http.DefaultFullHttpResponse(io.netty.handler.codec.http.HttpVersion.HTTP_1_1, io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST)
+        assertTrue("400(서브프로토콜 누락 등)은 설정 문제", !mqttBrokerNotReady(ConnectionFailedException(io.netty.handler.codec.http.websocketx.WebSocketClientHandshakeException("Invalid handshake response getStatus: 400 Bad Request", badRequest))))
+        assertTrue(!mqttBrokerNotReady(ConnectionFailedException(ConnectException("connection timed out: /1.2.3.4:8883"))))
+        assertTrue(!mqttBrokerNotReady(ConnectionFailedException(SocketTimeoutException("connection timed out"))))
+        assertTrue(!mqttBrokerNotReady(ConnectionFailedException(SSLHandshakeException("handshake timed out"))))
+        assertTrue("연결 재설정(I/O 오류)은 막힘일 수 있다", !mqttBrokerNotReady(com.hivemq.client.mqtt.exceptions.ConnectionClosedException(java.io.IOException("Connection reset by peer"))))
+        assertTrue(!mqttBrokerNotReady(ConnectionFailedException(NoRouteToHostException("No route to host"))))
+    }
+
     // ---------------------------------------------------------------- 실제 HiveMQ 클라이언트
 
     /** 받자마자 닫는 TCP 서버 — TLS 핸드셰이크가 곧바로 실패한다(브로커에 닿지 못한 시도, 빠르다) */

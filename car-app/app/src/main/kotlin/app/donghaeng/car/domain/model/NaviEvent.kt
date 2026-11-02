@@ -33,8 +33,12 @@ sealed class NaviEvent {
     /** onRouteStateInfo / onRouteStarted / onRouteEnded / onRouteCancelled */
     data class RouteStateInfo(val state: RouteState, val detail: String? = null) : NaviEvent()
 
-    /** onDestinationChanged — null 이면 목적지 해제 */
-    data class DestinationChanged(val destination: Place?) : NaviEvent()
+    /**
+     * onDestinationChanged — null 이면 목적지 해제.
+     * [snapshot] = 변경 알림이 아니라 구독 직후 어댑터가 당겨 온 **현재값**(Pleos: 구독 시 `getDestinationInfo()` 응답, 그 사이 `onDestinationChanged` 없음).
+     * 선두 경로 동기화가 앱 재시작 직후의 기준선을 가를 때만 쓴다(A058/RA-1). Fake 는 구독 때 현재값을 내지 않아 늘 false.
+     */
+    data class DestinationChanged(val destination: Place?, val snapshot: Boolean = false) : NaviEvent()
 
     /** onWaypointChanged — 현재 경유지 목록 전체 */
     data class WaypointChanged(val waypoints: List<Place>) : NaviEvent()

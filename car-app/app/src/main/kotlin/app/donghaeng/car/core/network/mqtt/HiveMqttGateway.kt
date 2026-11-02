@@ -13,6 +13,7 @@ import com.hivemq.client.mqtt.MqttClient
 import com.hivemq.client.mqtt.MqttClientTransportConfig
 import com.hivemq.client.mqtt.MqttGlobalPublishFilter
 import com.hivemq.client.mqtt.datatypes.MqttQos
+import com.hivemq.client.mqtt.exceptions.ConnectionClosedException
 import com.hivemq.client.mqtt.lifecycle.MqttClientDisconnectedContext
 import com.hivemq.client.mqtt.lifecycle.MqttDisconnectSource
 import com.hivemq.client.mqtt.mqtt5.Mqtt5AsyncClient
@@ -33,6 +34,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.KSerializer
+import io.netty.handler.codec.http.websocketx.WebSocketClientHandshakeException
+import java.net.ConnectException
 import java.net.NoRouteToHostException
 import java.net.SocketException
 import java.net.UnknownHostException
@@ -68,8 +71,10 @@ import kotlin.random.Random
  * - 주소: 브로커 = 숨은 메뉴 MQTT 주소 ?: 서버 응답 `mqtt.uri`, https 판정·WSS 파생 = [ServerConfig.publicBaseUrl](사용자 지정 ?: 빌드 기본값).
  * - 로그: 토픽의 차량 ID 는 마스킹, 본문은 찍지 않는다(CLAUDE.md 규칙 8).
  * - **브로커 재시작 창**(A-RT1, [MqttReconnectPolicy]): 붙어 있던 연결이 끊긴 뒤 2분 동안은 백오프를 5 s 로 자르고, 멀쩡한 토큰의 인증 거부(EMQX JWKS 미적재)는
- *   토큰 갱신 없이 3 → 5 → 10 s 로 다시 시도하며, 처음 60 s 의 실패는 전송 폴백에 세지 않는다 — 실측 138~273 s → 목표 60 s 안.
- * - **구독 재시도**(A018): SUBACK 거부·실패는 연결이 살아 있고 그 토픽이 아직 목록에 있는 동안 2 → 4 → … → 30 s 로 다시 건다([SubscribeRetryPolicy]).
+ *   토큰 갱신 없이 3 → 5 → 10 s 로 다시 시도하며, 처음 60 s 의 '브로커 준비 안 됨' 실패([mqttBrokerNotReady])는 전송 폴백에 세지 않는다 — 실측 138~273 s → 목표 60 s 안.
+ *   연결 시간 초과·TLS 실패는 창 안에서도 센다(RA-8 — 주행 중 8883 을 막는 망으로 바뀌면 예전처럼 실패 2회 뒤 WSS).
+ *   끊김마다의 판단은 접속별 [ReconnectTracker] 한곳에서 하고(RA-7, 순수·단위 테스트), 여기서는 그 결과([DisconnectPlan])만 적용한다.
+ * - **구독 재시도**(A018): SUBACK 거부·실패는 연결이 살아 있고 그 토픽이 아직 목록에 있는 동안 2 → 4 → … → 30 s 로 다시 건다([SubscribeRetrier]).
  *   세 번째 거부부터 [subscriptionDenied] 로 알리고 [MqttStatus.deniedTopics] 에 보인다.
  * - 끊긴 동안 푼 구독(A070)은 다음 접속 때 다시 걸기 전에 UNSUBSCRIBE 를 보낸다(영속 세션에 남은 옛 그룹 구독 정리).
  * - keepAlive 30 s(A072, docs/02 §6) — 조용히 끊긴 연결을 약 60 s 안에 알아챈다(기본 60 s 면 약 120 s).
@@ -123,6 +128,29 @@ class HiveMqttGateway @Inject constructor(
     @Volatile
     internal var firstConnectTimeoutMs: Long = MqttTransportFallback.FIRST_CONNECT_TIMEOUT_MS
 
+    /** 구독 재시도 간격(기본 [SubscribeRetryPolicy.delayMs]). 단위 테스트가 줄여 쓰는 손잡이 — 앱 코드는 바꾸지 않는다 */
+    @Volatile
+    internal var subscribeRetryDelayMs: (Int) -> Long = SubscribeRetryPolicy::delayMs
+
+    /**
+     * SUBACK 결과 처리(A018·RA-7) — 거부 토픽 상태·세 번째 거부 알림·재시도 예약은 [SubscribeRetrier](순수)가 정한다.
+     * 예약한 재시도는 그 사이 다시 접속했거나(세대가 바뀜 — resubscribe 가 처음부터 건다) 토픽을 풀었으면 보내지 않는다.
+     */
+    private val subscribeRetrier = SubscribeRetrier(
+        schedule = { delayMs, task -> timer.schedule({ task() }, delayMs, TimeUnit.MILLISECONDS) },
+        stillWanted = { topic, generation -> connectedGeneration.get() == generation && client?.state?.isConnected == true && topic in subscriptions },
+        resend = { topic, attempt, generation -> client?.let { subscribeOne(it, topic, attempt, generation) } },
+        markDenied = { topic, denied ->
+            if (denied) {
+                if (topic in subscriptions) _status.update { it.copy(deniedTopics = it.deniedTopics + topic) }
+            } else {
+                _status.update { if (topic in it.deniedTopics) it.copy(deniedTopics = it.deniedTopics - topic) else it }
+            }
+        },
+        notifyDenied = { topic -> _subscriptionDenied.tryEmit(topic) },
+        delayMs = { attempt -> subscribeRetryDelayMs(attempt) },
+    )
+
     /**
      * 클라이언트 하나의 수명. retired 가 되면 그 클라이언트의 남은 재연결은 취소된다.
      * [fallback] = 이 접속의 전송 폴백 상태(다음 시도에 쓸 전송), [endpoint] = 이 클라이언트에 **실제로 건** 전송(진행 중이거나 다음 시도).
@@ -136,25 +164,15 @@ class HiveMqttGateway @Inject constructor(
         @Volatile
         var retired = false
 
-        /** 지금 붙어 있나 — disconnected 리스너가 '연결이 끊김' 과 '연결 시도 실패' 를 가른다(T32) */
-        @Volatile
-        var up = false
+        /**
+         * 재연결 판단 상태(RA-7) — 붙어 있나(T32 '끊김' vs '시도 실패')·끊긴 시각(A-RT1 재시작 창)·창 안 인증 거부 수·토큰 대기(T33).
+         * 끊김마다 [ReconnectTracker.onDisconnected] 가 계획을 내고 게이트웨이는 그것만 적용한다.
+         */
+        val tracker = ReconnectTracker(fallback)
 
         /** 마지막 CONNECT 에 실은 토큰(인증 거부가 '현재 토큰' 때문인지 가리는 데만 쓴다) */
         @Volatile
         var attemptToken: String? = null
-
-        /** 인증 거부 뒤 새 토큰을 기다리는 중 */
-        @Volatile
-        var awaitingAuth = false
-
-        /** 붙어 있다가 끊긴 시각(브로커 재시작 창, A-RT1). 다시 붙으면 null */
-        @Volatile
-        var lostAtMs: Long? = null
-
-        /** 이번 재시작 창에서 토큰 갱신 없이 넘긴 인증 거부 수 */
-        @Volatile
-        var authRejectsInWindow = 0
 
         @Volatile
         var mqttClient: Mqtt5AsyncClient? = null
@@ -186,7 +204,7 @@ class HiveMqttGateway @Inject constructor(
             ConnectDecision.REFRESH_TOKEN -> {
                 // 토큰만 바뀜(갱신) — 연결돼 있으면 유지하고 다음 재연결부터 새 토큰. 인증 거부로 기다리는 중이면 지금 바로 붙는다(T33)
                 this.credentials = credentials
-                if (existing?.awaitingAuth == true) {
+                if (existing?.tracker?.awaitingAuth == true) {
                     DhLog.i("mqtt token refreshed → reconnect now vid=${TextMasking.maskVehicleId(credentials.vehicleId)}")
                     existing.release()
                 } else {
@@ -259,10 +277,7 @@ class HiveMqttGateway @Inject constructor(
                     c.disconnect()
                     return@addConnectedListener
                 }
-                conn.awaitingAuth = false
-                conn.up = true
-                conn.lostAtMs = null
-                conn.authRejectsInWindow = 0
+                conn.tracker.onConnected()
                 val ep = conn.endpoint
                 // 기억은 '다른 전송이 실제로 실패한 뒤 이 전송으로 붙었을 때' 만 바뀐다(망 없음·인증 거부·한 바퀴 다 실패로는 안 바뀜)
                 conn.fallback.onConnected(ep)?.let { transportMemory.remember(conn.serverKey, it.transport) }
@@ -324,7 +339,7 @@ class HiveMqttGateway @Inject constructor(
      * 인증 거부 뒤 새 토큰을 기다리는 중이면(브로커에 닿은 것 — 전송은 멀쩡하다) 바꾸지 않는다. 판단은 [MqttTransportFallback.onFirstConnectTimeout].
      */
     private fun onFirstConnectTimeout(conn: Connection, timeoutMs: Long) {
-        if (connection !== conn || conn.retired || conn.up || conn.awaitingAuth) return
+        if (connection !== conn || conn.retired || conn.tracker.up || conn.tracker.awaitingAuth) return
         val from = conn.endpoint
         val next = conn.fallback.onFirstConnectTimeout() ?: return
         DhLog.w(
@@ -358,25 +373,19 @@ class HiveMqttGateway @Inject constructor(
         val latest = latestFor(conn) ?: initial
         applyAuth(reconnector, latest, conn)
 
-        // T32 전송 폴백: 붙어 있다가 끊긴 건 실패가 아니다. 브로커 응답·망 없음은 세지 않는다. 브로커에 닿지 못한 시도가 연속 2회면(또는 첫 연결 시간 초과가
-        // 미리 정해 두었으면) 다음 재연결부터 다른 전송(같은 클라이언트)
-        val wasUp = conn.up
-        conn.up = false
-        if (wasUp) {
-            // A-RT1: 붙어 있던 연결이 끊겼다 — 여기서부터 '브로커 재시작 창'
-            conn.lostAtMs = now
-            conn.authRejectsInWindow = 0
-        }
+        // 판단은 접속별 ReconnectTracker 한곳(RA-7, 순수·단위 테스트) — 재시작 창(A-RT1)·인증 거부 대기(T33)·전송 폴백 집계(T32·RA-8).
+        // 여기서는 그 계획만 적용한다: 전송 바꾸기, gate 타이머, 토큰 갱신 알림, 상태·로그
         val attempted = conn.endpoint
-        val switch = when {
-            wasUp -> {
-                conn.fallback.onConnectionLost()
-                null
-            }
-            // 방금까지 이 전송으로 붙어 있었다 — 끊긴 직후의 실패(브로커 재시작·Caddy 502)는 전송이 막힌 게 아니다
-            !MqttReconnectPolicy.countsForTransport(now, conn.lostAtMs) -> null
-            else -> conn.fallback.onAttemptFailed(mqttFailureKind(ctx.cause), attempted)
-        }
+        val authCode = authFailureCode(ctx.cause)
+        val plan = conn.tracker.onDisconnected(
+            DisconnectEvent(
+                now = now, failure = mqttFailureKind(ctx.cause), brokerNotReady = mqttBrokerNotReady(ctx.cause), authCode = authCode,
+                usedToken = usedToken, latestToken = latest.vehicleAccessToken, tokenExpiresAtMs = JwtClaims.expiresAtMs(latest.vehicleAccessToken),
+                attempts = reconnector.attempts,
+            ),
+            attempted, ::backoffMs,
+        )
+        val switch = plan.switch
         if (switch != null) {
             val from = attempted
             val to = switch.to
@@ -391,19 +400,9 @@ class HiveMqttGateway @Inject constructor(
             }
         }
 
-        val authCode = authFailureCode(ctx.cause)
-        // 거부된 게 '지금 가진 최신 토큰' 일 때만 갱신을 기다린다. 옛 토큰이 거부된 거면 새 토큰으로 바로(백오프 뒤) 다시 시도
-        val rejectedLatest = authCode != null && (usedToken == null || usedToken == latest.vehicleAccessToken)
-        // A-RT1: 재시작 창 안이면 짧게, 멀쩡한 토큰의 인증 거부는 갱신 없이 다시. 한 바퀴 안의 새 전송은 바로 시도
-        val decision = MqttReconnectPolicy.decide(
-            now = now, lostAtMs = conn.lostAtMs, attempts = reconnector.attempts, authRejected = authCode != null, rejectedLatest = rejectedLatest,
-            tokenExpiresAtMs = JwtClaims.expiresAtMs(latest.vehicleAccessToken), authRejectsInWindow = conn.authRejectsInWindow,
-            quickSwitch = switch?.quick == true, backoff = ::backoffMs,
-        )
-        val waitMs = decision.waitMs
-        val refreshForAuth = rejectedLatest && decision.refreshToken
-        if (rejectedLatest && !decision.refreshToken) conn.authRejectsInWindow++
-        conn.awaitingAuth = refreshForAuth
+        val waitMs = plan.waitMs
+        val rejectedLatest = plan.rejectedLatest
+        val refreshForAuth = plan.refreshForAuth
 
         val gate = CompletableFuture<Unit>()
         conn.arm(gate)
@@ -434,7 +433,7 @@ class HiveMqttGateway @Inject constructor(
                 lastAuthFailureAtMs = if (authCode != null) now else it.lastAuthFailureAtMs,
             )
         }
-        val restartNote = if (MqttReconnectPolicy.inRestartWindow(now, conn.lostAtMs)) " (broker restart window)" else ""
+        val restartNote = if (plan.restartWindow) " (broker restart window)" else ""
         if (authCode != null) {
             val refreshNote = if (rejectedLatest && !refreshForAuth) " token kept" else ""
             DhLog.w("mqtt auth rejected reason=$authCode latest=$rejectedLatest attempt=${reconnector.attempts} → retry in ${waitMs / 1000}s$restartNote$refreshNote")
@@ -576,27 +575,19 @@ class HiveMqttGateway @Inject constructor(
     }
 
     /**
-     * 구독 하나. 거부(SUBACK 오류 코드)·실패면 같은 접속이 살아 있고 토픽이 아직 목록에 있는 동안 [SubscribeRetryPolicy] 간격으로 다시 건다(A018).
-     * 접속이 바뀌면(재연결 — resubscribe 가 새로 시작) 이전 재시도는 버린다.
+     * 구독 하나. 결과(거부 SUBACK 오류 코드·실패 포함)는 [subscribeRetrier] 가 처리한다 — 같은 접속이 살아 있고 토픽이 아직 목록에 있는 동안
+     * [SubscribeRetryPolicy] 간격으로 다시 건다(A018). 접속이 바뀌면(재연결 — resubscribe 가 새로 시작) 이전 재시도는 버린다.
      */
     private fun subscribeOne(c: Mqtt5AsyncClient, topic: String, attempt: Int = 0, generation: Long = connectedGeneration.get()) {
         c.subscribeWith().topicFilter(topic).qos(MqttQos.AT_LEAST_ONCE).send().whenComplete { ack, error ->
             val denied = error != null || ack.reasonCodes.any { it.isError }
-            if (!denied) {
+            val retryInMs = subscribeRetrier.onResult(topic, attempt, generation, denied)
+            if (retryInMs == null) {
                 if (attempt > 0) DhLog.i("mqtt subscribed topic=${maskTopic(topic)} after retry #$attempt") else DhLog.i("mqtt subscribed topic=${maskTopic(topic)}")
-                _status.update { if (topic in it.deniedTopics) it.copy(deniedTopics = it.deniedTopics - topic) else it }
-                return@whenComplete
+            } else {
+                val why = if (error != null) "failed cause=${error.message}" else "denied reason=${ack.reasonCodes}"
+                DhLog.w("mqtt subscribe $why topic=${maskTopic(topic)} attempt=${attempt + 1} → retry in ${retryInMs / 1000}s")
             }
-            val delay = SubscribeRetryPolicy.delayMs(attempt)
-            val why = if (error != null) "failed cause=${error.message}" else "denied reason=${ack.reasonCodes}"
-            DhLog.w("mqtt subscribe $why topic=${maskTopic(topic)} attempt=${attempt + 1} → retry in ${delay / 1000}s")
-            if (topic in subscriptions) _status.update { it.copy(deniedTopics = it.deniedTopics + topic) }
-            if (attempt + 1 == SubscribeRetryPolicy.NOTIFY_AFTER) _subscriptionDenied.tryEmit(topic)
-            timer.schedule({
-                if (client === c && connectedGeneration.get() == generation && c.state.isConnected && topic in subscriptions) {
-                    subscribeOne(c, topic, attempt + 1, generation)
-                }
-            }, delay, TimeUnit.MILLISECONDS)
         }
     }
 
@@ -650,6 +641,24 @@ internal fun mqttFailureKind(cause: Throwable): AttemptFailure {
         chain.any { it is Mqtt5ConnAckException } -> AttemptFailure.BROKER_ANSWERED
         chain.any { it is UnknownHostException || (it is SocketException && it !is NoRouteToHostException && it.isNetworkUnreachable()) } -> AttemptFailure.NETWORK_DOWN
         else -> AttemptFailure.UNREACHABLE
+    }
+}
+
+/**
+ * RA-8: 브로커 앞단은 답했지만 브로커가 아직 준비 안 됨 — 브로커 재시작의 신호. 붙어 있다 끊긴 뒤 첫 60 s 에는 전송 폴백에 세지 않는다
+ * ([MqttReconnectPolicy.countsForTransport]).
+ * - 연결 거부(ECONNREFUSED — 포트가 닫힘: 로컬 EMQX 재시작). `ConnectTimeoutException` 도 ConnectException 이지만 문구가 'timed out' 이라 아니다
+ * - TLS·WebSocket 까지 붙은 뒤 서버가 CONNACK 없이 깨끗이 닫음(HiveMQ `ConnectionClosedException`, 원인 없음 — 클라우드 Caddy L4 가 TLS 를 받고
+ *   emqx:1883 에 못 붙어 닫음). 원인이 있는 것(연결 재설정 등 I/O 오류)은 아니다
+ * - WSS 업그레이드에 HTTP 5xx(Caddy 502 — emqx 가 아직 안 뜸)
+ * 연결 시간 초과·TLS 핸드셰이크 실패·EHOSTUNREACH 등은 아니다(8883 을 막는 망일 수 있다 — 센다). internal 은 단위 테스트용.
+ */
+internal fun mqttBrokerNotReady(cause: Throwable): Boolean {
+    val chain = generateSequence(cause) { it.cause?.takeIf { c -> c !== it } }.take(6).toList()
+    return chain.any { t ->
+        (t is ConnectException && t.message?.contains("refused", ignoreCase = true) == true) ||
+            (t is ConnectionClosedException && t.cause == null) ||
+            (t is WebSocketClientHandshakeException && (t.response()?.status()?.code() ?: 0) >= 500)
     }
 }
 

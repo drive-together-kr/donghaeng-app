@@ -413,12 +413,13 @@ class MqttSessionManager @Inject constructor(
         DhLog.i("group session saved (leader) groupId=${TextMasking.maskVehicleId(session.groupId)}")
     }
 
-    /** 나가기·종료를 이 차가 직접 했을 때 — 구독 해제 + 세션 삭제 */
-    suspend fun onGroupLeftLocally() = sessionMutex.withLock {
-        val current = sessionStore.session.value ?: return@withLock
-        clearSessionLocked(SessionClearReason.LEFT_LOCALLY)
-        DhLog.i("group session cleared (left/ended locally) groupId=${TextMasking.maskVehicleId(current.groupId)}")
-    }
+    /**
+     * 나가기·종료를 이 차가 직접 했을 때(또는 그룹 관리 화면이 상세로 유령 세션을 알아냈을 때) — 구독 해제 + 세션 삭제.
+     * [expectedGroupId] 는 호출 쪽이 보고 판단한 그룹 — **잠금 안에서** 지금 세션과 다시 비교해, 그 사이 다른 그룹 GROUP_JOINED 가 적용됐으면
+     * 새 그룹 세션은 지우지 않는다(RA-5, [clearIfStill]).
+     */
+    suspend fun onGroupLeftLocally(expectedGroupId: String) =
+        clearIfStill(expectedGroupId, SessionClearReason.LEFT_LOCALLY, "group session (left/ended locally)")
 
     // ---------------------------------------------------------------- 서버와 소속 맞추기 (A000/A001)
 

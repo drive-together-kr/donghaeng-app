@@ -19,12 +19,13 @@ class VoiceRouteAskTest {
     private val events = mutableListOf<String>()
     private val pttBusy = MutableStateFlow(false)
 
-    private suspend fun ask(enabled: Boolean = true, candidate: Boolean = true, listen: suspend () -> YesNo?) = VoiceRouteAsk.ask(
+    private suspend fun ask(enabled: Boolean = true, candidate: Boolean = true, mic: Boolean = true, listen: suspend () -> YesNo?) = VoiceRouteAsk.ask(
         question = "따라갈까요? 네 또는 아니요로 답해 주세요.",
         voiceEnabled = { enabled },
         pttBusy = pttBusy,
         pttBusyNow = { pttBusy.value },
         hasCandidate = { candidate },
+        micUsable = { mic },
         speakAndWait = { events += "speak" },
         listen = { events += "listen"; listen() },
     )
@@ -44,6 +45,26 @@ class VoiceRouteAskTest {
         pttBusy.value = true
         assertNull(ask { YesNo.YES })
         assertTrue("묻지 않으면 읽지도 않는다", events.isEmpty())
+    }
+
+    /** RA-4: 백그라운드(순정 내비가 앞)에 microphone 타입 없이 시작된 그룹 서비스 — 마이크가 무음이라 '네'라고 해도 못 듣는다 → 묻지 않는다 */
+    @Test
+    fun `does not ask when the microphone would record silence (background without a microphone service)`() = runTest {
+        assertNull(ask(mic = false) { YesNo.YES })
+        assertTrue("묻지 않으면 읽지도 듣지도 않는다", events.isEmpty())
+    }
+
+    /** RA-4 배선(di/SignalsModule): API 30 미만·동행 화면이 보임·서비스에 microphone 타입 → 쓸 수 있음, 그 밖(서비스 없음 포함) → 못 씀 */
+    @Test
+    fun `RA-4 wiring - the microphone is usable below API 30, while the app is visible, or with a microphone service type`() {
+        val mic = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        val location = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        val dataSync = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        assertTrue(app.donghaeng.car.di.SignalsModule.routeAskMicUsable(29, appVisible = false, attachedFgsType = null))
+        assertTrue(app.donghaeng.car.di.SignalsModule.routeAskMicUsable(33, appVisible = true, attachedFgsType = null))
+        assertTrue(app.donghaeng.car.di.SignalsModule.routeAskMicUsable(33, appVisible = false, attachedFgsType = location or mic))
+        assertTrue("서비스 없음", !app.donghaeng.car.di.SignalsModule.routeAskMicUsable(33, appVisible = false, attachedFgsType = null))
+        assertTrue("백그라운드 시작 — microphone 빠짐", !app.donghaeng.car.di.SignalsModule.routeAskMicUsable(33, appVisible = false, attachedFgsType = location or dataSync))
     }
 
     @Test

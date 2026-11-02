@@ -38,9 +38,15 @@ data class RouteProposal(
     val local: Boolean = false,
     /**
      * 주행 중이라 답을 받지 못해 **정차할 때까지 보류** 중(A006/A034). 화면은 '정차하면 답할 수 있어요'로 보이고 버튼은 주행 중 비활성 그대로.
-     * 정차하면 false 로 바뀌며 다시 읽고 [expiresAtMs] 가 그때부터 30초가 된다.
+     * 정차가 [RouteSyncEngine.PARK_SETTLE_MS] 이어지면 false 로 바뀌며 카드가 그때부터 30초([expiresAtMs]) — 다시 읽는 것은 제안 하나당 한 번(RA-2).
      */
     val heldUntilParked: Boolean = false,
+    /**
+     * 보류 상한 시각(RA-2) — **처음 보류한 때**부터 [RouteSyncEngine.HOLD_MAX_MS]. 정차·출발을 되풀이해 다시 보류해도 늘지 않는다. null = 보류한 적 없음.
+     */
+    val holdDeadlineMs: Long? = null,
+    /** 정차해 다시 읽어 준 횟수(RA-2 — [RouteSyncEngine.MAX_PARK_REREADS] 번까지, 그 뒤 정차는 카드만) */
+    val rereads: Int = 0,
 )
 
 /** 주행 중 음성 '네/아니' 질문 결과(A034) */
@@ -82,13 +88,16 @@ data class RouteSyncState(
  *
  * 선두차 역할: 내비의 목적지·경유지 변경([NaviEvent.DestinationChanged]/[NaviEvent.WaypointChanged])을 [debounceMs] 로 묶어
  * 그룹 목적지와 다르거나 경유지가 생기면 `ROUTE_CHANGED { destination, waypoints }` 를 발행한다(같은 내용은 한 번만).
- * 앱을 다시 켠 뒤(복원된 세션) 처음 들어오는 내비 현재값 묶음은 기준선으로만 기록한다(A058 — 이미 보낸 경로를 경유지 빠진 채 다시 보내지 않게).
+ * 앱을 다시 켠 뒤(복원된 세션) 엔진 시작 뒤 **첫 경로 묶음이 구독 직후 당겨 온 현재값([NaviEvent.DestinationChanged.snapshot])뿐이면** 기준선으로만
+ * 기록한다(A058 — 이미 보낸 경로를 경유지 빠진 채 다시 보내지 않게). 기준선은 그 첫 묶음 한 번으로 끝나고(그룹 목적지 그대로·목적지 없음이어도),
+ * 변경 알림으로 온 묶음은 첫 묶음이어도 그대로 보낸다(RA-1 — 재시작 직후 실제로 바꾼 경로가 버려지지 않게).
  *
  * 멤버 역할: cmd `ROUTE_FOLLOW_PROPOSAL` 을 받으면
  * - **정차 중**: 문구를 읽어 주고 화면에 "따라가기/아니요" 를 띄운다. [autoDeclineMs](30초) 무응답이면 ACK accepted=false(docs/05 §4 — 기존 그대로).
  * - **주행 중**(A006/A034): 화면 버튼은 쓸 수 없으므로 [askYesNo](F16 '네/아니' 인식 체인)로 음성으로 묻는다. 네 → 수락, 아니 → 거절,
- *   답이 없거나 물을 수 없으면(음성 꺼짐·무전 중·인식기 없음) 자동 거절하지 않고 **정차할 때까지 보류**([RouteProposal.heldUntilParked])한다 —
- *   정차하면 다시 읽고 카드에서 30초 안에 고른다. 정차 없이 [holdMaxMs](10분)가 지나면 ACK false.
+ *   답이 없거나 물을 수 없으면(음성 꺼짐·무전 중·인식기 없음·마이크 못 씀) 자동 거절하지 않고 **정차할 때까지 보류**([RouteProposal.heldUntilParked])한다 —
+ *   정차가 [parkSettleMs](5 s) 이어지면 카드를 다시 보이고 30초 안에 고른다(다시 읽기는 제안 하나당 한 번). 처음 보류한 때부터 [holdMaxMs](10분)가
+ *   지나면 ACK false — 정차·출발을 되풀이해도 상한은 늘지 않고 '정차하면 다시 물어볼게요'도 다시 읽지 않는다(RA-2).
  *   정차 중에 받은 제안에 답하기 전에 출발해도 같은 보류로 넘어간다.
  * - 수락: 경유지가 있으면 `requestRouteWithWaypoints`, 없으면 `requestRoute` (docs/10 R5) → ACK accepted=true.
  * - 설정 "자동 따라가기" 가 켜져 있으면 묻지 않고 바로 수락한다. 이 차가 방장이면 제안을 무시한다(A069 — 늦게 온 옛 제안).
@@ -120,6 +129,8 @@ class RouteSyncEngine(
      */
     private val askYesNo: (suspend (question: String) -> VoiceAnswer?)? = null,
     private val holdMaxMs: Long = HOLD_MAX_MS,
+    /** 보류 중 제안을 다시 보이기 전 정차가 이어져야 하는 시간(RA-2 — 정체 속 잠깐 멈춤마다 다시 보이지 않게) */
+    private val parkSettleMs: Long = PARK_SETTLE_MS,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private var job: Job? = null
@@ -129,6 +140,10 @@ class RouteSyncEngine(
 
     @Volatile
     private var askJob: Job? = null
+
+    /** 정차가 [parkSettleMs] 이어지면 보류 제안을 다시 보이는 타이머(RA-2) */
+    @Volatile
+    private var parkJob: Job? = null
     private var debounceJob: Job? = null
 
     private val _state = MutableStateFlow(RouteSyncState())
@@ -145,6 +160,14 @@ class RouteSyncEngine(
 
     /** 엔진 시작 시각 — 이보다 먼저 합류한 세션 = 앱 재시작으로 복원된 세션(A058) */
     private var startedAtMs = 0L
+
+    /** A058/RA-1: 엔진 시작 뒤 아직 첫 경로 묶음을 처리하지 않았다 — 첫 [publishIfChanged](또는 선두가 아닐 때의 첫 경로 이벤트)에서 끝난다 */
+    @Volatile
+    private var firstBundlePending = true
+
+    /** 지금 묶음(디바운스 중)에 변경 알림으로 온 경로 이벤트가 있다 — 구독 직후 당겨 온 현재값([NaviEvent.DestinationChanged.snapshot])만이면 false */
+    @Volatile
+    private var bundleHasChange = false
 
     /** 따라가는(수락·발행한) 경유지 — 내비 경유지 목록과 맞춰 '다음 정차'를 고친다(A056) */
     @Volatile
@@ -163,6 +186,8 @@ class RouteSyncEngine(
     fun start() {
         if (job?.isActive == true) return
         startedAtMs = clock()
+        firstBundlePending = true
+        bundleHasChange = false
         _state.update { it.copy(running = true) }
         job = scope.launch {
             launch { proposals.collect { onProposal(it) } }
@@ -208,6 +233,8 @@ class RouteSyncEngine(
         expiryJob = null
         askJob?.cancel()
         askJob = null
+        parkJob?.cancel()
+        parkJob = null
     }
 
     // ---------------------------------------------------------------- 멤버 역할
@@ -313,25 +340,36 @@ class RouteSyncEngine(
         }
     }
 
-    /** 정차할 때까지 보류 — [holdMaxMs] 가 지나면 자동 거절 */
+    /**
+     * 정차할 때까지 보류 — 상한은 **처음 보류한 때**부터 [holdMaxMs](RA-2). 다시 보류할 때(정차해 카드를 봤다가 답 없이 출발)는 상한을 늘리지 않고
+     * '정차하면 다시 물어볼게요'도 다시 읽지 않는다. 상한이 이미 지났으면 곧바로 자동 거절.
+     */
     private fun hold(id: String) {
         val now = clock()
-        var held = false
+        var held: RouteProposal? = null
+        var firstHold = false
         _state.update {
             val p = it.pending
             if (p?.proposalId == id && !p.heldUntilParked) {
-                held = true
-                it.copy(pending = p.copy(heldUntilParked = true, expiresAtMs = now + holdMaxMs), held = it.held + 1)
+                val first = p.holdDeadlineMs == null
+                val deadline = p.holdDeadlineMs ?: (now + holdMaxMs)
+                val next = p.copy(heldUntilParked = true, expiresAtMs = deadline, holdDeadlineMs = deadline)
+                held = next
+                firstHold = first
+                it.copy(pending = next, held = if (first) it.held + 1 else it.held)
             } else {
+                held = null
+                firstHold = false
                 it
             }
         }
-        if (!held) return
-        speak(SPEECH_HOLD, Priority.LOW)
-        DhLog.i("routesync: proposal ${TextMasking.maskVehicleId(id)} held until parked (max ${holdMaxMs / 60_000}m)")
+        val h = held ?: return
+        if (firstHold) speak(SPEECH_HOLD, Priority.LOW)
+        val leftS = ((h.expiresAtMs - now) / 1000).coerceAtLeast(0)
+        DhLog.i("routesync: proposal ${TextMasking.maskVehicleId(id)} held until parked (${if (firstHold) "first" else "again"}, ${leftS}s left)")
         expiryJob?.cancel()
         expiryJob = scope.launch {
-            delay(holdMaxMs)
+            delay((h.expiresAtMs - clock()).coerceAtLeast(0))
             if (declineIf(id, auto = true, held = true)) speak(SPEECH_HOLD_EXPIRED, Priority.LOW)
         }
     }
@@ -340,28 +378,46 @@ class RouteSyncEngine(
         val was = driving
         driving = isDriving
         if (was == isDriving) return
+        // 정차가 [parkSettleMs] 이어지기 전에 다시 출발했다 — 다시 보이지 않는다(RA-2)
+        parkJob?.cancel()
+        parkJob = null
         val p = _state.value.pending ?: return
         if (isDriving) {
             // 정차 중 카드에 답하기 전에 출발했다 — 30초 자동 거절 대신 정차까지 보류(다시 묻지 않는다: 방금 읽었다)
             if (!p.heldUntilParked && askJob?.isActive != true) hold(p.proposalId)
         } else if (p.heldUntilParked) {
-            // A006: 정차 → 다시 보이고 다시 읽는다. 지금부터 30초 안에 카드로 고른다(docs/05 §4 '정차 시 다시 노출')
-            val now = clock()
-            var reexposed: RouteProposal? = null
-            _state.update {
-                val cur = it.pending
-                if (cur?.proposalId == p.proposalId && cur.heldUntilParked) {
-                    reexposed = cur.copy(heldUntilParked = false, expiresAtMs = now + autoDeclineMs)
-                    it.copy(pending = reexposed)
-                } else {
-                    it
-                }
+            // A006: 정차 → 다시 보인다(docs/05 §4 '정차 시 다시 노출'). RA-2: 신호 대기 시작·정체 속 잠깐 멈춤마다가 아니라 정차가 이어질 때만
+            val id = p.proposalId
+            parkJob = scope.launch {
+                delay(parkSettleMs)
+                if (!driving) reexpose(id)
             }
-            val r = reexposed ?: return
-            DhLog.i("routesync: parked → held proposal ${TextMasking.maskVehicleId(r.proposalId)} re-exposed")
-            expiryJob?.cancel()
-            askParked(r, speakIt = true)
         }
+    }
+
+    /** 보류 중인 [id] 를 다시 보인다 — 지금부터 30초 안에 카드로 고른다. 다시 읽는 것은 제안 하나당 [MAX_PARK_REREADS] 번(RA-2) */
+    private fun reexpose(id: String) {
+        val now = clock()
+        var reexposed: RouteProposal? = null
+        var readIt = false
+        _state.update {
+            val cur = it.pending
+            if (cur?.proposalId == id && cur.heldUntilParked) {
+                val read = cur.rereads < MAX_PARK_REREADS
+                val next = cur.copy(heldUntilParked = false, expiresAtMs = now + autoDeclineMs, rereads = if (read) cur.rereads + 1 else cur.rereads)
+                reexposed = next
+                readIt = read
+                it.copy(pending = next)
+            } else {
+                reexposed = null
+                readIt = false
+                it
+            }
+        }
+        val r = reexposed ?: return
+        DhLog.i("routesync: parked → held proposal ${TextMasking.maskVehicleId(r.proposalId)} re-exposed read=$readIt")
+        expiryJob?.cancel()
+        askParked(r, speakIt = readIt)
     }
 
     /** T30: 합류 직후 "선두차 목적지까지 안내할까요?" — 서버 제안이 아니므로 ACK 없이 내비만 요청한다 */
@@ -441,9 +497,13 @@ class RouteSyncEngine(
 
     private fun onNavi(e: NaviEvent) {
         when (e) {
-            is NaviEvent.DestinationChanged -> naviDestination = e.destination
+            is NaviEvent.DestinationChanged -> {
+                naviDestination = e.destination
+                if (!e.snapshot) bundleHasChange = true
+            }
             is NaviEvent.WaypointChanged -> {
                 naviWaypoints = e.waypoints
+                bundleHasChange = true
                 syncActiveWaypoint(e.waypoints)
             }
             is NaviEvent.WaypointArrived -> {
@@ -456,8 +516,13 @@ class RouteSyncEngine(
             }
             else -> return
         }
-        val s = session.value ?: return
-        if (!s.isLeader) return
+        val s = session.value
+        if (s == null || !s.isLeader) {
+            // 선두가 아닐 때 지나간 묶음 — 뒤에 선두가 돼도 그때의 묶음은 기준선이 아니다(RA-1)
+            firstBundlePending = false
+            bundleHasChange = false
+            return
+        }
         debounceJob?.cancel()
         debounceJob = scope.launch {
             delay(debounceMs)
@@ -486,17 +551,23 @@ class RouteSyncEngine(
     }
 
     private fun publishIfChanged(s: GroupSession) {
-        val dest = naviDestination ?: return
+        // RA-1: 기준선 판단은 엔진 시작 뒤 첫 묶음 한 번 — 아래 어느 경로로 끝나든 여기서 끝낸다
+        val baseline = firstBundlePending && !bundleHasChange && s.joinedAtMs < startedAtMs
+        firstBundlePending = false
+        bundleHasChange = false
+        val dest = naviDestination
+        if (baseline) {
+            // A058: 앱 재시작 뒤 구독 직후 당겨 온 현재값 — 이미 보냈던 경로일 수 있다(경유지는 당겨 오지 않아 빠져 있을 수 있음). 기준선으로만.
+            // 그룹 목적지 그대로·목적지 없음이어도 기준선은 이것으로 끝 — 다음 묶음(진짜 변경)은 보낸다
+            lastSent = dest?.let { RouteChanged(destination = it, waypoints = naviWaypoints) }
+            DhLog.i("routesync: restored session — current navi route recorded as baseline (not published) dest=${dest != null} waypoints=${naviWaypoints.size}")
+            return
+        }
+        if (dest == null) return
         val change = RouteChanged(destination = dest, waypoints = naviWaypoints)
         // 그룹 목적지 그대로 + 경유지 없음 = 변화 아님(구독 직후 현재 목적지 콜백)
         if (naviWaypoints.isEmpty() && samePlace(dest, s.destination) && lastSent == null) return
         if (change == lastSent) return
-        if (lastSent == null && s.joinedAtMs < startedAtMs && clock() - startedAtMs <= BASELINE_WINDOW_MS) {
-            // A058: 앱 재시작 뒤 첫 내비 현재값 — 이미 보냈던 경로일 수 있다(경유지는 구독 직후 당겨 오지 않아 빠져 있을 수 있음). 기준선으로만
-            lastSent = change
-            DhLog.i("routesync: restored session — first navi route recorded as baseline (not published) waypoints=${change.waypoints.size}")
-            return
-        }
         publish(change)
     }
 
@@ -539,11 +610,14 @@ class RouteSyncEngine(
         /** 합류 뒤 이 시간 안의 세션만 "막 합류"로 본다(앱 재시작 복원 세션 제외) */
         const val JOIN_WINDOW_MS = 60_000L
 
-        /** 주행 중 보류한 제안을 정차 없이 기다리는 상한(A006) */
+        /** 주행 중 보류한 제안의 상한 — 처음 보류한 때부터(A006, RA-2) */
         const val HOLD_MAX_MS = 10 * 60_000L
 
-        /** 앱 시작 뒤 이 시간 안의 첫 내비 묶음만 기준선으로 본다(A058) */
-        const val BASELINE_WINDOW_MS = 30_000L
+        /** 보류 제안을 다시 보이기 전 정차가 이어져야 하는 시간(RA-2) */
+        const val PARK_SETTLE_MS = 5_000L
+
+        /** 보류 제안을 정차해 다시 읽어 주는 횟수(RA-2) — 그 뒤 정차는 카드만 */
+        const val MAX_PARK_REREADS = 1
 
         const val ASK_SUFFIX = "네 또는 아니요로 답해 주세요."
         const val SPEECH_FOLLOWING = "선두 경로로 안내할게요."

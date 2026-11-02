@@ -60,9 +60,14 @@ class CreateGroupViewModelTest {
             reissued++; return Response.success(InviteDto("inv_y", "http://10.0.2.2:8080/j/inv_y", 1_000_000L + 1_200_000L))
         }
         var detailEnded = false
-        override suspend fun getGroup(groupId: String): Response<GroupDetailResponse> =
-            if (detailStatus == 200) Response.success(GroupDetailResponse(groupId, "추석 귀성길", "veh_A", if (detailEnded) "ENDED" else "ACTIVE", members = members))
+
+        /** GET /groups/{id} 호출 수(RA-6) */
+        var detailCalls = 0
+        override suspend fun getGroup(groupId: String): Response<GroupDetailResponse> {
+            detailCalls++
+            return if (detailStatus == 200) Response.success(GroupDetailResponse(groupId, "추석 귀성길", "veh_A", if (detailEnded) "ENDED" else "ACTIVE", members = members))
             else Response.error(detailStatus, """{"error":{"code":"NOT_FOUND","message":"그룹을 찾을 수 없어요.","traceId":"t"}}""".toResponseBody("application/json".toMediaType()))
+        }
         override suspend fun leave(groupId: String, body: Map<String, String>): Response<Unit> = app.donghaeng.car.testing.noContent()
         override suspend fun end(groupId: String, body: Map<String, String>): Response<Unit> { ended++; return app.donghaeng.car.testing.noContent() }
     }
@@ -177,7 +182,7 @@ class CreateGroupViewModelTest {
         driving.flag.value = true; runCurrent()
         assertTrue((vm.state.value as CreateGroupState.Active).isDriving)
         // 주행 중 방장이 그룹을 끝냄 → Form 으로 바뀌어도 주행 중이면 입력은 막힌 채
-        manager.onGroupLeftLocally(); runCurrent()
+        manager.onGroupLeftLocally("grp_1"); runCurrent()
         val form = vm.state.value as CreateGroupState.Form
         assertTrue("새 Form 도 주행 중", form.isDriving)
         vm.pickPreset(DESTINATION_PRESETS[0])
@@ -189,7 +194,7 @@ class CreateGroupViewModelTest {
         vm.reissueInvite(); runCurrent()
         assertEquals("주행 중 초대 재발급 무시(A123)", 0, api.reissued)
         // 폴링 루프를 끝낸다(runTest 가 남은 무한 루프를 돌지 않게)
-        manager.onGroupLeftLocally(); runCurrent()
+        manager.onGroupLeftLocally("grp_2"); runCurrent()
     }
 
     @Test
@@ -213,6 +218,45 @@ class CreateGroupViewModelTest {
         advanceTimeBy(5_001); runCurrent()
         assertNull(sessions.session.value)
         assertTrue(vm.state.value is CreateGroupState.Form)
+    }
+
+    /**
+     * RA-6: 그룹 관리 화면을 열 때 replay 로 다시 받은 멤버 이벤트(최대 20개)마다 GET /groups/{id} 를 불렀다(10대 그룹이면 열 때마다 9회).
+     * replay 는 상세를 다시 받지 않고(첫 상세는 폴링이 1회), 실시간으로 한꺼번에 온 멤버 이벤트는 한 번으로 묶는다.
+     */
+    @Test
+    fun `RA-6 - replayed member events do not refetch the detail and a live burst is fetched once`() = runTest(dispatcher) {
+        sessions.save(GroupSession("grp_1", "추석 귀성길", "veh_L", Place(35.1, 126.8, "광주"), topics, 1L, isLeader = false))
+        gateway.emitInbound(
+            app.donghaeng.protocol.Topics.vehicleCmd("veh_A"), "GROUP_JOINED", "srv",
+            app.donghaeng.protocol.GroupJoined("grp_1", "추석 귀성길", "veh_L", Place(35.1, 126.8, "광주"), topics), app.donghaeng.protocol.GroupJoined.serializer(),
+        )
+        runCurrent()
+        fun joinedEvent(id: String, source: String) = app.donghaeng.protocol.GroupEvent(id, "MEMBER_JOINED", source, app.donghaeng.protocol.Severity.INFO, "$source 합류", kotlinx.serialization.json.JsonObject(emptyMap()))
+        repeat(20) { i ->
+            gateway.emitInbound(topics.event, app.donghaeng.protocol.MessageTypes.EVENT, "srv", joinedEvent("r$i", "veh_R$i"), app.donghaeng.protocol.GroupEvent.serializer(), seq = 2L + i)
+        }
+        runCurrent()
+        assertEquals(20, manager.groupEvents.replayCache.size)
+
+        val vm = viewModel()
+        runCurrent()
+        try {
+            advanceTimeBy(1_000); runCurrent()
+            assertEquals("화면을 열 때 상세는 폴링 첫 1회뿐", 1, api.detailCalls)
+            assertEquals("replay 도 최근 소식에는 남는다", 5, (vm.state.value as CreateGroupState.Active).recentSpeech.size)
+
+            // 실시간 합류 3건이 한꺼번에 → 한 번
+            repeat(3) { i ->
+                gateway.emitInbound(topics.event, app.donghaeng.protocol.MessageTypes.EVENT, "srv", joinedEvent("l$i", "veh_L$i"), app.donghaeng.protocol.GroupEvent.serializer(), seq = 100L + i)
+            }
+            runCurrent()
+            advanceTimeBy(CreateGroupViewModel.MEMBER_REFRESH_DEBOUNCE_MS + 100); runCurrent()
+            assertEquals(2, api.detailCalls)
+        } finally {
+            // 폴링 루프를 끝낸다(단언이 실패해도 — 남은 무한 폴링을 runTest 가 끝없이 돌지 않게)
+            manager.onGroupLeftLocally("grp_1"); runCurrent()
+        }
     }
 
     @Test

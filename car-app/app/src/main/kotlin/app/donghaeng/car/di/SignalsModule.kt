@@ -41,6 +41,10 @@ import app.donghaeng.car.domain.routesync.VoiceRouteAsk
 import app.donghaeng.car.domain.routesync.VoiceAnswer
 import app.donghaeng.car.domain.settings.SharedPrefsUserSettingsStore
 import app.donghaeng.car.domain.settings.UserSettings
+import app.donghaeng.car.service.DriveSessionService
+import app.donghaeng.car.surface.AppForegroundTracker
+import android.content.pm.ServiceInfo
+import android.os.Build
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.flow.map
 import javax.inject.Singleton
@@ -78,7 +82,10 @@ object SignalsModule {
     @Singleton
     fun provideMyFixSource(feed: LocationFeed): MyFixSource = feed
 
-    /** A120: 설정 화면 값(음성 안내·자동 따라가기·지연 표시) — `dh_settings`. 지연 표시 기본값은 debug 켬 / release 끔 */
+    /**
+     * A120: 설정 화면 값(자동 따라가기·지연 표시) — `dh_settings`. 지연 표시 기본값은 debug 켬 / release 끔.
+     * '음성 안내' 스위치는 음성 쪽(B066 VoiceAnnouncer 자체 저장소)이 저장한다 — 같은 값을 두 곳에 두지 않는다(RA-3).
+     */
     @Provides
     @Singleton
     fun provideUserSettings(@ApplicationContext context: Context): UserSettings =
@@ -102,6 +109,7 @@ object SignalsModule {
         recognizers: dagger.Lazy<RecognizerChain>,
         ptt: dagger.Lazy<PttController>,
         settings: UserSettings,
+        tracker: AppForegroundTracker,
     ): RouteSyncEngine {
         fun vid() = (tokenStore.state.value as? TokenStoreState.Present)?.credentials?.vehicleId
         return RouteSyncEngine(
@@ -113,13 +121,13 @@ object SignalsModule {
             publishAck = { ack -> vid()?.let { mqtt.publish(Topics.vehicleAck(it), MessageTypes.ACK, ack, Ack.serializer(), qos = 1) } ?: false },
             speak = { text, priority -> voice.announce(text, priority, "ROUTE_FOLLOW_PROPOSAL") },
             drivingFlow = driving.isDriving(),
-            askYesNo = { question -> askWhileDriving(question, voice, voiceAdapter, recognizers.get(), ptt.get()) },
+            askYesNo = { question -> askWhileDriving(question, voice, voiceAdapter, recognizers.get(), ptt.get(), tracker) },
         ).also { it.setAutoFollow(settings.autoFollow) }
     }
 
     /**
      * 주행 중 경로 제안 음성 질문(A034) — 질문을 다 읽은 뒤에만 마이크를 연다(PTT 확인과 같은 순서). null = 묻지 않음(엔진이 읽고 정차까지 보류):
-     * 음성 안내 꺼짐 / 무전이 쓰는 중(마이크를 다투지 않는다) / 들을 수 있는 인식 단계가 없음(권한·모델·서비스).
+     * 음성 안내 꺼짐 / 무전이 쓰는 중(마이크를 다투지 않는다) / 들을 수 있는 인식 단계가 없음(권한·모델·서비스) / 마이크가 무음일 상태(RA-4).
      */
     private suspend fun askWhileDriving(
         question: String,
@@ -127,15 +135,28 @@ object SignalsModule {
         voice: VoiceAdapter,
         chain: RecognizerChain,
         ptt: PttController,
+        tracker: AppForegroundTracker,
     ): VoiceAnswer? = VoiceRouteAsk.ask(
         question = question,
         voiceEnabled = { announcer.state.value.enabled },
         pttBusy = ptt.state.map { it.stage != PttStage.IDLE },
         pttBusyNow = { ptt.state.value.stage != PttStage.IDLE },
         hasCandidate = { chain.hasCandidate() },
+        micUsable = { routeAskMicUsable(Build.VERSION.SDK_INT, tracker.appVisible.value, DriveSessionService.attachedType.value) },
         speakAndWait = { voice.speakAndWait(it, Priority.NORMAL, ROUTE_ASK_SPEAK_TIMEOUT_MS) },
         listen = { chain.listen(ROUTE_ASK_LISTEN_MS).answer },
     )
+
+    /**
+     * RA-4: 지금 마이크를 열면 소리가 담기는가 — API 30+ 에서 동행 화면이 뒤에 있으면 그룹 서비스에 microphone 포그라운드 타입이 붙어 있어야 한다
+     * (없으면 앱이 여는 마이크는 오류 없이 무음). B 배치 `PttMicGate.usable` 과 같은 판정 — 병합 뒤 그것을 부르도록 바꾼다(handoff).
+     */
+    internal fun routeAskMicUsable(sdk: Int, appVisible: Boolean, attachedFgsType: Int?): Boolean = when {
+        sdk < Build.VERSION_CODES.R -> true
+        appVisible -> true
+        attachedFgsType == null -> false
+        else -> attachedFgsType and ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE != 0
+    }
 
     /** "…따라갈까요? 네 또는 아니요로 답해 주세요." ≈ 6 s + 엔진 지연 */
     private const val ROUTE_ASK_SPEAK_TIMEOUT_MS = 12_000L
@@ -146,13 +167,13 @@ object SignalsModule {
     /** T27: 그룹 이벤트 → 음성 큐(우선순위·신선도 5s·내 이벤트 생략·대상 아님 생략) */
     @Provides
     @Singleton
-    fun provideVoiceAnnouncer(sessionManager: MqttSessionManager, voice: VoiceAdapter, clockSync: ClockSync, settings: UserSettings): VoiceAnnouncer =
+    fun provideVoiceAnnouncer(sessionManager: MqttSessionManager, voice: VoiceAdapter, clockSync: ClockSync): VoiceAnnouncer =
         // 신선도(5s) 판정은 서버 시계 기준(T31 ClockSync) — 차량 시계가 틀려도 옛 이벤트만 생략한다.
         // 급제동 대상(audience)이 없으면 최신 스냅샷으로 앞뒤를 본다(EventAudience)
         VoiceAnnouncer(
             events = sessionManager.groupEventsReceived, myVehicleId = { sessionManager.myVehicleId }, voice = voice,
             groupState = { sessionManager.groupState.value }, clock = { clockSync.serverNow() },
-        ).also { if (!settings.voiceEnabled) it.setEnabled(false) }   // A120: 꺼 둔 음성 안내는 다시 켜도 꺼진 채
+        )
 
     /** T31: 서버 시각 동기화 — 시작 직후·5분마다 `GET /v1/time` 3회, 왕복 최소 표본 */
     @Provides
