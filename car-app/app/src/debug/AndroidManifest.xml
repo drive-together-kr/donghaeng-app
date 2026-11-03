@@ -21,7 +21,7 @@
             android:name=".debug.F16ProbeReceiver"
             android:exported="true"
             android:permission="android.permission.DUMP" />
-        <!-- 호출: adb shell am broadcast -n app.donghaeng.car/.debug.DemoControlReceiver (extras: action = route_test | accept | decline | auto_follow | speak | voice | navi_route | gpx | status | open | surface | surface_pos | event | ptt_press | ptt_inject_record | ptt_answer | ptt_status | ptt_unsent | ptt_handle | ptt_countdown | vosk_install …) -->
+        <!-- 호출: adb shell am broadcast -n app.donghaeng.car/.debug.DemoControlReceiver (extras: action = route_test | accept | decline | auto_follow | speak | voice | navi_route | gpx | status | open | surface | surface_pos | event | ptt_press | ptt_inject_record | ptt_answer | ptt_status | ptt_unsent | ptt_handle | ptt_countdown | vosk_install | tts_file …) -->
         <receiver
             android:name=".debug.DemoControlReceiver"
             android:exported="true"

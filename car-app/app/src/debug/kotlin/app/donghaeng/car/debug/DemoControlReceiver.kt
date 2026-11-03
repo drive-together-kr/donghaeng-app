@@ -70,6 +70,7 @@ import java.util.Base64
  * | `ptt_handle` | `on`(ez) | 설정 '핸들 버튼으로 무전' — 끄면 MediaSession 을 내리고 화면 키도 흘려보낸다 |
  * | `ptt_countdown` | `on`(ez, 기본 true) | 인식기를 모두 건너뛰어 카운트다운 모드("5초 뒤 보낼게요")를 강제(Vosk 모델이 있어도 장면을 찍게). 주입 답은 그대로 받는다 |
  * | `vosk_install` | `dir`(모델 폴더, 기본 = 앱 외부 files `vosk-ko-small`), `remove`(ez) | Vosk 모델을 앱 `files/vosk-ko-small` 로 복사(따로 돌고 끝나면 `demo: vosk_install done files=… bytes=…`) / 지우기. `ptt.py` 는 보통 `run-as` 로 바로 넣는다 |
+ * | `tts_file` | `text`, `name`(영숫자·`_`·`-`), `rate`(`--ef`, 기본 1.0) | 시연 영상용 — 문장을 같은 TTS 엔진으로 앱 `files/tts/<name>.wav` 에 쓴다([DemoTtsFileActions]) |
  *
  * 결과는 `logcat -s DongHaeng` 의 `demo:` 줄로 확인한다. 좌표·ID 는 마스킹 규칙(CLAUDE.md 8)을 따른다.
  * 의존성은 Hilt `@EntryPoint` 로 꺼낸다(BroadcastReceiver 의 `onReceive` 가 추상이라 `@AndroidEntryPoint` 의 super 호출을 쓸 수 없다).
@@ -311,6 +312,7 @@ class DemoControlReceiver : BroadcastReceiver() {
             in DemoPttActions.ACTIONS -> DemoPttActions.handle(context, action, intent)
             // 네트워크·지연 진단(net_rtt·net_mqtt_rtt·latency_dump·latency_reset, docs/09 §4.2) — DemoNetActions.kt
             in DemoNetActions.ACTIONS -> DemoNetActions.handle(context, action, intent)
+            in DemoTtsFileActions.ACTIONS -> DemoTtsFileActions.handle(context, action, intent)
             else -> DhLog.w("demo: 모르는 action=$action")
         }
     }

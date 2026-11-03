@@ -29,7 +29,7 @@ class VehicleIdUnavailableException : IllegalStateException("vehicleId unavailab
  *
  * - `vehicleId` 는 [VehicleAdapter.vehicleId] (fake: `FAKE-DH-0001`, pleos: CarInfo VIN/CRN). 서버는 해시만 저장한다.
  *   CarInfo 가 자리표시자(`"invalid"`, Pleos AVD 실측)만 주면 [VehicleIdFallback] 의 설치별 ID 를 쓴다 — AVD 두 대가 서로 다른 차량이어야 한다.
- * - `model` 은 빌드 변형(ADAPTER 대문자, 예: PLEOS / FAKE), `brand` 는 SDK 가 주지 않으므로 null, `appVersion` 은 VERSION_NAME.
+ * - `model` 은 빌드 변형(ADAPTER 대문자, 예: PLEOS / FAKE — 녹화용 debug 빌드는 null), `brand` 는 SDK 가 주지 않으므로 null, `appVersion` 은 VERSION_NAME.
  */
 @Singleton
 class PairingRepository @Inject constructor(
@@ -59,7 +59,8 @@ class PairingRepository @Inject constructor(
         DhLog.i("pairing vehicleId source=${if (fromCar != null) "CAR_INFO" else "INSTALL_ID"} len=${vehicleId.length}")
         val request = DeviceCodeRequest(
             vehicleId = vehicleId,
-            model = BuildConfig.ADAPTER.uppercase(),
+            // 녹화용 debug 빌드(-PdhVideo=true)는 빌드 변형 이름(FAKE 등)이 폰 차 목록에 보이지 않게 비운다
+            model = BuildConfig.ADAPTER.uppercase().takeUnless { BuildConfig.DEBUG && !BuildConfig.DH_SHOW_DEV_INFO },
             brand = null,
             appVersion = BuildConfig.VERSION_NAME,
         )

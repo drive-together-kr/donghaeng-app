@@ -289,7 +289,17 @@ class VoiceAnnouncer(
     /** 붙잡는 중인가 — 무전 상태 기계([setHeld]) 또는 녹음 시작 직후의 짧은 붙잡기([yieldToMic]) */
     private fun holding(now: Long): Boolean = held || now < yieldUntil
 
+    /** 워커가 끝나면(정상 종료는 [stop] 의 취소뿐) 이유를 남긴다 — 큐가 조용히 멈추는 문제 추적(2026-11-03 시연 녹화 중 발견) */
     private suspend fun worker() {
+        try {
+            workerLoop()
+        } catch (e: Throwable) {
+            DhLog.w("voice: worker 종료 ${e.javaClass.simpleName}: ${e.message?.take(120)} jobActive=${job?.isActive}")
+            throw e
+        }
+    }
+
+    private suspend fun workerLoop() {
         while (true) {
             val now = clock()
             val item = mutex.withLock {
