@@ -188,7 +188,7 @@ private fun CodeDetails(state: PairingState.CodeIssued, remaining: String) {
     Spacer(Modifier.height(12.dp))
     Text(stringResource(R.string.pairing_remaining, remaining), style = MaterialTheme.typography.titleMedium)
     Text(stringResource(R.string.pairing_auto_hint), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    if (BuildConfig.DEBUG) {
+    if (BuildConfig.DH_SHOW_DEV_INFO) {
         Text(
             stringResource(R.string.pairing_attempt, state.attempt, PairingViewModel.MAX_CODE_REQUESTS, state.intervalSec),
             style = MaterialTheme.typography.bodyMedium,
@@ -247,7 +247,7 @@ private fun ErrorSection(state: PairingState.Error, onRetry: () -> Unit, onBack:
     }
     Text(message, style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.error)
     // 예외 원문("network ConnectException")은 개발용 — release 에는 사유 문구만(1-5). 원문은 로그·진단에 남는다
-    if (BuildConfig.DEBUG && state.detail != null) {
+    if (BuildConfig.DH_SHOW_DEV_INFO && state.detail != null) {
         Spacer(Modifier.height(8.dp))
         Text(
             stringResource(R.string.pairing_error_detail, state.detail),

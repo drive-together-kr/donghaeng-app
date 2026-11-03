@@ -113,6 +113,8 @@ android {
             buildConfigField("String", "DH_MQTT_PUBLIC_URI", "\"$dhMqttPublicUri\"")
             buildConfigField("String", "DH_CLEARTEXT_HOSTS", "\"${cleartextHostsFor(dhPublicBaseUrl)}\"")
             manifestPlaceholders["networkSecurityConfig"] = networkSecurityConfigFor(dhPublicBaseUrl)
+            // 개발 정보(홈 빌드 카드·페어링 상세·지연 표시 기본값) — 시연 영상 녹화 때만 -PdhVideo=true 로 숨긴다(release 는 늘 숨김)
+            buildConfigField("boolean", "DH_SHOW_DEV_INFO", if (dhProperty("dhVideo") == "true") "false" else "true")
         }
         release {
             // T40: 축소·난독화는 하지 않는다 — Pleos SDK·Hilt·kotlinx.serialization 의 리플렉션 keep 규칙을 기기에서 다 검증할 시간이 없고, 크기(약 71 MB)는 제출 한도 안
@@ -124,6 +126,7 @@ android {
             buildConfigField("String", "DH_MQTT_PUBLIC_URI", "\"$releaseMqttPublicUri\"")
             buildConfigField("String", "DH_CLEARTEXT_HOSTS", "\"${cleartextHostsFor(releasePublicBaseUrl)}\"")
             manifestPlaceholders["networkSecurityConfig"] = networkSecurityConfigFor(releasePublicBaseUrl)
+            buildConfigField("boolean", "DH_SHOW_DEV_INFO", "false")
         }
     }
 

@@ -90,7 +90,7 @@ object SignalsModule {
     @Provides
     @Singleton
     fun provideUserSettings(@ApplicationContext context: Context): UserSettings =
-        UserSettings(SharedPrefsUserSettingsStore(context), UserSettings.Defaults(latencyOverlay = BuildConfig.DEBUG))
+        UserSettings(SharedPrefsUserSettingsStore(context), UserSettings.Defaults(latencyOverlay = BuildConfig.DH_SHOW_DEV_INFO))
 
     /**
      * T28: 선두 ROUTE_CHANGED 발행 / 멤버 ROUTE_FOLLOW_PROPOSAL 수락·거절 → ACK.

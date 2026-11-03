@@ -111,7 +111,7 @@ fun HomeScreen(
                     }
                     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         if (state.groupSession == null) HowToCard() else DrivingHowToCard()
-                        if (BuildConfig.DEBUG) BuildInfoCard(state)
+                        if (BuildConfig.DH_SHOW_DEV_INFO) BuildInfoCard(state)
                     }
                 }
             } else {
@@ -124,7 +124,7 @@ fun HomeScreen(
                         Spacer(Modifier.height(24.dp))
                         HowToCard()
                     }
-                    if (BuildConfig.DEBUG) {
+                    if (BuildConfig.DH_SHOW_DEV_INFO) {
                         Spacer(Modifier.height(16.dp))
                         BuildInfoCard(state)
                     }
