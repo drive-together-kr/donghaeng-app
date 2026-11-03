@@ -39,9 +39,10 @@ import java.util.concurrent.Executors
  * 값이 잡힐 때마다 [onQr] 를 부르고, 첫 값만 쓰는 건 호출 쪽이 정한다.
  */
 @Composable
-fun CameraPreview(onQr: (String) -> Unit, modifier: Modifier = Modifier) {
+fun CameraPreview(onQr: (String) -> Unit, modifier: Modifier = Modifier, onUnavailable: () -> Unit = {}) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentOnQr by rememberUpdatedState(onQr)
+    val currentOnUnavailable by rememberUpdatedState(onUnavailable)
     val analyzer = remember { QrAnalyzer { currentOnQr(it) } }
     val executor = remember { Executors.newSingleThreadExecutor() }
     var bindError by remember { mutableStateOf<String?>(null) }
@@ -79,14 +80,17 @@ fun CameraPreview(onQr: (String) -> Unit, modifier: Modifier = Modifier) {
                         } catch (e: Exception) {
                             Log.w(DemoApplication.TAG, "camera bind failed: ${e.message}")
                             bindError = e.message ?: "알 수 없는 오류"
+                            currentOnUnavailable() // 화면은 안내로 바꾼다(원인 원문은 로그에만)
                         }
                     }, ContextCompat.getMainExecutor(ctx))
                 }
             },
         )
-        bindError?.let { message ->
+        // 열지 못하면 호출 쪽(ScanScreen)이 onUnavailable 로 '카메라 없음' 안내로 바꾼다 — 원인 원문(예: 에뮬레이터 가상 카메라의
+        // 동적 범위 형식 오류)은 로그에만 남기고, 안내를 받지 못한 호출 쪽을 위해 짧은 문구만 둔다
+        if (bindError != null) {
             Text(
-                "카메라를 열 수 없어요: $message\n아래 '코드·주소 직접 입력'을 사용하세요.",
+                "이 기기에서는 카메라를 쓸 수 없어요",
                 color = Color.White,
                 modifier = Modifier
                     .align(Alignment.Center)

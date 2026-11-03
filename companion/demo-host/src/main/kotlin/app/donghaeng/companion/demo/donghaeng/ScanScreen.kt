@@ -81,6 +81,8 @@ fun ScanScreen(
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
     }
     var permissionAsked by rememberSaveable { mutableStateOf(false) }
+    /** 권한은 있는데 카메라를 열지 못함(카메라 없는 PC 의 에뮬레이터 등) — 안내와 [사진에서 QR 읽기]로 바꾼다 */
+    var cameraUnavailable by rememberSaveable { mutableStateOf(false) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         hasCamera = granted
         permissionAsked = true
@@ -160,8 +162,24 @@ fun ScanScreen(
                     .padding(horizontal = 20.dp)
                     .background(Color.Black, RoundedCornerShape(24.dp)),
             ) {
-                if (hasCamera) {
-                    CameraPreview(onQr = ::onQr, modifier = Modifier.fillMaxSize())
+                if (hasCamera && cameraUnavailable) {
+                    Column(
+                        Modifier.align(Alignment.Center).padding(horizontal = 24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        MsIcon(R.drawable.ms_photo_camera, null, tint = KiaColors.TextSecondary, size = 40.dp)
+                        Text("이 기기에서는 카메라를 쓸 수 없어요", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "차 화면 QR 을 찍은 사진이 있으면 사진에서 읽고, 없으면 아래에 차 화면의 코드·주소를 넣으세요.",
+                            color = KiaColors.TextSecondary,
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        )
+                        KiaButton(if (photoBusy) "사진 읽는 중…" else "사진에서 QR 읽기", modifier = Modifier.padding(horizontal = 40.dp)) { if (!photoBusy) pickPhoto() }
+                    }
+                } else if (hasCamera) {
+                    CameraPreview(onQr = ::onQr, modifier = Modifier.fillMaxSize(), onUnavailable = { cameraUnavailable = true })
                 } else {
                     Column(
                         Modifier.align(Alignment.Center),
@@ -174,14 +192,14 @@ fun ScanScreen(
                         Text("카메라 없이: 아래 '코드·주소 직접 입력'", style = MaterialTheme.typography.bodySmall, color = KiaColors.TextSecondary)
                     }
                 }
-                // 스캔 프레임(라임 모서리)
-                Box(
+                // 스캔 프레임(라임 모서리) — 카메라를 쓸 수 있을 때만
+                if (!(hasCamera && cameraUnavailable)) Box(
                     Modifier
                         .align(Alignment.Center)
                         .size(220.dp)
                         .border(2.dp, KiaColors.Accent.copy(alpha = 0.9f), RoundedCornerShape(20.dp)),
                 )
-                Text(
+                if (!(hasCamera && cameraUnavailable)) Text(
                     "차량 화면의 동행 QR 또는 차량 등록 QR 을 비추세요",
                     style = MaterialTheme.typography.labelLarge,
                     color = Color.White,
