@@ -174,3 +174,14 @@ QR 문자열은 서버가 `{DH_PUBLIC_BASE_URL}` + 경로로 만든다(docs/03 �
 - Pleos ID 로그인이 열리면 `AccountProvider` 하나 추가로 차량 앱·모듈 계정을 통합하고 페어링 단계를 생략한다.
 - iOS 공식 앱용은 같은 API 를 Swift 패키지로 제공(추후). 메시지 스키마는 `protocol/` 를 기준으로 생성한다.
 - 모듈은 위치를 수집하지 않는다(차량이 보낸다). 수집·보관 원칙은 docs/01 §7 과 같다.
+
+## 10. 카메라 없이 QR 읽기 (2026-11-03)
+카메라가 없는 환경(카메라 없는 PC 의 휴대폰 에뮬레이터, 카메라 고장)에서도 같은 흐름으로 합류·등록한다. 세 경로 모두 스캐너와 같은 `ScanScreen.handle`(QrPathRule → 합류 시트 / 등록 대화상자)로 간다.
+| 경로 | 구현 | 실측(휴대폰 AVD API 37, 카메라 없음) |
+|---|---|---|
+| 사진에서 QR 읽기 | 사진 선택기(PickVisualMedia) → ML Kit `InputImage.fromFilePath` → `PhotoQr.decode` | 차 A 화면 캡처(초대 QR)를 갤러리에서 고름 → '동행 그룹 합류' 시트 |
+| 링크로 열기 | demo-host 매니페스트 VIEW 필터 `https://{서버 호스트}/j/…`·`/pair…` + `android:autoVerify` → `IncomingLink` → 로그인 뒤 스캔 화면이 처리. 서버 `GET /.well-known/assetlinks.json`(패키지 + 릴리스 인증서 SHA-256, `dh.app-links`) | `pm get-app-links` → `verified`, 초대 주소 VIEW → 앱(크롬 아님) → 로그인 → 합류 시트 |
+| 브라우저에서 열렸을 때 | 서버 안내 페이지(`/j/{token}`·`/pair?c=`, Accept text/html)에 [앱에서 열기](Chrome `intent://…;package=…;end`) | 버튼 링크 확인 |
+| 코드·주소 직접 입력 | 기존(D027·D039) | — |
+CameraX 는 Android 16 계열 에뮬레이터 이미지의 가상 카메라가 보고하는 동적 범위 형식(8192)을 몰라 열리지 않는다(1.4.1·1.4.2·1.5.1 실측) — 위 경로로 대신한다.
+

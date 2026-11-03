@@ -13,12 +13,18 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        app.donghaeng.companion.demo.donghaeng.IncomingLink.offer(intent?.takeIf { it.action == android.content.Intent.ACTION_VIEW }?.dataString)
         // 알림 채널·시스템 알림 출구는 DemoApplication 이 Application 컨텍스트로 등록한다(D086 — 여기서 람다를 넣으면 끝난 Activity 를 붙잡았다)
         setContent {
             KiaTheme {
                 KiaApp()
             }
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        if (intent.action == android.content.Intent.ACTION_VIEW) app.donghaeng.companion.demo.donghaeng.IncomingLink.offer(intent.dataString)
     }
 
     override fun onStart() {

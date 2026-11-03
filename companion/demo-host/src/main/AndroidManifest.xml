@@ -34,6 +34,14 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- 메신저로 받은 초대(/j/…)·차량 등록(/pair?c=…) 주소를 누르면 이 앱으로 연다(카메라 없이 합류·등록). 서버 주소는 build.gradle.kts placeholder -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="${linkScheme}" android:host="${linkHost}" android:pathPrefix="/j/" />
+                <data android:scheme="${linkScheme}" android:host="${linkHost}" android:pathPrefix="/pair" />
+            </intent-filter>
         </activity>
     </application>
 

@@ -173,4 +173,35 @@ class WebLayerTest {
             content { string(containsString("'동행' 메뉴")) }
         }
     }
+
+    @Test
+    fun `assetlinks json is public and lists the phone app package and release cert fingerprint`() {
+        mvc.get("/.well-known/assetlinks.json").andExpect {
+            status { isOk() }
+            jsonPath("$[0].relation[0]") { value("delegate_permission/common.handle_all_urls") }
+            jsonPath("$[0].target.namespace") { value("android_app") }
+            jsonPath("$[0].target.package_name") { value("app.donghaeng.companion.demo") }
+            jsonPath("$[0].target.sha256_cert_fingerprints[0]") { value(DhProperties.DEFAULT_APP_LINKS_SHA256) }
+        }
+    }
+
+    @Test
+    fun `join and pair landing pages offer an open-in-app intent link with escaped values`() {
+        mvc.get("/j/inv_abc").andExpect {
+            status { isOk() }
+            content { string(containsString("앱에서 열기")) }
+            content { string(containsString("intent://")) }
+            content { string(containsString("/j/inv_abc#Intent;scheme=")) }
+            content { string(containsString("package=app.donghaeng.companion.demo;end")) }
+        }
+        mvc.get("/pair") { param("c", "KQ74MZ") }.andExpect {
+            status { isOk() }
+            content { string(containsString("/pair?c=KQ74MZ#Intent;")) }
+        }
+        mvc.get("/pair").andExpect {
+            status { isOk() }
+            content { string(not(containsString("앱에서 열기"))) }
+        }
+    }
 }
+

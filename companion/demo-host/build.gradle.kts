@@ -1,3 +1,4 @@
+import java.net.URI
 import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
@@ -81,6 +82,8 @@ android {
             // 평문 HTTP 허용 여부를 서버 주소 스킴에 묶는다(car-app 과 같은 규칙): http://(로컬 개발) → true, https://(클라우드) → false
             //   AndroidManifest.xml 의 android:usesCleartextTraffic="${usesCleartext}" 로 들어간다
             manifestPlaceholders["usesCleartext"] = dhPublicBaseUrl.startsWith("http://").toString()
+            manifestPlaceholders["linkScheme"] = URI(dhPublicBaseUrl).scheme
+            manifestPlaceholders["linkHost"] = URI(dhPublicBaseUrl).host
         }
         release {
             isMinifyEnabled = false
@@ -88,6 +91,8 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             buildConfigField("String", "DH_PUBLIC_BASE_URL", "\"$releasePublicBaseUrl\"")
             manifestPlaceholders["usesCleartext"] = releasePublicBaseUrl.startsWith("http://").toString()
+            manifestPlaceholders["linkScheme"] = URI(releasePublicBaseUrl).scheme
+            manifestPlaceholders["linkHost"] = URI(releasePublicBaseUrl).host
         }
     }
 

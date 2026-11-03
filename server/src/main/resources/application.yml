@@ -41,6 +41,10 @@ management:
 # docs/03 머리말: 공개 주소는 고정 도메인 없이 설정값으로만 만든다.
 dh:
   public-base-url: ${DH_PUBLIC_BASE_URL:http://10.0.2.2:8080}
+  # 폰 앱 App Links(/.well-known/assetlinks.json) — 비우면 빈 목록. 기본값은 demo-host 릴리스 키(공개 값)
+  app-links:
+    package-name: ${DH_APP_LINKS_PACKAGE:app.donghaeng.companion.demo}
+    sha256: ${DH_APP_LINKS_SHA256:25:24:46:02:6A:78:9E:55:1B:77:8E:95:43:18:84:B4:8D:DB:28:6E:30:94:2F:F0:63:0A:EF:58:6D:10:82:AB}
   mqtt:
     uri: ${DH_MQTT_URI:tcp://localhost:1883}
     public-uri: ${DH_MQTT_PUBLIC_URI:tcp://10.0.2.2:1883}

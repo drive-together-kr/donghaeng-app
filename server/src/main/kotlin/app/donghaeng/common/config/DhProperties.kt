@@ -17,6 +17,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties
  *   비어 있으면 검사하지 않는다(로컬 개발·테스트). 공개 VM 에서 이메일만으로 아무 계정이나 로그인되지 않게 클라우드에서는 반드시 설정한다(T32).
  * - `dh.mqtt.enabled` (`DH_MQTT_ENABLED`): 서버의 브로커 접속을 끌 수 있다(테스트·브로커 없는 로컬 실행). 기본 true.
  * - `dh.presence.*`: 스냅샷 주기(2s)·오프라인/정차 판정(60s)·도착 반경(150 m)·Redis 상태 TTL(600s) — presence(T24).
+ * - `dh.app-links.*` (`DH_APP_LINKS_PACKAGE`·`DH_APP_LINKS_SHA256`): Android App Links 확인 파일(`/.well-known/assetlinks.json`)에 넣을 폰 앱 패키지와
+ *   릴리스 서명 인증서 SHA-256(공개 값 — 비밀 아님). 초대·등록 주소를 누르면 브라우저가 아니라 폰 앱이 바로 열린다.
  * - `dh.rate-limit.*`: 공개 경로 IP 당 분당 요청 수(로그인·디바이스 코드 30)·동승자 메시지 그룹당 최소 간격(2 s) — docs/03 §1·§2.3.
  */
 @ConfigurationProperties("dh")
@@ -27,6 +29,7 @@ class DhProperties(
     val presence: Presence = Presence(),
     val auth: Auth = Auth(),
     val rateLimit: RateLimit = RateLimit(),
+    val appLinks: AppLinks = AppLinks(),
     carIdSalt: String? = null,
     internalToken: String? = null,
 ) {
@@ -55,6 +58,18 @@ class DhProperties(
         val devLoginKey: String? = devLoginKey?.trim()?.takeIf { it.isNotEmpty() }
     }
 
+    /** Android App Links (카메라 없이 초대·등록 링크로 폰 앱 열기) */
+    class AppLinks(
+        packageName: String = DEFAULT_APP_LINKS_PACKAGE,
+        sha256: String = DEFAULT_APP_LINKS_SHA256,
+    ) {
+        /** 비어 있으면 null — assetlinks.json 이 빈 목록, 안내 페이지에 '앱에서 열기' 없음 */
+        val packageName: String? = packageName.trim().takeIf { it.isNotEmpty() }
+
+        /** 쉼표로 여러 개(키 교체 기간). `AA:BB:…` 대문자 */
+        val sha256: List<String> = sha256.split(',').map { it.trim().uppercase() }.filter { it.isNotEmpty() }
+    }
+
     /** 빈도 제한 (C094·C106, docs/03 §1·§2.3) */
     data class RateLimit(
         /** `POST /v1/auth/login`·`POST /v1/device/code` — IP 당 분당 요청 수. 0 이하면 끈다 */
@@ -80,6 +95,8 @@ class DhProperties(
     )
 
     companion object {
+        const val DEFAULT_APP_LINKS_PACKAGE = "app.donghaeng.companion.demo"
+        const val DEFAULT_APP_LINKS_SHA256 = "25:24:46:02:6A:78:9E:55:1B:77:8E:95:43:18:84:B4:8D:DB:28:6E:30:94:2F:F0:63:0A:EF:58:6D:10:82:AB"
         const val DEFAULT_CAR_ID_SALT = "dev-salt-change-me"
     }
 }

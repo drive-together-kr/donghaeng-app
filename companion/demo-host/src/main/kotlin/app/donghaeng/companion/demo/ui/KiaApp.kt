@@ -47,6 +47,11 @@ fun KiaApp() {
         }
     }
 
+    val pendingLink by app.donghaeng.companion.demo.donghaeng.IncomingLink.pending.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingLink, account, route) {
+        if (pendingLink != null && account != null && route != null && route != Routes.SCAN && route != Routes.LOGIN) navController.navigate(Routes.SCAN)
+    }
+
     NavHost(navController = navController, startDestination = start) {
         composable(Routes.LOGIN) {
             LoginScreen(

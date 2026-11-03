@@ -121,6 +121,7 @@ class SecurityConfig(private val objectMapper: ObjectMapper) {
             "/actuator/health/**",
             "/actuator/info",
             "/.well-known/jwks.json",
+            "/.well-known/assetlinks.json",
             "/pair",
             ApiPaths.TIME,
             "/j/**",

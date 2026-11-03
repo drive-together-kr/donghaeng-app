@@ -3,6 +3,7 @@ package app.donghaeng.companion.demo.donghaeng
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -115,6 +116,22 @@ fun ScanScreen(
 
     fun onQr(payload: String) = handle(payload, fromCamera = true)
 
+    // 카메라 없이: 사진(스크린샷)에서 QR 읽기
+    var photoBusy by remember { mutableStateOf(false) }
+    val photoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        photoBusy = true
+        scope.launch {
+            val payload = PhotoQr.decode(context, uri)
+            photoBusy = false
+            if (payload == null) demoToast(context, "사진에서 QR 을 찾지 못했어요") else handle(payload, fromCamera = false)
+        }
+    }
+    fun pickPhoto() = photoLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+
+    // 링크(메신저로 받은 초대·등록 주소)로 열렸으면 그 주소를 바로 처리
+    LaunchedEffect(Unit) { IncomingLink.take()?.let { handle(it, fromCamera = false) } }
+
     fun applyManual() {
         val payload = ManualQrInput.toQrPayload(manual, base)
         if (payload == null) {
@@ -184,7 +201,15 @@ fun ScanScreen(
                     .padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text("카메라로 찍을 수 없나요? 코드·주소 직접 입력", style = MaterialTheme.typography.titleMedium)
+                Text("카메라로 찍을 수 없나요?", style = MaterialTheme.typography.titleMedium)
+                AccentButton(if (photoBusy) "사진 읽는 중…" else "사진에서 QR 읽기", enabled = !photoBusy) { pickPhoto() }
+                Text(
+                    "차 화면의 QR 을 찍은 사진이나 받은 QR 이미지를 고르면 같은 흐름으로 이어져요.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = KiaColors.TextSecondary,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text("또는 코드·주소 직접 입력", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "차량 등록: 차 화면 QR 아래의 코드 6자(예: KQ7-4MZ). 그룹 합류: 선두차 화면 QR 아래의 초대 주소. QR 문자열(주소)을 붙여넣어도 돼요.",
                     style = MaterialTheme.typography.bodySmall,
