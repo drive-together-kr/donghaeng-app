@@ -315,6 +315,8 @@
     <string name="dash_ptt">무전</string>
     <string name="dash_ptt_seconds">%1$d초</string>
     <string name="dash_open_navi">내비 보기</string>
+    <!-- 좁은 화면(폭 620 dp 미만) 하단 바 — 한 글자씩 세로로 꺾이지 않게 -->
+    <string name="dash_open_navi_short">내비</string>
     <string name="dash_connected">실시간 연결됨</string>
     <string name="dash_reconnecting">다시 연결 중</string>
     <string name="dash_offline">연결 끊김</string>

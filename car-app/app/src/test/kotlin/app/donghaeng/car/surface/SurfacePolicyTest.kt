@@ -33,7 +33,7 @@ class SurfacePolicyTest {
         val g = PanelLayout.geometry(2560, 1440, 1f)
         assertTrue("폭 ${g.widthPx} ≤ 내비 22% (375.3)", g.widthPx <= (1706 * 0.22f).toInt())
         assertEquals(375, g.widthPx)
-        assertEquals(432, g.maxHeightPx)
+        assertEquals(460, g.maxHeightPx)
         assertEquals(1f, g.scale, 0.01f)
     }
 
@@ -46,7 +46,7 @@ class SurfacePolicyTest {
         // 고밀도(2x) 같은 화면: px 한도는 같고 배율만 dp 기준
         val dense = PanelLayout.geometry(2560, 1440, 2f)
         assertTrue(dense.widthPx <= (1706 * 0.22f).toInt())
-        assertTrue(dense.maxHeightPx <= (1440 * 0.3f).toInt())
+        assertTrue(dense.maxHeightPx <= (1440 * 0.32f).toInt())
         assertEquals(PanelLayout.MIN_SCALE, dense.scale, 0.001f)
     }
 

@@ -13,6 +13,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -132,6 +135,9 @@ object DriveTone {
 
 private val FORMATION_HEIGHT = 236.dp
 
+/** 스크롤 모드(짧은 화면)에서 정차 영역(빠른 메시지·최근 소식 — 안에 자체 스크롤이 있다)에 주는 고정 높이 */
+private val PARKED_EXTRAS_SCROLL_HEIGHT = 420.dp
+
 /** 대열 막대: 막대 중심 → 차 이름 줄 중심 거리, 한 줄 올릴 때 간격(이름 줄 → 그 위 줄) */
 private val NAME_ROW = 52.dp
 private val ROW_STEP = 30.dp
@@ -172,6 +178,10 @@ fun DriveDashboardScreen(
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val landscape = maxWidth > maxHeight
             val narrow = maxWidth < 900.dp
+            // 화면 비율 대응(2026-11-05 점검): 높이가 낮은 와이드 화면(8:3 1920×720 등)·좁고 짧은 화면에서는 카드를 짜부라뜨리지 않고
+            // 자연 높이로 두고 내용을 세로 스크롤한다 — 그룹 도착 시각·다음 정차 거리 같은 핵심 숫자가 잘리지 않게
+            val short = maxHeight < (if (narrow) 1000.dp else 980.dp)
+            val tight = maxWidth < 620.dp
             // E038: 실시간 연결이 끊긴 채 오래된 값은 흐리게(아래 줄에 "2분 전 정보")
             val staleAlpha = if (ui.staleText != null) STALE_ALPHA else 1f
             val guidance = if (ui.parked) onStartGuidance else null
@@ -181,31 +191,34 @@ fun DriveDashboardScreen(
                 if (ui.overlayNotice) OverlayNotice(if (ui.parked) onOpenOverlaySettings else null, showNoSettingsHint = ui.parked && onOpenOverlaySettings == null)
                 PttTopBand(ui.ptt)
                 Box(Modifier.weight(1f)) {
-                    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    val scroll = if (short) Modifier.verticalScroll(rememberScrollState()) else Modifier
+                    Column(Modifier.fillMaxSize().then(scroll).padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         if (narrow) {
                             FormationLadder(ui.formation, ui.groupName, Modifier.fillMaxWidth().height(LADDER_HEIGHT).alpha(staleAlpha))
                             ArrivalCard(ui.arrival, Modifier.fillMaxWidth().alpha(staleAlpha), onStartGuidance = guidance)
                             ui.nextStop?.let { NextStopCard(it, Modifier.fillMaxWidth(), compact = true) }
                             if (ui.naviVisible) RestRow(ui.myDrive, Modifier.fillMaxWidth()) else MyDriveLine(ui.myDrive, Modifier.fillMaxWidth(), compact = true)
                             ui.event?.let { EventBanner(it, Modifier.fillMaxWidth()) }
-                            if (ui.parked) ParkedExtras(ui, false, Modifier.weight(1f), onPreset, onManageGroup, onSettings, onResendUnsent, onDeleteUnsent, onReplayPast, onOpenEvents, onHome) else Spacer(Modifier.weight(1f))
+                            if (ui.parked) ParkedExtras(ui, false, if (short) Modifier.height(PARKED_EXTRAS_SCROLL_HEIGHT) else Modifier.weight(1f), onPreset, onManageGroup, onSettings, onResendUnsent, onDeleteUnsent, onReplayPast, onOpenEvents, onHome)
+                            else if (!short) Spacer(Modifier.weight(1f))
                         } else {
                             FormationBar(ui.formation, ui.groupName, Modifier.fillMaxWidth().height(FORMATION_HEIGHT).alpha(staleAlpha))
                             // 카드가 남는 높이를 전부 가진다(이벤트 띠가 없으면 그만큼 더 커진다)
-                            Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                ArrivalCard(ui.arrival, Modifier.weight(1f).fillMaxHeight().alpha(staleAlpha), big = true, onStartGuidance = guidance)
-                                ui.nextStop?.let { NextStopCard(it, Modifier.weight(1.45f).fillMaxHeight(), big = true) }
+                            // 짧은 화면: 남는 높이를 나눠 갖지 않고 두 카드 중 큰 쪽 높이에 맞춘다(숫자가 잘리지 않음)
+                            Row(if (short) Modifier.fillMaxWidth().height(IntrinsicSize.Min) else Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                ArrivalCard(ui.arrival, Modifier.weight(1f).fillMaxHeight().alpha(staleAlpha), big = !short, onStartGuidance = guidance)
+                                ui.nextStop?.let { NextStopCard(it, Modifier.weight(1.45f).fillMaxHeight(), big = !short) }
                             }
-                            if (ui.naviVisible) RestRow(ui.myDrive, Modifier.fillMaxWidth(), big = true) else MyDriveLine(ui.myDrive, Modifier.fillMaxWidth(), big = true)
+                            if (ui.naviVisible) RestRow(ui.myDrive, Modifier.fillMaxWidth(), big = !short) else MyDriveLine(ui.myDrive, Modifier.fillMaxWidth(), big = !short)
                             ui.event?.let { EventBanner(it, Modifier.fillMaxWidth(), big = true) }
-                            if (ui.parked) ParkedExtras(ui, landscape, Modifier.weight(1.4f), onPreset, onManageGroup, onSettings, onResendUnsent, onDeleteUnsent, onReplayPast, onOpenEvents, onHome)
+                            if (ui.parked) ParkedExtras(ui, landscape, if (short) Modifier.height(PARKED_EXTRAS_SCROLL_HEIGHT) else Modifier.weight(1.4f), onPreset, onManageGroup, onSettings, onResendUnsent, onDeleteUnsent, onReplayPast, onOpenEvents, onHome)
                         }
                     }
                     if (ui.ptt.phase == PttPhase.RECORDING || ui.ptt.phase == PttPhase.CONFIRMING) {
                         PttCenterOverlay(ui.ptt, topInset = (if (narrow) LADDER_HEIGHT else FORMATION_HEIGHT) + 20.dp)
                     }
                 }
-                BottomBar(ui, onPtt, onOpenNavi, compact = narrow, onOpenMicPermission = onOpenMicPermission)
+                BottomBar(ui, onPtt, onOpenNavi, compact = narrow, onOpenMicPermission = onOpenMicPermission, tight = tight)
             }
         }
     }
@@ -543,6 +556,7 @@ fun ArrivalCard(ui: ArrivalCardUi, modifier: Modifier = Modifier, big: Boolean =
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 fun NextStopCard(ui: NextStopCardUi, modifier: Modifier = Modifier, compact: Boolean = false, big: Boolean = false) {
     val numSp = if (big) 84.sp else 56.sp
     val subSp = if (big) 24.sp else 20.sp
@@ -566,12 +580,18 @@ fun NextStopCard(ui: NextStopCardUi, modifier: Modifier = Modifier, compact: Boo
             }
         }
         Text(ui.distanceText, fontSize = numSp, lineHeight = numSp, fontWeight = FontWeight.Bold)
-        Row(horizontalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        // 차별 도착 시각: 폭이 모자라면 '이름 시각' 묶음째 다음 줄로(한 글자씩 세로로 꺾이지 않게 — 2026-11-05 화면 비율 점검)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             ui.perCar.forEachIndexed { i, c ->
-                if (i > 0) Text("·", fontSize = subSp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(c.name, fontSize = subSp, color = Color(c.colorArgb), fontWeight = if (c.latest) FontWeight.Bold else FontWeight.Medium)
-                Spacer(Modifier.width(4.dp))
-                Text(c.etaText, fontSize = subSp, fontWeight = if (c.latest) FontWeight.Bold else FontWeight.Normal)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (i > 0) {
+                        Text("·", fontSize = subSp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.width(if (compact) 10.dp else 16.dp))
+                    }
+                    Text(c.name, fontSize = subSp, color = Color(c.colorArgb), fontWeight = if (c.latest) FontWeight.Bold else FontWeight.Medium, maxLines = 1, softWrap = false)
+                    Spacer(Modifier.width(4.dp))
+                    Text(c.etaText, fontSize = subSp, fontWeight = if (c.latest) FontWeight.Bold else FontWeight.Normal, maxLines = 1, softWrap = false)
+                }
             }
         }
         // 도달 가능 여부를 모르면(아직 계산 안 함) 아이콘 + "—" 줄을 그리지 않는다(E121)
@@ -717,7 +737,7 @@ fun EventBanner(ui: EventBannerUi, modifier: Modifier = Modifier, big: Boolean =
         Row(Modifier.padding(horizontal = 22.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(EventIcons.of(ui.type, ui.tone), contentDescription = null, tint = if (hl) Color.White else color, modifier = Modifier.size(if (big) 42.dp else 34.dp))
             Spacer(Modifier.width(16.dp))
-            Text(ui.text, color = if (hl) Color.White else Color.Unspecified, fontSize = if (big) 32.sp else 26.sp, lineHeight = if (big) 40.sp else 32.sp, fontWeight = if (hl) FontWeight.Bold else FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(ui.text, color = if (hl) Color.White else Color.Unspecified, fontSize = if (big) 32.sp else 26.sp, lineHeight = if (big) 40.sp else 32.sp, fontWeight = if (hl) FontWeight.Bold else FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -725,7 +745,7 @@ fun EventBanner(ui: EventBannerUi, modifier: Modifier = Modifier, big: Boolean =
 // ---------------------------------------------------------------- 6. 하단 고정
 
 @Composable
-fun BottomBar(ui: DriveDashboardUi, onPtt: () -> Unit, onOpenNavi: () -> Unit, compact: Boolean = false, onOpenMicPermission: (() -> Unit)? = null) {
+fun BottomBar(ui: DriveDashboardUi, onPtt: () -> Unit, onOpenNavi: () -> Unit, compact: Boolean = false, onOpenMicPermission: (() -> Unit)? = null, tight: Boolean = false) {
     val kind = PttDisplay.kind(ui.ptt)
     val recording = kind == PttDisplayKind.RECORDING
     // 확인 중 누르면 = 취소(F16) — 버튼이 그 뜻을 말한다
@@ -773,16 +793,17 @@ fun BottomBar(ui: DriveDashboardUi, onPtt: () -> Unit, onOpenNavi: () -> Unit, c
                         }
                     }
                     // 핸들 버튼 안내 — 주행 중에도 보이는 보조 글자라 18sp 이상(3-7·5-6)
-                    ui.pttKeyHint -> Text(stringResource(R.string.dash_ptt_hint), fontSize = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+                    ui.pttKeyHint -> Text(stringResource(R.string.dash_ptt_hint), fontSize = if (tight) 16.sp else 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center, maxLines = 2, modifier = Modifier.padding(top = 4.dp))
                 }
             }
             OutlinedButton(onClick = onOpenNavi, modifier = Modifier.weight(1f).height(84.dp), shape = RoundedCornerShape(22.dp)) {
                 Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(30.dp))
-                Spacer(Modifier.width(10.dp))
-                Text(stringResource(R.string.dash_open_navi), fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+                // 좁은 화면: 글자가 한 글자씩 세로로 꺾이지 않게 짧은 이름 + 한 줄
+                if (!tight) Spacer(Modifier.width(10.dp))
+                Text(stringResource(if (tight) R.string.dash_open_navi_short else R.string.dash_open_navi), fontSize = if (tight) 22.sp else 24.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
             }
             // 실시간 연결 상태(E038·4-9): 연결됨 / 다시 연결 중 / 연결 끊김 + 끊긴 채 오래된 값이면 "2분 전 정보"
-            Column(horizontalAlignment = Alignment.End, modifier = Modifier.widthIn(min = if (compact) 120.dp else 180.dp)) {
+            Column(horizontalAlignment = Alignment.End, modifier = Modifier.widthIn(min = if (tight) 0.dp else if (compact) 120.dp else 180.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(16.dp).clip(CircleShape).background(if (ui.connected) tones.info else tones.caution))
                     Spacer(Modifier.width(8.dp))
@@ -838,11 +859,11 @@ fun PttTopBand(ptt: PttUi, modifier: Modifier = Modifier) {
             Surface(modifier.fillMaxWidth(), color = bg) {
                 Row(Modifier.padding(horizontal = 24.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     Icon(if (kind == PttDisplayKind.PLAYED) Icons.Filled.CheckCircle else Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(40.dp))
-                    Text(playingText(ptt), color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(playingText(ptt), color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                     if (kind == PttDisplayKind.PLAYING) Waveform(0.6f, Color.White, Modifier.width(160.dp).height(34.dp))
-                    Spacer(Modifier.weight(1f))
+                    Spacer(Modifier.weight(0.01f))
                     if (ptt.queuedIncoming > 0) Text(stringResource(R.string.ptt_queued_more, ptt.queuedIncoming), color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
-                    Text(PttFormat.clock(ptt.seconds * 1_000L), color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
+                    Text(PttFormat.clock(ptt.seconds * 1_000L), color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
                 }
             }
         }

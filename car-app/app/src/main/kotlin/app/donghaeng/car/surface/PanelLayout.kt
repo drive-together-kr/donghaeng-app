@@ -31,7 +31,7 @@ enum class PanelCorner {
  * 플로팅 패널 크기·위치 규칙 (docs/05 §5.2) — 순수 함수(픽셀 입력)라 단위 테스트한다.
  *
  * - 내비 화면 폭: 가로 디스플레이면 폭의 2/3(Pleos 2창 실측 — 왼쪽 853/2560 px 가 차량 영역), 세로면 전체 폭.
- * - 패널 폭 ≤ 내비 화면 폭의 22%, 높이 ≤ 디스플레이 높이의 30%(차 4대 기준).
+ * - 패널 폭 ≤ 내비 화면 폭의 22%, 높이 ≤ 디스플레이 높이의 32%(차 4대 + 소식 2줄 기준 — 소식 문장을 자르지 않는다).
  * - 글자·여백 배율 = 패널 폭 / 기준 375 dp (Pleos 2560×1440, 1 dp = 1 px 에서 1.0). 높이 상한에 못 들면 그만큼 더 줄인다.
  * - 위치(모서리별 여백): 오른쪽 위는 실측 시안 그대로(오른쪽 110 dp — 오른쪽 끝 메뉴 손잡이 회피, 위 190 dp — 내비 2D 버튼 아래),
  *   오른쪽 아래는 음량·설정 버튼 열(오른쪽 ≈150 dp)을 피하고, 왼쪽은 내비 TBT(왼쪽 위 ≈600×340 dp)·ETA 카드(왼쪽 아래 ≈455×315 dp)를 피해 그 사이에 둔다.
@@ -39,10 +39,10 @@ enum class PanelCorner {
  */
 object PanelLayout {
     const val WIDTH_RATIO = 0.22f
-    const val HEIGHT_RATIO = 0.30f
+    const val HEIGHT_RATIO = 0.32f
     const val BASE_WIDTH_DP = 375f
-    /** 차 4대 + "외 N대" + 이벤트 줄 + [무전](76 dp, E037) 의 기준 높이(scale 1). Pleos 2560×1440 의 30%(432 px) 안이라 배율 1 그대로 */
-    const val BASE_HEIGHT_DP = 426f
+    /** 차 4대 + "외 N대" + 이벤트 2줄(+28 dp) + [무전](76 dp, E037) 의 기준 높이(scale 1). Pleos 2560×1440 의 32%(460 px) 안이라 배율 1 그대로 */
+    const val BASE_HEIGHT_DP = 454f
     const val MIN_SCALE = 0.6f
     const val MAX_SCALE = 1.2f
 

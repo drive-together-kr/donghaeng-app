@@ -205,7 +205,7 @@ fun FloatingPanel(
                     Text(stringResource(R.string.surface_panel_more, ui.moreCount), color = p.muted, fontSize = s.sp(FloatingPanelSpec.HEADER_SP), lineHeight = s.sp(26f), modifier = Modifier.padding(start = s.dp(22f)))
                 }
             }
-            // 최근 이벤트 1줄(10초 이내, 없으면 생략). 위험 이벤트의 음성이 늦으면 빨간 강조(+ 음성 시작 전까지 깜빡임) — EventHighlightPolicy
+            // 최근 이벤트(10초 이내, 없으면 생략) — 문장이 잘리지 않게 최대 2줄(PanelLayout.BASE_HEIGHT_DP 가 2줄을 포함한다). 위험 이벤트의 음성이 늦으면 빨간 강조(+ 음성 시작 전까지 깜빡임) — EventHighlightPolicy
             ui.event?.let { e ->
                 val c = p.tone(e.tone)
                 val hl = EventHighlightStyle.isOn(e.highlight)
@@ -216,7 +216,7 @@ fun FloatingPanel(
                 ) {
                     Icon(EventIcons.of(e.type, e.tone), contentDescription = null, tint = if (hl) Color.White else c, modifier = Modifier.size(s.dp(26f)))
                     Spacer(Modifier.width(s.dp(8f)))
-                    Text(e.text, color = if (hl) Color.White else p.text, fontSize = s.sp(FloatingPanelSpec.EVENT_SP), lineHeight = s.sp(28f), fontWeight = if (hl) FontWeight.Bold else FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(e.text, color = if (hl) Color.White else p.text, fontSize = s.sp(FloatingPanelSpec.EVENT_SP), lineHeight = s.sp(28f), fontWeight = if (hl) FontWeight.Bold else FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
             }
             PanelPttRow(ui.ptt, s, onPtt)
