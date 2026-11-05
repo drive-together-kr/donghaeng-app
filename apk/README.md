@@ -3,7 +3,7 @@
 | 파일 | 설치 대상 | 내용 |
 |---|---|---|
 | `DongHaeng_동행_release.apk` | 차 — Pleos Connect 에뮬레이터 v2.1.0(API 34) | 동행 차량 앱 1.0.0(pleos), 기본 서버 `https://3.24.206.147.sslip.io` · MQTT `ssl://…:8883`(막히면 `wss://…/mqtt` 자동 전환) |
-| `DongHaeng_동행_demo-host_release.apk` | 폰 — 휴대폰 AVD 또는 실기기(Android 9+) | 공식 앱의 '동행' 메뉴를 재현한 시연용 호스트 1.0.0 + companion SDK. 같은 클라우드 서버, dev 간편 로그인(설치마다 다른 시연 계정) |
+| `DongHaeng_동행_폰시연앱_release.apk` | 폰 — 휴대폰 AVD 또는 실기기(Android 9+) | 공식 앱의 '동행' 메뉴를 재현한 시연용 호스트 1.0.0 + companion SDK. 같은 클라우드 서버, dev 간편 로그인(설치마다 다른 시연 계정) |
 
 - 차량 앱은 QR·코드를 **보여 주기만** 한다. 스캔은 폰 앱이 하고, 폰에서 적용할 차를 고른다(차에는 카메라가 없다).
 - 설치·첫 실행: 루트 [README](../README.md) '실행 방법'. 플로팅 패널 권한: `adb shell appops set --user 10 app.donghaeng.car SYSTEM_ALERT_WINDOW allow`.

@@ -6,7 +6,7 @@
 | 제출물 | 위치 |
 |---|---|
 | 소스 코드 | 이 저장소 (`car-app/`·`companion/`·`server/`·`protocol/`·`infra/`) |
-| APK (release) | [`apk/DongHaeng_동행_release.apk`](apk/DongHaeng_동행_release.apk) — 차량 앱 · [`apk/DongHaeng_동행_demo-host_release.apk`](apk/DongHaeng_동행_demo-host_release.apk) — 폰 시연 앱(QR 합류용) |
+| APK (release) | [`apk/DongHaeng_동행_release.apk`](apk/DongHaeng_동행_release.apk) — 차량 앱 · [`apk/DongHaeng_동행_폰시연앱_release.apk`](apk/DongHaeng_동행_폰시연앱_release.apk) — 폰 시연 앱(QR 합류용) |
 | 시연 영상 | [`docs/video/DongHaeng_demo.mp4`](docs/video/DongHaeng_demo.mp4) (2분 42초, 실제 앱 화면 녹화) |
 
 ## 실행 방법
@@ -20,7 +20,7 @@
    adb shell appops set --user 10 app.donghaeng.car SYSTEM_ALERT_WINDOW allow
    ```
    권한이 없어도 동작한다(내비 위 패널 대신 알림 카드 + 음성).
-3. **폰(휴대폰 AVD 또는 실기기)** — `adb install apk/DongHaeng_동행_demo-host_release.apk` → 로그인(설치마다 다른 시연 계정이 미리 채워져 있다).
+3. **폰(휴대폰 AVD 또는 실기기)** — `adb install apk/DongHaeng_동행_폰시연앱_release.apk` → 로그인(설치마다 다른 시연 계정이 미리 채워져 있다).
    **카메라가 없을 때**(카메라 없는 PC 의 에뮬레이터 등) QR 을 읽는 방법 세 가지 — ① 스캔 화면 **[사진에서 QR 읽기]**: 차 화면 QR 을 찍은 사진·스크린샷을 고른다 ② **링크로 열기**: 차 화면의 주소(`…/j/inv_…`·`…/pair?c=…`)를 메신저로 받아 누르면 이 앱이 바로 열린다(Android App Links — 서버가 `/.well-known/assetlinks.json` 제공, 브라우저에서 열리면 [앱에서 열기]) ③ **코드·주소 직접 입력**: 차 화면의 코드 6자 또는 주소. 에뮬레이터에서 사진을 넣으려면 `adb push <QR 캡처>.png /sdcard/Pictures/` 뒤 `adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures/<파일>`, 링크는 `adb shell am start -a android.intent.action.VIEW -d "<차 화면 주소>"`.
 4. **차 등록** — 차 홈 [내 폰과 연결하기] → 차 화면에 QR·코드 → 폰 [QR 스캔](카메라가 없으면 '코드·주소 직접 입력'에 차 화면 코드 6자) → 차 이름 정하고 [등록] → 차 화면 '연결됨'.
 5. **같이 가기** — 차 홈 [같이 가기 시작] → 목적지 고르기 → 그룹 초대 QR → 함께 갈 다른 차의 운전자가 폰으로 스캔 → **합류시킬 차를 고르고** [함께 가기] → 그 차 화면에 그룹이 뜬다.
@@ -42,7 +42,7 @@
 - 음성: Pleos TTS 로 자동 동작(설정 없음 — 앱이 Android TTS → Pleos TTS SDK → 화면 표시 순으로 골라 진단 화면 '음성 안내' 카드에 표시, [예시 안내 듣기]로 확인). 더 좋은 음질을 원하면 [docs/09 §1.4](docs/09_테스트_데모계획.md) 의 오픈 소스 한국어 엔진(Supertonic 3)을 설치
 
 ## APK 파일 위치
-`apk/` 폴더 — 차량 앱 [`DongHaeng_동행_release.apk`](apk/DongHaeng_동행_release.apk)(Pleos 에뮬레이터용, 기본 서버 클라우드) + 폰 시연 앱 [`DongHaeng_동행_demo-host_release.apk`](apk/DongHaeng_동행_demo-host_release.apk)(공식 앱의 동행 메뉴 재현). 버전 1.0.0, 같은 키로 서명 — 자세한 내용 [apk/README.md](apk/README.md)
+`apk/` 폴더 — 차량 앱 [`DongHaeng_동행_release.apk`](apk/DongHaeng_동행_release.apk)(Pleos 에뮬레이터용, 기본 서버 클라우드) + 폰 시연 앱 [`DongHaeng_동행_폰시연앱_release.apk`](apk/DongHaeng_동행_폰시연앱_release.apk)(공식 앱의 동행 메뉴 재현). 버전 1.0.0, 같은 키로 서명 — 자세한 내용 [apk/README.md](apk/README.md)
 
 ## 문서
 | 문서 | 내용 |
