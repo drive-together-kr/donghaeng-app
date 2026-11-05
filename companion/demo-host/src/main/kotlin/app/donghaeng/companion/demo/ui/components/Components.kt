@@ -338,10 +338,10 @@ fun KiaButton(
     }
 }
 
-/** 포인트(라임) 버튼 — 동행 "함께 가기", "보내기" */
+/** 주 버튼 — 고속도로 표지 초록 바탕 + 흰 글자(차 화면 주 버튼과 같은 모양). 동행 "함께 가기", "보내기" */
 @Composable
 fun AccentButton(text: String, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) =
-    KiaButton(text, modifier, color = KiaColors.Accent, textColor = Color(0xFF0B1A08), enabled = enabled, onClick = onClick)
+    KiaButton(text, modifier, color = KiaColors.SignGreen, textColor = Color.White, enabled = enabled, onClick = onClick)
 
 /** 외곽선 작은 버튼("시작하기", "+ 등록") */
 @Composable

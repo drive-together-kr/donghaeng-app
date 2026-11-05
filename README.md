@@ -7,7 +7,7 @@
 |---|---|
 | 소스 코드 | 이 저장소 (`car-app/`·`companion/`·`server/`·`protocol/`·`infra/`) |
 | APK (release) | [`apk/DongHaeng_동행_release.apk`](apk/DongHaeng_동행_release.apk) — 차량 앱 · [`apk/DongHaeng_동행_demo-host_release.apk`](apk/DongHaeng_동행_demo-host_release.apk) — 폰 시연 앱(QR 합류용) |
-| 시연 영상 | [`docs/video/DongHaeng_demo.mp4`](docs/video/DongHaeng_demo.mp4) (2분 34초, 실제 앱 화면 녹화) |
+| 시연 영상 | [`docs/video/DongHaeng_demo.mp4`](docs/video/DongHaeng_demo.mp4) (2분 42초, 실제 앱 화면 녹화) |
 
 ## 실행 방법
 차량 앱은 **차 화면에 QR·코드를 보여 주기만** 하고, 스캔은 폰의 공식 앱(동행 메뉴 — 시연용 `demo-host`)이 한다. 폰에서 QR 을 스캔한 뒤 적용할 차를 고르면 그 차에 반영된다.
@@ -26,7 +26,7 @@
 5. **같이 가기** — 차 홈 [같이 가기 시작] → 목적지 고르기 → 그룹 초대 QR → 함께 갈 다른 차의 운전자가 폰으로 스캔 → **합류시킬 차를 고르고** [함께 가기] → 그 차 화면에 그룹이 뜬다.
 6. **주행** — 앞 화면은 순정 내비 그대로, 동행은 내비 위 작은 패널·음성으로 차 간격·도착 시각·급제동·저잔량·휴게소 도착·무전을 알린다. 정차 중에는 [그룹 보기]로 대시보드.
 
-시연 영상(2분 34초, 실제 앱 화면 녹화 — 그룹 만들기·폰 합류·주행 패널·차량 상태 공유·동승자 메시지·경로 따라가기·핸들 버튼 무전·도착 알림·급제동 경고·정차 대시보드): [docs/video/DongHaeng_demo.mp4](docs/video/DongHaeng_demo.mp4)
+시연 영상(2분 42초, 실제 앱 화면 녹화 — 그룹 만들기·폰 합류·주행 패널·차량 상태 공유·동승자 메시지·경로 따라가기·핸들 버튼 무전·도착 알림·급제동 경고·정차 대시보드): [docs/video/DongHaeng_demo.mp4](docs/video/DongHaeng_demo.mp4)
 
 폰이 없으면 차 홈의 **[예시 화면 둘러보기]** 로 정차 대시보드·내비 위 패널·급제동 강조·무전 화면을 예시 데이터로 볼 수 있다.
 두 대 시연(차 2대 + 서버, 장면 자동 실행)은 [docs/09](docs/09_테스트_데모계획.md) §4 와 `tools/demo/demo.py`.

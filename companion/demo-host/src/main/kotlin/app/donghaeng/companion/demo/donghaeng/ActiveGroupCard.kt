@@ -27,7 +27,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.donghaeng.companion.demo.R
 import app.donghaeng.companion.demo.ui.components.KiaButton
 import app.donghaeng.companion.demo.ui.components.KiaCard
+import app.donghaeng.companion.demo.ui.components.DestinationBanner
 import app.donghaeng.companion.demo.ui.components.KiaChip
+import app.donghaeng.companion.demo.ui.components.RoadCar
+import app.donghaeng.companion.demo.ui.components.RoadStrip
 import app.donghaeng.companion.demo.ui.components.KiaTag
 import app.donghaeng.companion.demo.ui.components.MsIcon
 import app.donghaeng.companion.demo.ui.theme.KiaColors
@@ -71,7 +74,14 @@ fun ActiveGroupCard(
             Text(group.name, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             KiaTag("${snapshot?.members?.size ?: group.members.size}대")
         }
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(12.dp))
+        // 목적지 사진 + 고속도로 표지, 그 아래 도로 띠(도착 예정이 짧을수록 앞) — 차 화면과 같은 디자인 언어
+        if (group.destinationName.isNotBlank()) {
+            DestinationBanner(group.destinationName, height = 112.dp)
+            Spacer(Modifier.height(6.dp))
+        }
+        RoadStrip(roadCars(snapshot, group))
+        Spacer(Modifier.height(10.dp))
 
         val members = snapshot?.members
         if (members == null) {
@@ -116,6 +126,32 @@ fun ActiveGroupCard(
         }
         Spacer(Modifier.height(12.dp))
         KiaButton("메시지 보내기", enabled = !connection.finished, onClick = onSendMessage)
+    }
+}
+
+/**
+ * 도로 띠에 놓을 차 — 남은 시간(ETA)이 짧을수록 앞(목적지 쪽). 남은 시간을 모르면 멤버 순서대로 고르게.
+ * 스냅샷이 없으면 합류 때 멤버 목록으로.
+ */
+internal fun roadCars(snapshot: GroupSnapshot?, group: ActiveGroup): List<RoadCar> {
+    val members = snapshot?.members
+    if (members == null) {
+        val n = group.members.size
+        return group.members.mapIndexed { i, m -> RoadCar(m.nickname, parseHexColor(m.color), m.vehicleId == group.myVehicleId, if (n <= 1) 0.5f else 0.15f + 0.7f * i / (n - 1)) }
+    }
+    val remains = members.mapNotNull { it.eta?.remainS }
+    val max = remains.maxOrNull()
+    val min = remains.minOrNull()
+    val n = members.size
+    return members.mapIndexed { i, m ->
+        val r = m.eta?.remainS
+        val pos = when {
+            r != null && max != null && min != null && max > min -> 0.12f + 0.76f * (max - r).toFloat() / (max - min).toFloat()
+            r != null -> 0.6f
+            n <= 1 -> 0.5f
+            else -> 0.15f + 0.7f * i / (n - 1)
+        }
+        RoadCar(m.nickname, parseHexColor(m.color), m.vehicleId == group.myVehicleId, pos)
     }
 }
 

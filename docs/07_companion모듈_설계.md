@@ -161,6 +161,12 @@ QR 문자열은 서버가 `{DH_PUBLIC_BASE_URL}` + 경로로 만든다(docs/03 �
 
 권한: `CAMERA`(런타임), `POST_NOTIFICATIONS`(API 33+, 알림 화면 진입 시 요청), `INTERNET`. 패키지 `app.donghaeng.companion.demo`. 실행 대상: `Medium_Phone` AVD 또는 실기기.
 
+### 6.3 디자인 언어 '밤 고속도로' 적용 (2026-11-05)
+차량 앱 개편(docs/05 §5.0)과 같은 색·모양을 폰 시연 앱에도 넣어 차 화면과 폰 화면이 한 제품으로 보이게 했다. 기아 앱 화면 구성(탭·카드·아이콘)은 그대로 두고 색과 동행 부분만 바꿨다.
+- 색(`KiaColors`): 아스팔트 바탕 `#10151B` · 노견 카드 `#18202A` · 서브카드 `#222B36` · 구분선 `#2D3845` · 포인트 = 밝은 표지 초록 `#6FD8A8`(예전 라임 `#8CC63F` 대체) · 주 버튼(`AccentButton` — "함께 가기"·"보내기"·"QR 스캔해서 합류하기") = 고속도로 표지 초록 `#0D7A50` 바탕 + 흰 글자 · 보조 글자 `#A6B1BE`(대비 개선).
+- 부품(`ui.components.DhRoad`): `RoadSign`(고속도로 표지 모양 목적지 판) · `DestinationBanner`(추천 목적지 사진 + 표지 — 차량 앱과 같은 WebP 5장, 로컬 이미지 모델로 새로 만든 그림) · `RoadStrip`(도로 띠 위 멤버 차 — 남은 시간이 짧을수록 앞, `roadCars`).
+- 적용: 그룹 합류 시트(초대 미리보기 맨 위 목적지 사진·표지), '동행 중' 카드(홈 B·동행 메인 C — 목적지 사진·표지 + 도로 띠 + 멤버 줄).
+
 ## 7. 호스트 앱 통합 절차 (공식 앱 팀 관점)
 1. `companion/sdk` AAR 의존성 추가(`protocol` 포함).
 2. 앱 시작 시 `DongHaeng.init(DongHaengConfig(base, provider, version)) { 공식 계정 access token }`.

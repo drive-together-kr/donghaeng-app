@@ -22,28 +22,35 @@ import app.donghaeng.companion.demo.R
  * 브랜드 자산(Kia Signature 폰트·로고·렌더 이미지)은 쓰지 않는다 — 폰트는 Pretendard(OFL), 아이콘은 Material Symbols Outlined.
  */
 object KiaColors {
-    /** 배경 — 아주 어두운 네이비 */
-    val Bg = Color(0xFF08131B)
+    // 2026-11-05 동행 디자인 언어 '밤 고속도로'(car-app docs/05 §5.0)와 같은 색 — 차 화면과 폰 화면이 한 제품으로 보이게
+    /** 배경 — 아스팔트 */
+    val Bg = Color(0xFF10151B)
 
-    /** 카드 */
-    val Card = Color(0xFF18222B)
+    /** 카드 — 노견 */
+    val Card = Color(0xFF18202A)
 
     /** 카드 안 서브카드 · 구분선 */
-    val SubCard = Color(0xFF2A343D)
-    val Divider = Color(0xFF2A343D)
+    val SubCard = Color(0xFF222B36)
+    val Divider = Color(0xFF2D3845)
 
-    /** 포인트 라임 그린 */
-    val Accent = Color(0xFF8CC63F)
+    /** 포인트 — 밝은 표지 초록(글자·아이콘·선택 테두리, 어두운 바탕 대비 ≥ 4.5:1). 예전 라임 #8CC63F 대체 */
+    val Accent = Color(0xFF6FD8A8)
 
     /** 포인트 색의 어두운 배경(태그·지점 칩) */
-    val AccentDim = Color(0xFF1B3A25)
+    val AccentDim = Color(0xFF0F3B2A)
+
+    /** 고속도로 표지 초록 — 주 버튼·목적지 표지 바탕(흰 글자) */
+    val SignGreen = Color(0xFF0D7A50)
+
+    /** 도로 중앙선 호박색 — 도로 띠 점선·강조 */
+    val CenterAmber = Color(0xFFF4B63C)
 
     /** 진행 바 녹색(빌트인 캠 녹화 바) */
     val ProgressGreen = Color(0xFF1FB36B)
 
     val TextPrimary = Color(0xFFFFFFFF)
-    val TextSecondary = Color(0xFF8A949C)
-    val TextTertiary = Color(0xFF5E6871)
+    val TextSecondary = Color(0xFFA6B1BE)
+    val TextTertiary = Color(0xFF7A8592)
 
     /** 알림 빨간 점 */
     val Dot = Color(0xFFE5484D)
@@ -113,9 +120,9 @@ object KiaDimens {
 
 private val KiaColorScheme: ColorScheme = darkColorScheme(
     primary = KiaColors.Accent,
-    onPrimary = Color(0xFF0B1A08),
+    onPrimary = Color(0xFF00301C),
     secondary = KiaColors.Accent,
-    onSecondary = Color(0xFF0B1A08),
+    onSecondary = Color(0xFF00301C),
     background = KiaColors.Bg,
     onBackground = KiaColors.TextPrimary,
     surface = KiaColors.Bg,

@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.donghaeng.companion.demo.R
 import app.donghaeng.companion.demo.ui.components.AccentButton
+import app.donghaeng.companion.demo.ui.components.DestinationBanner
 import app.donghaeng.companion.demo.ui.components.KiaChip
 import app.donghaeng.companion.demo.ui.components.KiaTag
 import app.donghaeng.companion.demo.ui.components.MsIcon
@@ -119,10 +120,12 @@ fun JoinGroupSheet(
                     }
                     preview != null -> {
                         val p = preview!!
+                        // 목적지는 사진 + 고속도로 표지로(차 화면과 같은 모양) — 사진이 없는 목적지면 표지만
+                        DestinationBanner(p.destinationName, height = 120.dp)
+                        Spacer(Modifier.height(12.dp))
                         Text(p.name, style = MaterialTheme.typography.titleLarge)
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(8.dp))
                         InfoRow(R.drawable.ms_flag, "방장", p.leaderNickname)
-                        InfoRow(R.drawable.ms_location_on, "목적지", p.destinationName)
                         InfoRow(R.drawable.ms_group, "인원", "${p.memberCount}대 함께 가는 중 · 최대 ${p.maxMembers}대")
                     }
                     else -> {
