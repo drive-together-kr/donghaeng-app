@@ -5,6 +5,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -34,7 +36,11 @@ object DhRoutes {
     const val TOUR = "tour"                  // 예시 화면 둘러보기(폰 없이 보는 예시 데이터, 2-1)
 
     /** 권한 요청(위치·마이크·알림)을 미루는 화면 — 초대 QR 이 시스템 권한 창에 가리지 않게 */
-    fun defersPermissionAsk(route: String?): Boolean = route == CREATE_GROUP || route == TOUR || route?.startsWith(DESIGN) == true
+    /** 그룹 만들기 + 미리 고른 추천 목적지(홈 사진 줄에서 탭) — `create_group?preset=경포해변` */
+    const val CREATE_GROUP_PATTERN = "$CREATE_GROUP?preset={preset}"
+    fun createGroupWithPreset(name: String): String = "$CREATE_GROUP?preset=" + android.net.Uri.encode(name)
+
+    fun defersPermissionAsk(route: String?): Boolean = route == CREATE_GROUP || route == CREATE_GROUP_PATTERN || route == TOUR || route?.startsWith(DESIGN) == true
 }
 
 @Composable
@@ -59,6 +65,7 @@ fun DhNavHost(
             HomeRoute(
                 onPairPhone = { navController.navigate(DhRoutes.PAIRING) },
                 onStartGroup = { navController.navigate(DhRoutes.CREATE_GROUP) },
+                onPickDestination = { name -> navController.navigate(DhRoutes.createGroupWithPreset(name)) },
                 onOpenGroup = { navController.navigate(DhRoutes.GROUP_DRIVE) },
                 onOpenSettings = { navController.navigate(DhRoutes.SETTINGS) },
                 onOpenDiagnostics = { navController.navigate(DhRoutes.DIAGNOSTICS) },
@@ -75,8 +82,12 @@ fun DhNavHost(
                 onOpenTour = { navController.navigate(DhRoutes.TOUR) { launchSingleTop = true } },
             )
         }
-        composable(DhRoutes.CREATE_GROUP) {
+        composable(
+            DhRoutes.CREATE_GROUP_PATTERN,
+            arguments = listOf(navArgument("preset") { type = NavType.StringType; nullable = true; defaultValue = null }),
+        ) { entry ->
             CreateGroupRoute(
+                presetName = entry.arguments?.getString("preset"),
                 onBack = { navController.popBackStack() },
                 onOpenDrive = { navController.navigate(DhRoutes.GROUP_DRIVE) { popUpTo(DhRoutes.HOME) } },
             )

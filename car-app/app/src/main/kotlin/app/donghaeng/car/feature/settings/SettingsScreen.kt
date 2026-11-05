@@ -203,11 +203,14 @@ fun SettingsScreen(
                 }
                 Spacer(Modifier.height(4.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Button(
+                    // 되돌리기 어려운 동작 — 초록 주 버튼이 아니라 빨간 테두리(확인 창 뒤)
+                    OutlinedButton(
                         onClick = { confirm = CONFIRM_DISCONNECT },
                         enabled = tokens is TokenStoreState.Present && !state.isDriving,
+                        shape = MaterialTheme.shapes.medium,
+                        border = androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.7f)),
                         modifier = Modifier.heightIn(min = 76.dp),
-                    ) { Text(stringResource(R.string.settings_btn_disconnect)) }
+                    ) { Text(stringResource(R.string.settings_btn_disconnect), color = MaterialTheme.colorScheme.error) }
                     if (tokens is TokenStoreState.Unavailable) {
                         OutlinedButton(
                             onClick = { confirm = CONFIRM_RESET },

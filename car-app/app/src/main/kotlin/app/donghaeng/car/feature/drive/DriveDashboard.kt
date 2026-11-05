@@ -51,6 +51,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -71,6 +72,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.donghaeng.car.R
 import app.donghaeng.car.domain.ptt.PttFormat
+import app.donghaeng.car.ui.components.RoadColors
 
 /*
  * 주행 대시보드 (재설계안 2차 — docs/05 §5.1, 사용자 지침 2026-10-28)
@@ -103,10 +105,13 @@ object DriveTone {
     val dark = ToneColors(danger, caution, info)
     val light = ToneColors(danger = Color(0xFFC62828), caution = Color(0xFFB45309), info = Color(0xFF15803D))
 
-    /** [무전] 버튼 — 다크 배경에서 검정 글자와 대비 ≥ 4.5:1 (라임). 흰 바탕에선 경계가 안 보여 주간엔 진한 테두리를 함께 그린다 */
-    val ptt = Color(0xFFC6FF3D)
-    val onPtt = Color(0xFF101400)
-    val pttBorderLight = Color(0xFF4D6B00)
+    /**
+     * [무전] 버튼 — 도로 중앙선 호박색('밤 고속도로' 디자인, docs/05 §5.0. 예전 라임 #C6FF3D 대체). 진한 글자와 대비 ≥ 4.5:1.
+     * 흰 바탕(주간 패널)에선 경계가 약해 진한 호박 테두리를 함께 그린다
+     */
+    val ptt = Color(0xFFF4B63C)
+    val onPtt = Color(0xFF241800)
+    val pttBorderLight = Color(0xFF8A5A00)
 
     /** 지금 화면 바탕(밝기)에 맞는 톤 색 */
     @Composable
@@ -131,6 +136,11 @@ object DriveTone {
         Tone.INFO -> Icons.Filled.CheckCircle
         Tone.NEUTRAL -> Icons.Filled.Info
     }
+}
+
+/** 대열 막대를 도로 띠로 그릴지 — 어두운 바탕(앱 기본)일 때만. 주간(밝은) 바탕 시안은 예전 회색 선 */
+private object DriveRoad {
+    fun enabled(track: Color): Boolean = track.luminance() < 0.3f
 }
 
 private val FORMATION_HEIGHT = 236.dp
@@ -312,7 +322,7 @@ fun FormationBar(ui: FormationBarUi, groupName: String, modifier: Modifier = Mod
     val gapWarnStyleOf = { sp: Int -> TextStyle(fontSize = sp.sp, color = tones.caution, fontWeight = FontWeight.SemiBold) }
     val stopStyle = TextStyle(fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
     val destStyle = TextStyle(fontSize = 20.sp, color = muted)
-    Surface(modifier, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+    Surface(modifier, shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface, border = cardBorder()) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(groupName, fontSize = 26.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -329,7 +339,22 @@ fun FormationBar(ui: FormationBarUi, groupName: String, modifier: Modifier = Mod
                 val span = (endKm - minKm).coerceAtLeast(0.1f)
                 fun xOf(km: Float) = x0 + (x1 - x0) * ((km - minKm) / span).coerceIn(0f, 1f)
 
-                drawLine(track, Offset(size.width * 0.02f, y), Offset(size.width * 0.98f, y), strokeWidth = 10.dp.toPx(), cap = StrokeCap.Round)
+                // 도로 띠(서명 요소, ui/components/RoadStrip 과 같은 모양): 노면 + 흰 가장자리선 + 호박색 중앙 점선. 주간 바탕이면 예전처럼 회색 선
+                if (DriveRoad.enabled(track)) {
+                    val bandH = 46.dp.toPx()
+                    val left = size.width * 0.02f
+                    val right = size.width * 0.98f
+                    drawRoundRect(RoadColors.surface, Offset(left, y - bandH / 2f), Size(right - left, bandH), CornerRadius(bandH / 2f, bandH / 2f))
+                    val inset = 7.dp.toPx()
+                    drawLine(RoadColors.edge.copy(alpha = 0.5f), Offset(left + bandH / 2f, y - bandH / 2f + inset), Offset(right - bandH / 2f, y - bandH / 2f + inset), 2.dp.toPx(), StrokeCap.Round)
+                    drawLine(RoadColors.edge.copy(alpha = 0.5f), Offset(left + bandH / 2f, y + bandH / 2f - inset), Offset(right - bandH / 2f, y + bandH / 2f - inset), 2.dp.toPx(), StrokeCap.Round)
+                    drawLine(
+                        RoadColors.centerLine.copy(alpha = 0.85f), Offset(left + bandH / 2f, y), Offset(right - bandH / 2f, y), 4.dp.toPx(), StrokeCap.Round,
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(26.dp.toPx(), 20.dp.toPx())),
+                    )
+                } else {
+                    drawLine(track, Offset(size.width * 0.02f, y), Offset(size.width * 0.98f, y), strokeWidth = 10.dp.toPx(), cap = StrokeCap.Round)
+                }
                 sorted.zipWithNext().forEach { (rear, ahead) ->
                     if (rear.gapWarn) drawLine(tones.caution, Offset(xOf(rear.offsetKm), y), Offset(xOf(ahead.offsetKm), y), strokeWidth = 10.dp.toPx(), cap = StrokeCap.Round)
                 }
@@ -448,7 +473,7 @@ fun FormationLadder(ui: FormationBarUi, groupName: String, modifier: Modifier = 
     val gapWarnStyle = TextStyle(fontSize = 22.sp, color = tones.caution, fontWeight = FontWeight.SemiBold)
     val stopStyle = TextStyle(fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
     val destStyle = TextStyle(fontSize = 20.sp, color = muted)
-    Surface(modifier, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+    Surface(modifier, shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface, border = cardBorder()) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(groupName, fontSize = 26.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -499,7 +524,7 @@ fun FormationLadder(ui: FormationBarUi, groupName: String, modifier: Modifier = 
 
 @Composable
 private fun CardBox(modifier: Modifier, fill: Boolean, content: @Composable () -> Unit) {
-    Surface(modifier, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+    Surface(modifier, shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface, border = cardBorder()) {
         Column(
             Modifier.padding(horizontal = 20.dp, vertical = 12.dp).then(if (fill) Modifier.fillMaxHeight() else Modifier),
             verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically),
@@ -626,7 +651,7 @@ fun RestRow(ui: MyDriveLineUi, modifier: Modifier = Modifier, big: Boolean = fal
     val sp = if (big) 30.sp else 24.sp
     val tones = DriveTone.tones()
     val warnColor = if (ui.drivingTimeWarn) tones.caution else MaterialTheme.colorScheme.onSurface
-    Surface(modifier, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+    Surface(modifier, shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface, border = cardBorder()) {
         Row(Modifier.padding(horizontal = 20.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             if (ui.drivingTimeWarn) { Icon(Icons.Filled.Warning, contentDescription = null, tint = tones.caution, modifier = Modifier.size(30.dp)); Spacer(Modifier.width(10.dp)) }
             Text(ui.drivingTimeText, fontSize = sp, fontWeight = FontWeight.SemiBold, color = warnColor)
@@ -647,7 +672,7 @@ fun RestRow(ui: MyDriveLineUi, modifier: Modifier = Modifier, big: Boolean = fal
 fun MyDriveLine(ui: MyDriveLineUi, modifier: Modifier = Modifier, compact: Boolean = false, big: Boolean = false) {
     val signSize = if (big) 76.dp else 64.dp
     val tones = DriveTone.tones()
-    Surface(modifier, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+    Surface(modifier, shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface, border = cardBorder()) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                 ui.speedLimitKph?.let { limit ->
@@ -983,14 +1008,14 @@ fun ParkedExtras(
 ) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         // 빠른 메시지(F8) — 프리셋이 없으면(미구현) 블록째 숨긴다
-        if (ui.presets.isNotEmpty()) Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+        if (ui.presets.isNotEmpty()) Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface, border = cardBorder()) {
             Row(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(stringResource(R.string.dash_presets), fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 ui.presets.forEach { p -> OutlinedButton(onClick = { onPreset(p) }, modifier = Modifier.height(76.dp), shape = RoundedCornerShape(16.dp)) { Text(p, fontSize = 20.sp) } }
             }
         }
         val lists: @Composable (Modifier) -> Unit = { m ->
-            Surface(m, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+            Surface(m, shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface, border = cardBorder()) {
                 Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(stringResource(R.string.dash_recent_events), fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
@@ -1031,7 +1056,7 @@ fun ParkedExtras(
 /** '보내지 않은 무전 N개' — 줄마다 길이·시각·사유 + [다시 보내기]·[지우기] */
 @Composable
 private fun UnsentPttBlock(rows: List<UnsentPttUi>, onResend: (String) -> Unit, onDelete: (String) -> Unit) {
-    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface, border = cardBorder()) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(stringResource(R.string.dash_unsent_ptt, rows.size), fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             rows.forEach { u ->
@@ -1059,7 +1084,7 @@ private fun UnsentPttBlock(rows: List<UnsentPttUi>, onResend: (String) -> Unit, 
 /** '지난 무전' — 줄 전체가 탭 영역(다시 듣기). 보낸 차 색 점 + "아빠 차 무전 0:07" + 상태 꼬리표 + "3분 전" */
 @Composable
 private fun PastPttBlock(rows: List<PastPttUi>, onReplay: (String) -> Unit) {
-    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface, border = cardBorder()) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(stringResource(R.string.dash_past_ptt), fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1085,3 +1110,8 @@ private fun PastPttBlock(rows: List<PastPttUi>, onReplay: (String) -> Unit) {
         }
     }
 }
+
+/** 카드 가장자리선(노견 경계, '밤 고속도로' 디자인) — 주간(밝은) 바탕 시안에선 없음 */
+@Composable
+private fun cardBorder(): BorderStroke? =
+    if (DriveTone.isLightBackground()) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)

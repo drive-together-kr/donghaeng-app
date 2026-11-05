@@ -37,6 +37,17 @@
     <string name="home_howto_2_body">목적지를 고르면 초대 QR이 떠요. 함께 갈 차의 운전자가 폰으로 스캔하면 그 차가 그룹에 들어와요.</string>
     <string name="home_howto_3_title">3. 출발</string>
     <string name="home_howto_3_body">앞 화면은 순정 내비 그대로예요. 동행은 내비 위 작은 패널과 음성으로 차 간격·도착 시각·급제동을 알려 줘요.</string>
+    <!-- 홈 '밤 고속도로' 디자인(2026-11-05): 도로 띠·상태별 큰 제목 -->
+    <string name="home_road_my_car">내 차</string>
+    <string name="home_road_no_destination">목적지 미정</string>
+    <string name="home_hero_pair_title">폰과 연결하면 시작해요</string>
+    <string name="home_hero_start_title">어디로 같이 갈까요?</string>
+    <string name="home_hero_start_body">목적지를 고르면 초대 QR이 떠요. 함께 갈 차의 운전자가 폰으로 스캔하면 바로 합류해요.</string>
+    <string name="home_hero_group_body">%1$s까지 함께 가는 중이에요. 출발하면 내비 위 작은 패널과 음성으로 알려 줘요.</string>
+    <string name="home_hero_group_body_leader">%1$s까지 이 차가 앞장서요. 출발하면 내비 위 작은 패널과 음성으로 알려 줘요.</string>
+    <string name="home_places_title">같이 가기 좋은 곳</string>
+    <string name="home_places_hint">누르면 그 목적지로 그룹을 만들어요.</string>
+    <string name="home_places_hint_pair">폰과 연결하면 여기서 바로 목적지를 골라 출발할 수 있어요.</string>
     <string name="home_btn_tour">예시 화면 둘러보기</string>
     <string name="home_tour_hint">폰이 없어도 그룹 주행 화면을 예시 데이터로 볼 수 있어요.</string>
 
@@ -221,6 +232,8 @@
     <string name="group_destination_from_navi">내비게이션의 현재 목적지</string>
     <string name="group_destination_preset">추천 목적지</string>
     <string name="group_btn_load_navi">내비에서 불러오기</string>
+    <string name="group_where_title">어디로 갈까요?</string>
+    <string name="group_max_members_n">%1$d대</string>
     <string name="group_presets">또는 추천 목적지에서 고르기</string>
     <string name="group_name">그룹 이름</string>
     <string name="group_max_members">최대 인원</string>

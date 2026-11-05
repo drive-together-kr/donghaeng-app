@@ -1,5 +1,18 @@
 package app.donghaeng.car.feature.pairing
 
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.graphics.Color
+import app.donghaeng.car.ui.components.DhIcons
+import app.donghaeng.car.ui.components.DhPrimaryButton
+import app.donghaeng.car.ui.components.DhSecondaryButton
+import app.donghaeng.car.ui.theme.DhPalette
+import app.donghaeng.car.ui.theme.TABULAR_NUMS
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -94,20 +107,22 @@ fun PairingScreen(
     onPrimaryConnected: () -> Unit = onBack,
     onOpenTour: () -> Unit = {},
 ) {
-    Scaffold { innerPadding ->
+    Scaffold(containerColor = MaterialTheme.colorScheme.background) { innerPadding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 32.dp, vertical = 20.dp),
+                .padding(horizontal = 48.dp, vertical = 24.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = onBack, modifier = Modifier.heightIn(min = 56.dp)) {
-                    Text(stringResource(R.string.pairing_back))
+                OutlinedButton(onClick = onBack, modifier = Modifier.heightIn(min = 76.dp), shape = MaterialTheme.shapes.medium) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, modifier = Modifier.size(26.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.pairing_back), color = MaterialTheme.colorScheme.onSurface)
                 }
-                Spacer(Modifier.width(20.dp))
-                Text(stringResource(R.string.pairing_title), style = MaterialTheme.typography.headlineMedium)
+                Spacer(Modifier.width(24.dp))
+                Text(stringResource(R.string.pairing_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             }
             Spacer(Modifier.height(20.dp))
             when (state) {
@@ -120,10 +135,19 @@ fun PairingScreen(
             // 폰(공식 앱)이 없으면 여기서 막힌다 — 예시 데이터로 그룹 주행 화면을 둘러본다(2-1). 연결됨 화면에서는 필요 없다
             if (state !is PairingState.Connected) {
                 Spacer(Modifier.height(28.dp))
-                OutlinedButton(onClick = onOpenTour, enabled = !isDriving, modifier = Modifier.heightIn(min = 76.dp)) { Text(stringResource(R.string.home_btn_tour)) }
+                DhSecondaryButton(stringResource(R.string.home_btn_tour), onOpenTour, enabled = !isDriving, icon = DhIcons.navigation)
+                Spacer(Modifier.height(8.dp))
                 Text(stringResource(R.string.home_tour_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+    }
+}
+
+/** QR 은 흰 판 위에 — 어두운 화면에서도 카메라가 바로 읽게 넉넉한 흰 여백 */
+@Composable
+private fun QrTile(content: String, size: androidx.compose.ui.unit.Dp) {
+    Surface(color = Color.White, shape = RoundedCornerShape(24.dp)) {
+        QrCodeImage(content = content, modifier = Modifier.padding(18.dp).size(size))
     }
 }
 
@@ -153,13 +177,13 @@ private fun CodeIssuedSection(state: PairingState.CodeIssued) {
         val wide = maxWidth >= 840.dp
         val qrSize = if (wide) 420.dp else 320.dp
         if (wide) {
-            Row(horizontalArrangement = Arrangement.spacedBy(40.dp), verticalAlignment = Alignment.CenterVertically) {
-                QrCodeImage(content = state.verifyUri, modifier = Modifier.size(qrSize))
+            Row(horizontalArrangement = Arrangement.spacedBy(48.dp), verticalAlignment = Alignment.CenterVertically) {
+                QrTile(state.verifyUri, qrSize)
                 Column(modifier = Modifier.weight(1f)) { CodeDetails(state, remaining) }
             }
         } else {
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                QrCodeImage(content = state.verifyUri, modifier = Modifier.size(qrSize))
+                QrTile(state.verifyUri, qrSize)
                 Spacer(Modifier.height(24.dp))
                 CodeDetails(state, remaining)
             }
@@ -175,14 +199,18 @@ private fun CodeDetails(state: PairingState.CodeIssued, remaining: String) {
     )
     Spacer(Modifier.height(16.dp))
     Text(stringResource(R.string.pairing_or_code), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    Text(
-        PairingFormat.formatUserCode(state.userCode),
-        fontSize = 72.sp,
-        fontWeight = FontWeight.Bold,
-        fontFamily = FontFamily.Monospace,
-        letterSpacing = 6.sp,
-        color = MaterialTheme.colorScheme.primary,
-    )
+    // 코드 판 — 표지 초록 바탕의 큰 글자(폰 '코드·주소 직접 입력'에 그대로 옮겨 적는다). 고정폭 숫자로 글자 폭이 흔들리지 않게
+    Surface(color = DhPalette.signGreen, shape = MaterialTheme.shapes.medium, modifier = Modifier.padding(vertical = 8.dp)) {
+        Text(
+            PairingFormat.formatUserCode(state.userCode),
+            fontSize = 76.sp,
+            fontWeight = FontWeight.ExtraBold,
+            style = LocalTextStyle.current.copy(fontFeatureSettings = TABULAR_NUMS),
+            letterSpacing = 8.sp,
+            color = Color.White,
+            modifier = Modifier.padding(horizontal = 28.dp, vertical = 6.dp),
+        )
+    }
     // QR 내용(서버 verifyUri) — 카메라 없는 폰에서 '코드·주소 직접 입력'에 넣을 수 있게 작은 글자로(D039, 그룹 초대 화면의 초대 주소와 같은 방식)
     Text(stringResource(R.string.pairing_verify_uri, state.verifyUri), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     Spacer(Modifier.height(12.dp))
@@ -225,10 +253,14 @@ private fun ConnectedSection(state: PairingState.Connected, onPrimary: () -> Uni
     Spacer(Modifier.height(24.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         // 다음 할 일이 주 버튼 — 그룹 보기는 주행 중에도, 같이 가기 시작은 정차 중에만(규칙 6)
-        Button(onClick = onPrimary, enabled = primaryIsGroup || !isDriving, modifier = Modifier.heightIn(min = 76.dp)) {
-            Text(stringResource(if (primaryIsGroup) R.string.home_btn_open_group else R.string.home_btn_start_group))
-        }
-        OutlinedButton(onClick = { confirmRepair = true }, enabled = !isDriving, modifier = Modifier.heightIn(min = 76.dp)) { Text(stringResource(R.string.pairing_btn_repair)) }
+        DhPrimaryButton(
+            stringResource(if (primaryIsGroup) R.string.home_btn_open_group else R.string.home_btn_start_group),
+            onPrimary,
+            Modifier.widthIn(min = 420.dp),
+            enabled = primaryIsGroup || !isDriving,
+            icon = if (primaryIsGroup) DhIcons.group else DhIcons.arrowUp,
+        )
+        DhSecondaryButton(stringResource(R.string.pairing_btn_repair), { confirmRepair = true }, enabled = !isDriving)
     }
     if (isDriving) {
         Spacer(Modifier.height(8.dp))

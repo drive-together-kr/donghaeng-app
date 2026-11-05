@@ -149,8 +149,8 @@ private data class PanelPalette(
 
 /** 야간(기본) — 흰 지도·어두운 지도 어디서나 읽히는 짙은 반투명 */
 private val DarkPalette = PanelPalette(
-    bg = Color(0xE6161A20), text = Color(0xFFF2F4F8), muted = Color(0xFFB4BAC6),
-    danger = DriveTone.danger, caution = DriveTone.caution, info = DriveTone.info, eventAlpha = 0.22f, border = null,
+    bg = Color(0xEB18202A), text = Color(0xFFF2F4F8), muted = Color(0xFFB4BAC6),
+    danger = DriveTone.danger, caution = DriveTone.caution, info = DriveTone.info, eventAlpha = 0.22f, border = Color(0xFF2D3845),
 )
 
 /** 주간 — 밝은 반투명 바탕 + 짙은 글씨(톤 색은 흰 바탕 대비 4.5:1 이상으로 진하게 — 정차 대시보드 주간 톤과 같은 값 [DriveTone.light]) */
