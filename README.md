@@ -1,6 +1,13 @@
 # 동행 (DongHaeng)
 
-> 전화 없이, 한 대처럼. — 여러 대의 현대·기아·제네시스 차량을 하나의 그룹으로 묶어 위치·도착 예정·차량 상태·경로를 실시간으로 공유하고 음성으로 알려 주는 차량 앱
+## 앱 이름 및 한 줄 소개
+**동행(DongHaeng)** — 전화 없이, 한 대처럼. 여러 대의 현대·기아·제네시스 차량을 하나의 그룹으로 묶어 위치·도착 예정·차량 상태·경로를 실시간으로 공유하고 운전자에게 음성으로 알려 주는 차량 앱
+
+| 제출물 | 위치 |
+|---|---|
+| 소스 코드 | 이 저장소 (`car-app/`·`companion/`·`server/`·`protocol/`·`infra/`) |
+| APK (release) | [`apk/DongHaeng_동행_release.apk`](apk/DongHaeng_동행_release.apk) — 차량 앱 · [`apk/DongHaeng_동행_demo-host_release.apk`](apk/DongHaeng_동행_demo-host_release.apk) — 폰 시연 앱(QR 합류용) |
+| 시연 영상 | [`docs/video/DongHaeng_demo.mp4`](docs/video/DongHaeng_demo.mp4) (2분 30초, 실제 앱 화면 녹화) |
 
 ## 실행 방법
 차량 앱은 **차 화면에 QR·코드를 보여 주기만** 하고, 스캔은 폰의 공식 앱(동행 메뉴 — 시연용 `demo-host`)이 한다. 폰에서 QR 을 스캔한 뒤 적용할 차를 고르면 그 차에 반영된다.
@@ -19,14 +26,14 @@
 5. **같이 가기** — 차 홈 [같이 가기 시작] → 목적지 고르기 → 그룹 초대 QR → 함께 갈 다른 차의 운전자가 폰으로 스캔 → **합류시킬 차를 고르고** [함께 가기] → 그 차 화면에 그룹이 뜬다.
 6. **주행** — 앞 화면은 순정 내비 그대로, 동행은 내비 위 작은 패널·음성으로 차 간격·도착 시각·급제동·저잔량·휴게소 도착·무전을 알린다. 정차 중에는 [그룹 보기]로 대시보드.
 
-시연 영상(2분 23초): [docs/video/DongHaeng_demo.mp4](docs/video/DongHaeng_demo.mp4)
+시연 영상(2분 30초, 실제 앱 화면 녹화 — 그룹 만들기·폰 합류·주행 패널·차량 상태 공유·동승자 메시지·경로 따라가기·핸들 버튼 무전·도착 알림·급제동 경고·정차 대시보드): [docs/video/DongHaeng_demo.mp4](docs/video/DongHaeng_demo.mp4)
 
 폰이 없으면 차 홈의 **[예시 화면 둘러보기]** 로 정차 대시보드·내비 위 패널·급제동 강조·무전 화면을 예시 데이터로 볼 수 있다.
 두 대 시연(차 2대 + 서버, 장면 자동 실행)은 [docs/09](docs/09_테스트_데모계획.md) §4 와 `tools/demo/demo.py`.
 
 **직접 빌드**(JDK 17, Android SDK): `cd car-app && ./gradlew :app:assemblePleosRelease -PdhCloudHost=<서버 호스트>`, `cd companion && ./gradlew :demo-host:assembleRelease -PdhCloudHost=<서버 호스트> -PdhDevLoginKey=<키>`. 서명 정보 파일 경로는 `-PdhReleaseSigning=<경로>`(없으면 서명 안 된 APK). 서버는 `cd server && ./gradlew test bootRun`(JDK 21), 클라우드 배포는 [infra/cloud/README.md](infra/cloud/README.md).
 
-## 테스트 환경 · 설정
+## 테스트 환경 및 필요한 설정
 - 차량: Android Studio, Pleos Connect Emulator v2.1.0 (API 34), minSdk 28
 - 폰(demo-host): 휴대폰 AVD(예: Android Studio 기본 Medium Phone, API 35) 또는 실기기(Android 9+, 카메라) — 카메라로 찍을 수 없으면 스캔 화면의 '코드·주소 직접 입력'(차 화면에 보이는 6자리 코드(예: `KQ7-4MZ` — 차마다·매번 새로 만들어진다)만 넣어도 된다, 초대는 URL·`inv_…`)으로 대신. 로그인 기본 이메일은 설치마다 다른 `judge-<8hex>@dev.local`
 - 서버: Docker Compose (PostgreSQL 16, Redis 7, EMQX 5, Spring Boot 3.3)
@@ -34,7 +41,7 @@
   - 로컬: `infra/` 에서 `docker compose up -d` → 에뮬레이터는 `http://10.0.2.2:8080`(설정 제목 5번 탭 → '서버 주소' 로 바꿀 수 있다)
 - 음성: Pleos TTS 로 자동 동작(설정 없음 — 앱이 Android TTS → Pleos TTS SDK → 화면 표시 순으로 골라 진단 화면 '음성 안내' 카드에 표시, [예시 안내 듣기]로 확인). 더 좋은 음질을 원하면 [docs/09 §1.4](docs/09_테스트_데모계획.md) 의 오픈 소스 한국어 엔진(Supertonic 3)을 설치
 
-## APK
+## APK 파일 위치
 `apk/` 폴더 — 차량 앱 [`DongHaeng_동행_release.apk`](apk/DongHaeng_동행_release.apk)(Pleos 에뮬레이터용, 기본 서버 클라우드) + 폰 시연 앱 [`DongHaeng_동행_demo-host_release.apk`](apk/DongHaeng_동행_demo-host_release.apk)(공식 앱의 동행 메뉴 재현). 버전 1.0.0, 같은 키로 서명 — 자세한 내용 [apk/README.md](apk/README.md)
 
 ## 문서

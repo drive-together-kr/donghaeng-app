@@ -8,6 +8,6 @@
 - 차량 앱은 QR·코드를 **보여 주기만** 한다. 스캔은 폰 앱이 하고, 폰에서 적용할 차를 고른다(차에는 카메라가 없다).
 - 설치·첫 실행: 루트 [README](../README.md) '실행 방법'. 플로팅 패널 권한: `adb shell appops set --user 10 app.donghaeng.car SYSTEM_ALERT_WINDOW allow`.
 - 서명: 두 APK 모두 같은 릴리스 키(인증서 DN `CN=DongHaeng, O=DongHaeng, C=KR`). 키(`*.jks`)와 서명 정보 파일은 저장소 밖에만 있고 커밋하지 않는다.
-- 축소·난독화는 하지 않았다(Pleos SDK·Hilt·kotlinx.serialization 리플렉션 — 기기 검증 범위 밖의 위험). 차량 APK 약 71 MB, demo-host 약 53 MB.
+- 축소·난독화는 하지 않았다(Pleos SDK·Hilt·kotlinx.serialization 리플렉션 — 기기 검증 범위 밖의 위험). 차량 APK 약 72 MB(2026-11-05 다시 빌드 — 화면 비율 대응 포함), demo-host 약 53 MB.
 - 다시 만들기: `car-app` → `./gradlew :app:assemblePleosRelease -PdhCloudHost=3.24.206.147.sslip.io -PdhReleaseSigning=<서명 정보 파일>`,
   `companion` → `./gradlew :demo-host:assembleRelease -PdhCloudHost=3.24.206.147.sslip.io -PdhDevLoginKey=<클라우드 dev 로그인 키> -PdhReleaseSigning=<서명 정보 파일>`.
