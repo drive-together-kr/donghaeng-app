@@ -260,6 +260,26 @@ class CreateGroupViewModelTest {
     }
 
     @Test
+    fun `navi destination - auto load keeps a picked preset, a nameless navi place gets a name`() {
+        val base = CreateGroupState.Form(name = "같이 가기", destination = null, fromNavi = false, maxMembers = 10, notPaired = false, loadingNavi = true)
+        val navi = Place(37.0, 127.0, "", address = null)
+        // 홈 사진 줄에서 고른 목적지는 화면이 열릴 때의 자동 읽기가 덮지 않는다
+        val picked = base.copy(destination = DESTINATION_PRESETS[0])
+        val kept = mergeNaviDestination(picked, navi, auto = true)
+        assertEquals(DESTINATION_PRESETS[0], kept.destination)
+        assertTrue(!kept.fromNavi && !kept.loadingNavi)
+        // [내비에서 불러오기]를 직접 누르면 바꾼다 — 이름이 없으면 주소 → 없으면 '내비 목적지'
+        val loaded = mergeNaviDestination(picked, navi, auto = false)
+        assertEquals(NAVI_DESTINATION_FALLBACK_NAME, loaded.destination?.name)
+        assertTrue(loaded.fromNavi && loaded.canCreate)
+        assertEquals("강릉시 창해로 514", mergeNaviDestination(base, navi.copy(address = "강릉시 창해로 514"), auto = true).destination?.name)
+        // 아무것도 고르지 않았으면 자동 읽기가 채운다, 내비 목적지가 없으면 비운 채
+        assertEquals("경포해변", mergeNaviDestination(base, navi.copy(name = " 경포해변 "), auto = true).destination?.name)
+        assertNull(mergeNaviDestination(base, null, auto = true).destination)
+        assertEquals(60, mergeNaviDestination(base, navi.copy(name = "가".repeat(80)), auto = true).destination?.name?.length)
+    }
+
+    @Test
     fun `without pairing the form is blocked`() = runTest(dispatcher) {
         tokens.clear(TokenClearReason.USER_SETTINGS_DISCONNECT); runCurrent()
         val vm = viewModel()

@@ -39,6 +39,23 @@ val DESTINATION_PRESETS: List<Place> = listOf(
 
 val MAX_MEMBER_CHOICES: List<Int> = listOf(2, 4, 6, 10)
 
+/** 이름이 없는 내비 목적지(경유지만 남은 안내 등)에 붙이는 이름 — 서버는 목적지 이름 1~60자를 요구한다(빈 이름 → 400) */
+const val NAVI_DESTINATION_FALLBACK_NAME = "내비 목적지"
+
+/**
+ * 내비 목적지를 입력 화면에 합친다(순수 — 단위 테스트).
+ * - 내비 목적지가 없으면 그대로(로딩만 끝).
+ * - 화면이 열릴 때의 자동 읽기([auto])는 사용자가 이미 고른 목적지(홈 사진 줄 `preset` 등)를 덮지 않는다 — 2026-11-05 실측:
+ *   홈에서 '경포해변'을 눌러 들어왔는데 늦게 끝난 자동 읽기가 이름 없는 내비 목적지로 바꿔 [같이 가기 시작]이 400 이 됐다.
+ * - 이름이 비었으면 주소, 그것도 없으면 [NAVI_DESTINATION_FALLBACK_NAME]. 60자를 넘으면 자른다.
+ */
+fun mergeNaviDestination(form: CreateGroupState.Form, dest: Place?, auto: Boolean): CreateGroupState.Form {
+    if (dest == null) return form.copy(loadingNavi = false)
+    if (auto && form.destination != null && !form.fromNavi) return form.copy(loadingNavi = false)
+    val name = dest.name.trim().ifBlank { dest.address?.trim().orEmpty() }.ifBlank { NAVI_DESTINATION_FALLBACK_NAME }.take(60)
+    return form.copy(destination = dest.copy(name = name), fromNavi = true, loadingNavi = false)
+}
+
 /** 화면 상태 — 그룹이 있으면 [Active], 없으면 [Form] */
 sealed interface CreateGroupState {
     data object Loading : CreateGroupState
@@ -164,22 +181,23 @@ class CreateGroupViewModel @Inject constructor(
             name = GroupNaming.defaultName(nickname), destination = null, fromNavi = false, maxMembers = 10, notPaired = !paired, loadingNavi = true,
             isDriving = drivingNow,
         )
-        loadNaviDestination()
+        loadNavi(auto = true)
     }
 
     /**
-     * "내비 목적지 불러오기". 안내 중이 아니면 목적지를 비워 둔다(A123) — 예전엔 시연용 첫 프리셋(경포해변)을 자동으로 골라,
-     * 바로 [같이 가기 시작]을 누르면 의도하지 않은 목적지로 그룹이 생기고 멤버에게 그 목적지 안내가 갔다. 이미 고른 목적지는 그대로 둔다.
+     * [내비에서 불러오기] — 사용자가 누른 것이라 이미 고른 목적지도 내비 목적지로 바꾼다.
+     * 안내 중이 아니면 목적지를 비워 둔다(A123) — 예전엔 시연용 첫 프리셋(경포해변)을 자동으로 골라,
+     * 바로 [같이 가기 시작]을 누르면 의도하지 않은 목적지로 그룹이 생기고 멤버에게 그 목적지 안내가 갔다.
      */
-    fun loadNaviDestination() {
+    fun loadNaviDestination() = loadNavi(auto = false)
+
+    /** 화면이 열릴 때 자동으로([auto]) 또는 버튼으로 내비 목적지를 읽는다 — 합치는 규칙은 [mergeNaviDestination] */
+    private fun loadNavi(auto: Boolean) {
         viewModelScope.launch {
             update<CreateGroupState.Form> { it.copy(loadingNavi = true, error = null) }
             val dest = runCatching { navi.currentDestination() }.onFailure { DhLog.w("navi currentDestination 실패", it) }.getOrNull()
-            update<CreateGroupState.Form> { form ->
-                if (dest != null) form.copy(destination = dest, fromNavi = true, loadingNavi = false)
-                else form.copy(loadingNavi = false)
-            }
-            DhLog.i("navi destination ${if (dest != null) "loaded" else "none → 사용자가 고른다"}")
+            update<CreateGroupState.Form> { form -> mergeNaviDestination(form, dest, auto) }
+            DhLog.i("navi destination ${if (dest != null) "loaded" else "none → 사용자가 고른다"}${if (auto) " (auto)" else ""}")
         }
     }
 
